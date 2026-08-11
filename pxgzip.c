@@ -37,13 +37,17 @@ static int create_memfd(const char *name)
 
 static void chunk_destroy(Chunk *c)
 {
-    if (c->pout >= 0) close(c->pout);
+    if (c->pout >= 0) {
+        close(c->pout);
+        c->pout = -1;
+    }
     if (c->pid > 0) {
         int st;
         if (waitpid(c->pid, &st, WNOHANG) == 0)
             kill(c->pid, SIGTERM);
+        c->pid = -1;
     }
-    c->pid = -1;
+
 }
 
 /* ------------------------------------------------------------------ */
@@ -237,6 +241,10 @@ int main(int argc, char **argv)
             if (dump_chunk_to_stdout(&chunks[j]) < 0) {
                 perror("reassembly");
                 goto cleanup;
+            }
+            if (in_fds[j] >= 0) {
+                close(in_fds[j]);
+                in_fds[j] = -1;
             }
             chunk_destroy(&chunks[j]);
         }
