@@ -5,8 +5,10 @@ experimenting a 100% back-compatible parallel gzip inflate format
 ## benchmarks
 
 ```
-# using Makefile (zlib-ng)
-$ for i in $(seq 1 11); do time ./ptgzip qemu.elf >/dev/null; done 2>&1 | grep real
+# using zlib-ng + libpthread
+$ make
+$ for i in $(seq 1 11); do time ./ptgzip \
+  qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.048s
 real	0m0.041s
 real	0m0.039s
@@ -20,7 +22,8 @@ real	0m0.038s
 real	0m0.038s
 
 # pigz
-$ for i in $(seq 1 11); do time /bin/pigz -c qemu.elf >/dev/null; done 2>&1 | grep real
+$ for i in $(seq 1 11); do time /bin/pigz -c \
+  qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.083s
 real	0m0.061s
 real	0m0.061s
@@ -33,9 +36,10 @@ real	0m0.063s
 real	0m0.064s
 real	0m0.063s
 
-# using zlib-dev + libpthread
+# using zlib + libpthread
 $ gcc -O1 -s ptgzip.c -o ptgzip -lz -lpthread
-$ for i in $(seq 1 11); do time ./ptgzip qemu.elf >/dev/null; done 2>&1 | grep real
+$ for i in $(seq 1 11); do time ./ptgzip \
+  qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.100s
 real	0m0.076s
 real	0m0.078s
@@ -49,7 +53,24 @@ real	0m0.079s
 real	0m0.078s
 
 # using gzip
-$ for i in $(seq 1 11); do time sh ptest.sh qemu.elf >/dev/null; done 2>&1 | grep real
+$ gcc -O1 -s pxgzip.c -o pxgzip
+$ for i in $(seq 1 11); do time ./pgzip \
+  qemu.elf >/dev/null; done 2>&1 | grep real
+real	0m0.099s
+real	0m0.093s
+real	0m0.093s
+real	0m0.094s
+real	0m0.095s
+real	0m0.092s
+real	0m0.093s
+real	0m0.092s
+real	0m0.094s
+real	0m0.094s
+real	0m0.093s
+
+# using gzip
+$ for i in $(seq 1 11); do time sh ptest.sh \
+  qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.119s
 real	0m0.101s
 real	0m0.099s
@@ -62,23 +83,9 @@ real	0m0.104s
 real	0m0.101s
 real	0m0.104s
 
-# using gzip
-$ gcc -O1 -s pgzip.c -o pgzip
-$ for i in $(seq 1 11); do time ./pgzip qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.290s
-real	0m0.278s
-real	0m0.273s
-real	0m0.280s
-real	0m0.275s
-real	0m0.277s
-real	0m0.276s
-real	0m0.276s
-real	0m0.281s
-real	0m0.278s
-real	0m0.273s
-
 # gzip
-$ for i in $(seq 1 11); do time /bin/gzip -c qemu.elf >/dev/null; done 2>&1 | grep real
+$ for i in $(seq 1 11); do time /bin/gzip -c \
+  qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.329s
 real	0m0.312s
 real	0m0.307s
