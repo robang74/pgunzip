@@ -235,7 +235,7 @@ int main(int argc, char **argv)
         size_t base = chunk_size;
 
         Chunk chunks[MAX_SEGMENTS];
-        memset(chunks, 0, sizeof(chunks));
+        //memset(chunks, 0, sizeof(chunks));
 
         off_t off = pos;
         for (int i = 0; i < nseg; i++) {
