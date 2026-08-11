@@ -232,64 +232,30 @@ int main(int argc, char **argv)
     while (pos < total) {
 
         off_t remain = total - pos;
-#if 0
-        off_t batch  = remain > (off_t)chunk_size * nseg
-                              ? (off_t)chunk_size * nseg
-                              : remain;
-
-        /* Decide how many segments this batch really needs */
-        if (batch <= MIN_PARALLEL) {
-            nseg = 1;
-        } else if (batch <= SEGMENT_TARGET) {
-            nseg = 1;
-        } else if (batch <= 2 * SEGMENT_TARGET) {
-            nseg = 2;
-        } else if (batch <= 3 * SEGMENT_TARGET) {
-            nseg = 3;
-        } else if (batch <= 4 * SEGMENT_TARGET) {
-            nseg = 4;
-        } else if (batch <= 5 * SEGMENT_TARGET) {
-            nseg = 5;
-        } else {
-            nseg = 6;
-        }
-
-        fprintf(stderr, "chunks: %d\n", nseg);
-
-        size_t base = batch / nseg;
-        size_t rem  = batch % nseg;
-#else
         size_t base = chunk_size;
-#endif
+
         Chunk chunks[MAX_SEGMENTS];
         memset(chunks, 0, sizeof(chunks));
 
         off_t off = pos;
         for (int i = 0; i < nseg; i++) {
             chunks[i].offset = off;
-#if 0
-            chunks[i].len    = base + (i < (int)rem ? 1 : 0);
-#else
             chunks[i].len    = base;
-#endif
             chunks[i].pin[0] = -1;
             chunks[i].pin[1] = -1;
             chunks[i].pout   = -1;
             off += (off_t)chunks[i].len;
         }
 
-        /* ---- fork all gzip workers for this batch ---- */
         for (int i = 0; i < nseg; i++) {
+            /* ---- fork all gzip workers for this batch ---- */
             if (spawn_gzip(&chunks[i]) < 0) {
                 for (int j = 0; j < nseg; j++)
                     chunk_destroy(&chunks[j]);
                 close(infd);
                 return 1;
             }
-        }
-
-        /* ---- feed each segment via lseek + pipe ---- */
-        for (int i = 0; i < nseg; i++) {
+            /* ---- feed each segment via lseek + pipe ---- */
             if (feed_chunk(infd, &chunks[i]) < 0) {
                 for (int j = 0; j < nseg; j++)
                     chunk_destroy(&chunks[j]);
@@ -298,16 +264,13 @@ int main(int argc, char **argv)
             }
         }
 
-        /* ---- reap all children ---- */
         for (int i = 0; i < nseg; i++) {
             int status;
+            /* ---- wait children ---- */
             if (waitpid(chunks[i].pid, &status, 0) < 0)
                 perror("waitpid");
             chunks[i].pid = -1;
-        }
-
-        /* ---- combine outputs in strict segment order ---- */
-        for (int i = 0; i < nseg; i++) {
+            /* ---- combine outputs in strict segment order ---- */
             if (dump_chunk_to_stdout(&chunks[i]) < 0) {
                 perror("reassembly");
                 for (int j = i; j < nseg; j++)
@@ -316,12 +279,8 @@ int main(int argc, char **argv)
                 return 1;
             }
             chunk_destroy(&chunks[i]);
+            pos += base;
         }
-#if 0
-        pos += batch;
-#else
-        pos += base * nseg;
-#endif
     }
 
     close(infd);
