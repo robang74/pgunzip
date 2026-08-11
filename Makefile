@@ -13,6 +13,7 @@ URL       = $(REPOURL)/$(ARCHIVE)
 LIBZ_DIR  = libz
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
+TARGETS   = $(TARGET) pxgzip plgzip
 SRC       = ptgzip.c
 
 CC       ?= gcc
@@ -21,7 +22,9 @@ THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 .PHONY: all clean distclean source
 
-all: $(TARGET)
+all: $(TARGETS)
+	@echo
+	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
 
 # -----------------------------------------------------------------------------
 # source target: download tarball, extract, rename to libz/, build static lib
@@ -62,11 +65,17 @@ $(TARGET): $(SRC) $(LIBZ_DIR)/libz.a
 		-I$(BUILD_DIR) -I$(LIBZ_DIR) \
 		$(LIBZ_DIR)/libz.a -lpthread
 
+pxgzip: pxgzip.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+plgzip: ptgzip.c
+	$(CC) $(CFLAGS) -o $@ $< -lz -lpthread
+
 # -----------------------------------------------------------------------------
 # Cleanup
 # -----------------------------------------------------------------------------
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGETS)
 
 veryclean: clean
 	rm -rf libz

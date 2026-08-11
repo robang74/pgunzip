@@ -37,8 +37,8 @@ real	0m0.064s
 real	0m0.063s
 
 # using zlib + libpthread
-$ gcc -O1 -s ptgzip.c -o ptgzip -lz -lpthread
-$ for i in $(seq 1 11); do time ./ptgzip \
+$ gcc -O2 -s ptgzip.c -o plgzip -lz -lpthread
+$ for i in $(seq 1 11); do time ./plgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.100s
 real	0m0.076s
@@ -53,8 +53,8 @@ real	0m0.079s
 real	0m0.078s
 
 # using gzip
-$ gcc -O1 -s pxgzip.c -o pxgzip
-$ for i in $(seq 1 11); do time ./pgzip \
+$ gcc -O2 -s pxgzip.c -o pxgzip
+$ for i in $(seq 1 11); do time ./pxgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.099s
 real	0m0.093s
