@@ -5,6 +5,20 @@ experimenting a 100% back-compatible parallel gzip inflate format
 ## benchmarks
 
 ```
+# using Makefile (zlib-ng)
+$ for i in $(seq 1 11); do time ./ptgzip qemu.elf >/dev/null; done 2>&1 | grep real
+real	0m0.048s
+real	0m0.041s
+real	0m0.039s
+real	0m0.039s
+real	0m0.037s
+real	0m0.038s
+real	0m0.038s
+real	0m0.038s
+real	0m0.038s
+real	0m0.038s
+real	0m0.038s
+
 # pigz
 $ for i in $(seq 1 11); do time /bin/pigz -c qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.083s
