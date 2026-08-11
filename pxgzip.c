@@ -18,17 +18,20 @@
 #define MAX_SEGMENTS    6
 #define IO_BUFSZ       (64 * 1024)
 
+#define ALWAYS_INLINE __attribute__((always_inline)) inline
+
 typedef struct {
     off_t   offset;
     size_t  len;
     int     pout;       /* memfd: child -> parent (gzip stdout) */
+    int     infd;
     pid_t   pid;
 } Chunk;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
-static int create_memfd(const char *name)
+static ALWAYS_INLINE int create_memfd(const char *name)
 {
     int fd = memfd_create(name, MFD_CLOEXEC);
     if (fd < 0) perror("memfd_create");
@@ -47,13 +50,17 @@ static void chunk_destroy(Chunk *c)
             kill(c->pid, SIGTERM);
         c->pid = -1;
     }
+    if (c->infd >= 0) {
+        close(c->infd);
+        c->infd = -1;
+    }
 
 }
 
 /* ------------------------------------------------------------------ */
 /* Fork gzip; infd is a ready-to-read fd (e.g. memfd at offset 0)    */
 /* ------------------------------------------------------------------ */
-static int spawn_gzip(int infd, Chunk *c)
+static inline int spawn_gzip(int infd, Chunk *c)
 {
     c->pout = create_memfd("gz_out");
     if (c->pout < 0) {
@@ -93,7 +100,7 @@ static int spawn_gzip(int infd, Chunk *c)
 /* ------------------------------------------------------------------ */
 /* Copy compressed chunk memfd to stdout                              */
 /* ------------------------------------------------------------------ */
-static int dump_chunk_to_stdout(Chunk *c)
+static inline int dump_chunk_to_stdout(Chunk *c)
 {
     char buf[IO_BUFSZ];
 
@@ -127,6 +134,8 @@ static int dump_chunk_to_stdout(Chunk *c)
 /* ================================================================== */
 int main(int argc, char **argv)
 {
+    int ret = 0;
+
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
@@ -181,7 +190,6 @@ int main(int argc, char **argv)
     off_t pos = 0;
     while (pos < total) {
         Chunk chunks[MAX_SEGMENTS];
-        int in_fds[MAX_SEGMENTS];
         int batch_chunks = 0;
 
         /* ---- define batch boundaries ---- */
@@ -192,21 +200,21 @@ int main(int argc, char **argv)
                           ? (size_t)(total - off) : chunk_size;
             chunks[j].pout = -1;
             chunks[j].pid  = -1;
-            in_fds[j] = -1;
+            chunks[j].infd = -1;
             off += (off_t)chunks[j].len;
             batch_chunks++;
         }
 
         /* ---- STAGE: copy each chunk into its own memfd ---- */
         for (int j = 0; j < batch_chunks; j++) {
-            in_fds[j] = create_memfd("chunk_in");
-            if (in_fds[j] < 0)
+            chunks[j].infd = create_memfd("chunk_in");
+            if (chunks[j].infd < 0)
                 goto cleanup;
 
             size_t left = chunks[j].len;
             unsigned char *src = mmap_base + chunks[j].offset;
             while (left > 0) {
-                ssize_t w = write(in_fds[j], src, left);
+                ssize_t w = write(chunks[j].infd, src, left);
                 if (w < 0) {
                     if (errno == EINTR) continue;
                     perror("write memfd");
@@ -215,7 +223,7 @@ int main(int argc, char **argv)
                 src += w;
                 left -= w;
             }
-            if (lseek(in_fds[j], 0, SEEK_SET) == (off_t)-1) {
+            if (lseek(chunks[j].infd, 0, SEEK_SET) == (off_t)-1) {
                 perror("lseek memfd");
                 goto cleanup;
             }
@@ -223,11 +231,11 @@ int main(int argc, char **argv)
 
         /* ---- SPAWN ALL children at once ---- */
         for (int j = 0; j < batch_chunks; j++) {
-            if (spawn_gzip(in_fds[j], &chunks[j]) < 0) {
-                in_fds[j] = -1; /* spawn closed it on failure */
+            if (spawn_gzip(chunks[j].infd, &chunks[j]) < 0) {
+                chunks[j].infd = -1; /* spawn closed it on failure */
                 goto cleanup;
             }
-            in_fds[j] = -1; /* ownership transferred to child */
+            chunks[j].infd = -1; /* ownership transferred to child */
         }
 
 
@@ -242,10 +250,6 @@ int main(int argc, char **argv)
                 perror("reassembly");
                 goto cleanup;
             }
-            if (in_fds[j] >= 0) {
-                close(in_fds[j]);
-                in_fds[j] = -1;
-            }
             chunk_destroy(&chunks[j]);
         }
 
@@ -253,14 +257,15 @@ int main(int argc, char **argv)
         continue;
 
     cleanup:
+    /* exit() is going to clean everything
         for (int j = 0; j < batch_chunks; j++) {
-            if (in_fds[j] >= 0) close(in_fds[j]);
             chunk_destroy(&chunks[j]);
         }
-        munmap(mmap_base, total);
-        return 1;
+    */
+        ret = 1;
+        break;
     }
 
-    munmap(mmap_base, total);
-    return 0;
+    //munmap(mmap_base, total);
+    return ret;
 }
