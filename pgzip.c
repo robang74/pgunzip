@@ -14,10 +14,10 @@
 #include <signal.h>
 #include <sys/mman.h>
 
-#define SEGMENT_TARGET  (1024 * 1024)   /* 1 MiB target per segment */
+#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 #define MAX_SEGMENTS    6
-#define MIN_PARALLEL    (64 * 1024)     /* < 64 KiB: avoid parallelism */
-#define IO_BUFSZ        (64 * 1024)     /* bounce buffer size */
+#define MIN_PARALLEL   (64 * 1024)     /* < 64 KiB: avoid parallelism */
+#define IO_BUFSZ       (64 * 1024)     /* bounce buffer size */
 
 typedef struct {
     off_t   offset;     /* start position in input file (lseek) */
@@ -217,18 +217,27 @@ int main(int argc, char **argv)
 
     off_t total = st.st_size;
     off_t pos   = 0;
+    int n, nseg = MAX_SEGMENTS, i = 1;
+    size_t chunk_size = total;
+    do {
+      n = nseg * i++;
+      chunk_size = (total + (n-1)) / n;
+    } while (chunk_size > MAX_TARGET);
+    fprintf(stderr, "chunks: %d x %lu = %lu / %lu\n",
+      nseg, chunk_size, total, (total + chunk_size-1)/chunk_size);
 
     /* -------------------------------------------------------------- */
     /* Outer loop: one batch = up to 6 MiB                            */
     /* -------------------------------------------------------------- */
     while (pos < total) {
+
         off_t remain = total - pos;
-        off_t batch  = remain > (off_t)MAX_SEGMENTS * SEGMENT_TARGET
-                       ? (off_t)MAX_SEGMENTS * SEGMENT_TARGET
-                       : remain;
+#if 0
+        off_t batch  = remain > (off_t)chunk_size * nseg
+                              ? (off_t)chunk_size * nseg
+                              : remain;
 
         /* Decide how many segments this batch really needs */
-        int nseg;
         if (batch <= MIN_PARALLEL) {
             nseg = 1;
         } else if (batch <= SEGMENT_TARGET) {
@@ -244,18 +253,25 @@ int main(int argc, char **argv)
         } else {
             nseg = 6;
         }
+
         fprintf(stderr, "chunks: %d\n", nseg);
 
         size_t base = batch / nseg;
         size_t rem  = batch % nseg;
-
+#else
+        size_t base = chunk_size;
+#endif
         Chunk chunks[MAX_SEGMENTS];
         memset(chunks, 0, sizeof(chunks));
 
         off_t off = pos;
         for (int i = 0; i < nseg; i++) {
             chunks[i].offset = off;
+#if 0
             chunks[i].len    = base + (i < (int)rem ? 1 : 0);
+#else
+            chunks[i].len    = base;
+#endif
             chunks[i].pin[0] = -1;
             chunks[i].pin[1] = -1;
             chunks[i].pout   = -1;
@@ -301,8 +317,11 @@ int main(int argc, char **argv)
             }
             chunk_destroy(&chunks[i]);
         }
-
+#if 0
         pos += batch;
+#else
+        pos += base * nseg;
+#endif
     }
 
     close(infd);
