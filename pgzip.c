@@ -96,7 +96,7 @@ static int spawn_gzip(Chunk *c)
             _exit(126);
 
         /* stderr left untouched so errors are visible */
-        execlp("gzip", "gzip", "-c", (char *)NULL);
+        execlp("/bin/gzip", "gzip", "-c", (char *)NULL);
         _exit(127);
     }
 
