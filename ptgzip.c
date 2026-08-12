@@ -54,36 +54,66 @@ static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
     z_stream strm = {0};
+    int ret;
 
-    int ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                           15 + 16, 8, Z_DEFAULT_STRATEGY);
+    /* 1. GZIP FORMAT: 15 + 16 is mandatory.
+     *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
+     *    Without +16 the output cannot be concatenated into a valid .gz file.
+     */
+    ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                  15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         c->error = 1;
         return NULL;
     }
-    c->out_cap = c->len + (c->len >> 9) + 256;
+
+    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->len.
+     *    Incompressible data EXPANDS by ~0.1 % + headers.
+     *    c->len alone guarantees a buffer overrun on random bytes.
+     */
+    c->out_cap = deflateBound(&strm, c->len);
     c->out = malloc(c->out_cap);
     if (!c->out) {
-        perror("malloc");
-        //munmap(mmap_base, total);
+        c->error = 1;
+        deflateEnd(&strm);   /* free zlib internal state */
         return NULL;
     }
 
-    strm.next_in  = c->in;
-    strm.avail_in = c->len;
-    strm.next_out = c->out;
+    strm.next_in   = c->in;
+    strm.avail_in  = c->len;
+    strm.next_out  = c->out;
     strm.avail_out = c->out_cap;
 
+    /* 3. COMPRESSION LOOP:
+     *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
+     *    - Then Z_FINISH until deflate returns Z_STREAM_END.
+     *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
+     */
+#if 0
     ret = deflate(&strm, Z_FINISH);
+#else
+    do {
+        if (strm.avail_in == 0)
+            ret = deflate(&strm, Z_FINISH);
+        else
+            ret = deflate(&strm, Z_NO_FLUSH);
+    } while (ret == Z_OK);
+#endif
     if (ret != Z_STREAM_END) {
         c->error = 1;
+        free(c->out);
+        c->out = NULL;
         deflateEnd(&strm);
         return NULL;
     }
 
     c->out_len = strm.total_out;
-    deflateEnd(&strm);
-    c->error = 0;
+
+    /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
+     *    Skipping it leaks several KiB per chunk.
+     */
+    ret = deflateEnd(&strm);
+    c->error = (ret != Z_OK);
     return NULL;
 }
 
