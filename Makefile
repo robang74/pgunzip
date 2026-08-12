@@ -46,15 +46,17 @@ $(LIBZ_DIR): $(TARBALL)
 $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 	@which cmake >/dev/null 2>&1 || \
 		{ echo "Error: cmake is required to build zlib-ng"; exit 1; }
-	@echo ">>> Configuring zlib-ng (ZLIB_COMPAT=ON, static) ..."
+	@echo ">>> Configuring zlib-ng (ZLIB_COMPAT=ON, tuned for density) ..."
 	@cmake -S $(LIBZ_DIR) -B $(BUILD_DIR) \
+		-DWITH_OPTIM=ON \
 		-DZLIB_COMPAT=ON \
 		-DBUILD_TESTING=OFF \
 		-DBUILD_SHARED_LIBS=OFF \
+		-DWITH_NEW_STRATEGIES=OFF \
 		-DCMAKE_BUILD_TYPE=Release
 	@echo ">>> Building zlib-ng with $(THREADS) jobs ..."
 	@cmake --build $(BUILD_DIR) --parallel $(THREADS)
-	@cp $(BUILD_DIR)/libz.a $@
+	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
 # -----------------------------------------------------------------------------

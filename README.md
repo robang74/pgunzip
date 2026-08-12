@@ -8,7 +8,7 @@ experimenting a 100% back-compatible parallel gzip inflate format
 2669344	./qemu.elf.gz
 2672384	./qemu.elf.gz (ptest.sh, 0.12%)
 2677603	./qemu.elf.gz (pxgzip  , 0.31%)
-2732497	./qemu.elf.gz (ptgzip  , 2.37% <-- ##TODO##)
+2717194	./qemu.elf.gz (ptgzip  , 1.79% <-- ##TODO##)
 ```
 
 ```
@@ -16,17 +16,17 @@ experimenting a 100% back-compatible parallel gzip inflate format
 $ make
 $ for i in $(seq 1 11); do time ./ptgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.048s
-real	0m0.041s
-real	0m0.039s
-real	0m0.039s
-real	0m0.037s
-real	0m0.038s
-real	0m0.038s
-real	0m0.038s
-real	0m0.038s
-real	0m0.038s
-real	0m0.038s
+real	0m0.057s
+real	0m0.043s
+real	0m0.044s
+real	0m0.042s
+real	0m0.043s
+real	0m0.045s
+real	0m0.044s
+real	0m0.042s
+real	0m0.045s
+real	0m0.044s
+real	0m0.044s
 
 # pigz
 $ for i in $(seq 1 11); do time /bin/pigz -c \
