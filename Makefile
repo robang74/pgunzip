@@ -46,17 +46,17 @@ $(LIBZ_DIR): $(TARBALL)
 $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 	@which cmake >/dev/null 2>&1 || \
 		{ echo "Error: cmake is required to build zlib-ng"; exit 1; }
-	@echo ">>> Configuring zlib-ng (ZLIB_COMPAT=ON, tuned for density) ..."
+	@echo ">>> Configuring zlib-ng (native API, ratio-tuned) ..."
 	@cmake -S $(LIBZ_DIR) -B $(BUILD_DIR) \
 		-DWITH_OPTIM=ON \
-		-DZLIB_COMPAT=ON \
+		-DZLIB_COMPAT=OFF \
 		-DWITH_GTEST=OFF \
 		-DZLIB_ALIASES=OFF \
-		-DWITH_GZFILEOP=OFF \
+		-DWITH_GZFILEOP=ON \
 		-DBUILD_TESTING=OFF \
 		-DBUILD_SHARED_LIBS=OFF \
 		-DWITH_ALL_FALLBACKS=OFF \
-		-DWITH_NEW_STRATEGIES=OFF \
+		-DWITH_NEW_STRATEGIES=ON \
 		-DWITH_RUNTIME_CPU_DETECTION=ON \
 		-DCMAKE_BUILD_TYPE=Release
 	@echo ">>> Building zlib-ng with $(THREADS) jobs ..."
@@ -65,18 +65,20 @@ $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 	@echo ">>> Built: $@"
 
 # -----------------------------------------------------------------------------
-# ptgzip: compile against local zlib-ng headers and static archive
+# ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
 $(TARGET): $(SRC) $(LIBZ_DIR)/libz.a
-	$(CC) $(CFLAGS) -o $@ $< \
-		-I$(BUILD_DIR) -I$(LIBZ_DIR) \
-		$(LIBZ_DIR)/libz.a -lpthread
+	pwd
+	$(CC) $(CFLAGS) -o $@ $< -D_USE_ZNG=1 \
+		-I./$(BUILD_DIR) -I./$(LIBZ_DIR) \
+		./$(LIBZ_DIR)/libz.a -lpthread
+
 
 pxgzip: pxgzip.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 plgzip: ptgzip.c
-	$(CC) $(CFLAGS) -o $@ $< -lz -lpthread
+	$(CC) $(CFLAGS) -o $@ $< -lz -lpthread -D_USE_ZLIB
 
 # -----------------------------------------------------------------------------
 # Cleanup

@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/mman.h>
-#include <zlib.h>
 #include <pthread.h>
 
 #define MAX_SEGMENTS    6
@@ -50,18 +49,36 @@ static size_t gzip_bound_size(size_t src_len)
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer     */
 /* ------------------------------------------------------------------ */
+#ifndef _USE_ZNG
+#define _USE_ZNG 0
+#endif
+#if _USE_ZNG
+#include "zlib-ng.h"
+#define _deflate_init2 zng_deflateInit2
+#define _deflate_bound zng_deflateBound
+#define _deflate_end   zng_deflateEnd
+#define _deflate       zng_deflate
+#define _stream_t      zng_stream
+#else
+#include <zlib.h>
+#define _deflate_init2     deflateInit2
+#define _deflate_bound     deflateBound
+#define _deflate_end       deflateEnd
+#define _deflate           deflate
+#define _stream_t        z_stream
+#endif
 static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
-    z_stream strm = {0};
+    _stream_t strm = {0};
     int ret;
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
      *    Without +16 the output cannot be concatenated into a valid .gz file.
      */
-    ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                  15 + 16, 7, Z_DEFAULT_STRATEGY);
+    ret = _deflate_init2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+                    15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         c->error = 1;
         return NULL;
@@ -71,12 +88,10 @@ static void *thread_compress(void *arg)
      *    Incompressible data EXPANDS by ~0.1 % + headers.
      *    c->len alone guarantees a buffer overrun on random bytes.
      */
-    c->out_cap = deflateBound(&strm, c->len);
+    c->out_cap = _deflate_bound(&strm, c->len);
     c->out = malloc(c->out_cap);
     if (!c->out) {
-        c->error = 1;
-        deflateEnd(&strm);   /* free zlib internal state */
-        return NULL;
+        goto reterr;
     }
 
     strm.next_in   = c->in;
@@ -90,7 +105,7 @@ static void *thread_compress(void *arg)
      *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
     if(c->out_cap >= c->len)
-        ret = deflate(&strm, Z_FINISH);
+        ret = _deflate(&strm, Z_FINISH);
 #if 0 //RAF, TODO: code to be completed
     else
     do {
@@ -103,11 +118,11 @@ static void *thread_compress(void *arg)
     } while (ret == Z_OK);
 #endif
     if (ret != Z_STREAM_END) {
-        c->error = 1;
         free(c->out);
         c->out = NULL;
-        deflateEnd(&strm);
-        return NULL;
+reterr:
+        c->error = 1;
+        goto endfnc;
     }
 
     c->out_len = strm.total_out;
@@ -115,8 +130,9 @@ static void *thread_compress(void *arg)
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
      *    Skipping it leaks several KiB per chunk.
      */
-    ret = deflateEnd(&strm);
-    c->error = (ret != Z_OK);
+    c->error = 0;
+endfnc:
+    _deflate_end(&strm);
     return NULL;
 }
 
