@@ -15,7 +15,7 @@
 #include <pthread.h>
 
 #define MAX_SEGMENTS    6
-#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
+#define MAX_TARGET     (2UL << 18)     /* max target size per segment */
 
 #ifndef _BE_VERBOSE
 #define _BE_VERBOSE     0
