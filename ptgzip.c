@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -15,7 +16,7 @@
 #include <pthread.h>
 
 #define MAX_SEGMENTS    6
-#define MAX_TARGET     (2UL << 18)     /* max target size per segment */
+#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 
 #ifndef _BE_VERBOSE
 #define _BE_VERBOSE     0
@@ -26,9 +27,9 @@ typedef struct {
     size_t  len;
     unsigned char *in;      /* pointer into mmap */
     unsigned char *out;
-    size_t  out_cap;
-    size_t  out_len;
-    int     error;
+    size_t   out_cap;
+    size_t   out_len;
+    int      error;
 } chunk_t;
 
 /* ------------------------------------------------------------------ */
@@ -139,10 +140,12 @@ endfnc:
 /* ================================================================== */
 /* Main                                                               */
 /* ================================================================== */
+#define TABLE_ITEMS ((uint32_t)nseg + 4)
+#define TABLE_BSIZE ((TABLE_ITEMS) << 2)
+#define PGZ_MAGIC_1 0x6274
+#define PGZ_MAGIC_2 0x7a70
 int main(int argc, char **argv)
 {
-    int ret = 0;
-
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
@@ -159,18 +162,15 @@ int main(int argc, char **argv)
     struct stat st;
     if (fstat(infd, &st) < 0) {
         perror("fstat");
-        //close(infd);
         return 1;
     }
     if (!S_ISREG(st.st_mode)) {
         fprintf(stderr, "error: not a regular file\n");
-        //close(infd);
         return 1;
     }
 
     off_t total = st.st_size;
     if (total == 0) {
-        //close(infd);
         return 0;
     }
 
@@ -178,13 +178,12 @@ int main(int argc, char **argv)
     unsigned char *mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
     if (mmap_base == MAP_FAILED) {
         perror("mmap");
-        //close(infd);
         return 1;
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
-    size_t chunk_size = total;
+    size_t outlen = 0, chunk_size = total;
     int nseg = 0;
     do {
         nseg += MAX_SEGMENTS;
@@ -197,9 +196,15 @@ int main(int argc, char **argv)
             MAX_SEGMENTS, chunk_size, total, nseg);
 #endif
     chunk_t chunks[MAX_SEGMENTS];
+    uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
+    if(list) {
+        list[n++] =  0;
+        list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
+    }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    for (int batch_start = 0; batch_start < nseg; batch_start += MAX_SEGMENTS) {
+    for (int batch_start = 0; batch_start < nseg; batch_start += MAX_SEGMENTS)
+    {
         int batch_end = batch_start + MAX_SEGMENTS;
         if (batch_end > nseg)
             batch_end = nseg;
@@ -221,11 +226,6 @@ int main(int argc, char **argv)
         for (int i = 0; i < nbatch; i++) {
             if (pthread_create(&threads[i], NULL, thread_compress, &chunks[i]) != 0) {
                 perror("pthread_create");
-                /*
-                for (int j = 0; j < nbatch; j++)
-                    free(chunks[j].out);
-                munmap(mmap_base, total);
-                */
                 return 1;
             }
         }
@@ -238,39 +238,59 @@ int main(int argc, char **argv)
         for (int i = 0; i < nbatch; i++) {
             if (chunks[i].error) {
                 fprintf(stderr, "compression failed on chunk %d\n", batch_start + i);
-                /*
-                for (int j = 0; j < nbatch; j++)
-                    free(chunks[j].out);
-                munmap(mmap_base, total);
-                */
                 return 1;
             }
 
             size_t left = chunks[i].out_len;
             unsigned char *p = chunks[i].out;
+            if(list) list[n++] = left;
             while (left > 0) {
                 ssize_t w = write(STDOUT_FILENO, p, left);
                 if (w < 0) {
                     if (errno == EINTR) continue;
                     perror("write");
-                    /*
-                    for (int j = i; j < nbatch; j++)
-                        free(chunks[j].out);
-                    munmap(mmap_base, total);
-                    */
                     return 1;
                 }
                 p += w;
                 left -= w;
+                outlen += w;
             }
             free(chunks[i].out);
         }
     }
-
+    /*
+     * https://github.com/robang74/uzpexec#parallel-ungzip
+     */
+    if(list) {
+        size_t sum = 0, left = TABLE_BSIZE;
+        list[TABLE_ITEMS-1]  = ((TABLE_ITEMS-4) << 16);
+        list[TABLE_ITEMS-1] |=   PGZ_MAGIC_2; // items + magic
+        for(uint32_t *u = &list[1]; left > 0; left-=4) {
+            sum += *u++;
+        };  sum += list[TABLE_ITEMS-1];
+        left = TABLE_BSIZE;
+        list[TABLE_ITEMS-2] = -sum; // sum checking code
+        
+        unsigned char *p = (uint8_t *)list;
+        unsigned r = outlen & 3; // 32-bit align
+        left -= 4-r;
+        p  = &p[4-r];
+        while(left > 0) {
+            ssize_t w = write(STDOUT_FILENO, p, left);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                perror("write");
+                return 1;
+            }
+            p += w;
+            left -= w;
+        }
+    }
 /*
+    free(list);
     for (int j = 0; j < nbatch; j++)
         free(chunks[j].out);
     munmap(mmap_base, total);
 */
-    return ret;
+    return 0;
 }
