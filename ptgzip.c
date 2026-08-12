@@ -31,7 +31,7 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* Exact upper bound for a gzip chunk without keeping a stream alive   */
 /* ------------------------------------------------------------------ */
-static inline size_t gzip_bound_size(size_t src_len)
+static size_t gzip_bound_size(size_t src_len)
 {
     z_stream strm = {0};
     if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
@@ -80,6 +80,8 @@ static void *thread_compress(void *arg)
 /* ================================================================== */
 int main(int argc, char **argv)
 {
+    int ret = 0;
+
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
@@ -96,18 +98,18 @@ int main(int argc, char **argv)
     struct stat st;
     if (fstat(infd, &st) < 0) {
         perror("fstat");
-        close(infd);
+        //close(infd);
         return 1;
     }
     if (!S_ISREG(st.st_mode)) {
         fprintf(stderr, "error: not a regular file\n");
-        close(infd);
+        //close(infd);
         return 1;
     }
 
     off_t total = st.st_size;
     if (total == 0) {
-        close(infd);
+        //close(infd);
         return 0;
     }
 
@@ -115,7 +117,7 @@ int main(int argc, char **argv)
     unsigned char *mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
     if (mmap_base == MAP_FAILED) {
         perror("mmap");
-        close(infd);
+        //close(infd);
         return 1;
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
@@ -155,7 +157,7 @@ int main(int argc, char **argv)
             chunks[i].out = malloc(chunks[i].out_cap);
             if (!chunks[i].out) {
                 perror("malloc");
-                munmap(mmap_base, total);
+                //munmap(mmap_base, total);
                 return 1;
             }
             chunks[i].error = 0;
@@ -166,9 +168,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < nbatch; i++) {
             if (pthread_create(&threads[i], NULL, thread_compress, &chunks[i]) != 0) {
                 perror("pthread_create");
+                /*
                 for (int j = 0; j < nbatch; j++)
                     free(chunks[j].out);
                 munmap(mmap_base, total);
+                */
                 return 1;
             }
         }
@@ -181,9 +185,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < nbatch; i++) {
             if (chunks[i].error) {
                 fprintf(stderr, "compression failed on chunk %d\n", batch_start + i);
+                /*
                 for (int j = 0; j < nbatch; j++)
                     free(chunks[j].out);
                 munmap(mmap_base, total);
+                */
                 return 1;
             }
 
@@ -194,9 +200,11 @@ int main(int argc, char **argv)
                 if (w < 0) {
                     if (errno == EINTR) continue;
                     perror("write");
+                    /*
                     for (int j = i; j < nbatch; j++)
                         free(chunks[j].out);
                     munmap(mmap_base, total);
+                    */
                     return 1;
                 }
                 p += w;
@@ -206,6 +214,10 @@ int main(int argc, char **argv)
         }
     }
 
+/*
+    for (int j = 0; j < nbatch; j++)
+        free(chunks[j].out);
     munmap(mmap_base, total);
-    return 0;
+*/
+    return ret;
 }

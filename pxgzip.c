@@ -351,16 +351,16 @@ int main(int argc, char **argv)
     struct stat st;
     if (fstat(infd, &st) < 0) {
         perror("fstat");
-        close(infd);
+        //close(infd);
         return 1;
     }
     if (!S_ISREG(st.st_mode)) {
         fprintf(stderr, "error: not a regular file\n");
-        close(infd);
+        //close(infd);
         return 1;
     }
     if (st.st_size == 0) {
-        close(infd);
+        //close(infd);
         return 0;
     }
     total = st.st_size;
@@ -399,11 +399,13 @@ int main(int argc, char **argv)
             chunks[j].infd = create_memfd("chunk_in");
             if (chunks[j].infd < 0) {
                 perror("create_memfd");
-                goto cleanup;
+                //goto cleanup;
+                return 1;
             }
             if (stage_chunk(infd, total, &chunks[j]) < 0) {
                 perror("stage_chunk");
-                goto cleanup;
+                //goto cleanup;
+                return 1;
             }
         }
 
@@ -411,7 +413,8 @@ int main(int argc, char **argv)
         for (int j = 0; j < batch_chunks; j++) {
             if (spawn_gzip(chunks[j].infd, &chunks[j]) < 0) {
                 chunks[j].infd = -1; /* spawn closed it on failure */
-                goto cleanup;
+                //goto cleanup;
+                return 1;
             }
         }
 
@@ -426,7 +429,8 @@ int main(int argc, char **argv)
             /* ---- DUMP in strict segment order ---- */
             if (dump_chunk_to_stdout(&chunks[j]) < 0) {
                 perror("reassembly");
-                goto cleanup;
+                //goto cleanup;
+                return 1;
             }
             chunk_destroy(&chunks[j]);
         }
@@ -434,14 +438,14 @@ int main(int argc, char **argv)
         pos += off - pos;
         continue;
 
-    cleanup:
     /* exit() is going to clean everything
+    cleanup:
         for (int j = 0; j < batch_chunks; j++) {
             chunk_destroy(&chunks[j]);
         }
-    */
         ret = 1;
         break;
+    */
     }
 
     //munmap(mmap_base, total);
