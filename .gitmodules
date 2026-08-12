@@ -1,0 +1,3 @@
+[submodule "minz"]
+	path = minz
+	url = https://github.com/robang74/miniz.git

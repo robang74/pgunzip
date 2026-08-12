@@ -50,16 +50,39 @@ static size_t gzip_bound_size(size_t src_len)
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer     */
 /* ------------------------------------------------------------------ */
+#ifndef _ONE_ZDF
+#define _ONE_ZDF 1
+#endif
 #ifndef _USE_ZNG
 #define _USE_ZNG 0
 #endif
-#if _USE_ZNG
+#ifndef _USE_MNZ
+#define _USE_MNZ 0
+#endif
+#if   _USE_ZNG
 #include "zlib-ng.h"
 #define _deflate_init2 zng_deflateInit2
 #define _deflate_bound zng_deflateBound
 #define _deflate_end   zng_deflateEnd
 #define _deflate       zng_deflate
 #define _stream_t      zng_stream
+#elif _USE_MNZ
+#include <miniz.h>
+#define _deflate_init2  mz_deflateInit2
+#define _deflate_bound  mz_deflateBound
+#define _deflate_end    mz_deflateEnd
+#define _deflate        mz_deflate
+#define _stream_t       mz_stream
+/*
+#define Z_OK                  MZ_OK
+#define Z_FINISH              MZ_FINISH
+#define Z_NO_FLUSH            MZ_NO_FLUSH
+#define Z_DEFLATED            MZ_DEFLATED
+#define Z_STREAM_END          MZ_STREAM_END
+#define Z_DEFAULT_STRATEGY    MZ_DEFAULT_STRATEGY
+*/
+#undef  Z_DEFAULT_COMPRESSION
+#define Z_DEFAULT_COMPRESSION 6
 #else
 #include <zlib.h>
 #define _deflate_init2     deflateInit2
@@ -105,16 +128,15 @@ static void *thread_compress(void *arg)
      *    - Then Z_FINISH until deflate returns Z_STREAM_END.
      *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
+#if _ONE_ZDF
     if(c->out_cap >= c->len)
         ret = _deflate(&strm, Z_FINISH);
-#if 0 //RAF, TODO: code to be completed
-    else
+#else
     do {
         if (strm.avail_in == 0) {
             ret = deflate(&strm, Z_FINISH);
         } else {
             ret = deflate(&strm, Z_NO_FLUSH);
-            /* move the output out of the next_out buffer */
         }
     } while (ret == Z_OK);
 #endif

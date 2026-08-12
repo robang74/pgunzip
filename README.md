@@ -20,9 +20,11 @@ gzip: ./qemu.pgz: decompression OK, trailing garbage ignored
 ret=2
 ```
 
-Finally, the 100% back-compatibility always grants that the archive can be processed whatever the system can run this specific parallel version of `gzip` or not. The maximum speed has been calibrated also to fully engage the DDR4 bus bandwidth on a i5-8365 laptop (2019) making the `zstd` theoretically inflating speed practically redundant on those systems.
+The 100% back-compatibility always grants that the archive can be processed whatever the system can run this specific parallel version of `gzip` or not. The maximum speed has been calibrated also to fully engage the DDR4 bus bandwidth on a i5-8365 laptop (2019) making the `zstd` theoretically inflating speed practically redundant on those systems.
 
 > At 1 GB/s parallel decompression throughput, `pgunzip` approaches the practical memory bandwidth ceiling available for a CPU data-crunching application on low-power hardware. On typical laptop storage (SATA SSD 500 MB/s, or NVMe x2 1.5 GB/s), the decompressor and I/O are closely matched, leaving little practical advantage for faster algorithms like `zstd` that would be bottlenecked by the same storage or memory constraints.
+
+Last but not least, during the development of this project the support for gzip RFC-1952 has been added to the [miniz](https://github.com/robang74/miniz/tree/rfc1952) library which is a size reduced version of the zlib. A difference in footprint that can be better appreciated when compiling an application as a musl-static binary.
 
 <br>
 
@@ -38,6 +40,7 @@ About compressed output suitable for the new format, and 100% back-compatible ve
 2666065	./qemu.elf.gz (pigz -p8  , -0.12%)
 2669344	./qemu.elf.gz (gzip)
 2672384	./qemu.elf.gz (ptest.sh  , +0.12%)
+2676360	./qemu.elf.gz (pmgzip    , +0.26%)
 2677603	./qemu.elf.gz (pxgzip    , +0.31%)
 2717194	./qemu.elf.gz (ptgzip    , +1.79%)
 ```
@@ -130,6 +133,22 @@ real	0m0.091s
 real	0m0.092s
 real	0m0.091s
 real	0m0.094s
+```
+```
+# using miniz + libpthread
+$ for i in $(seq 1 11); do time ./pmgzip \
+  qemu.elf >/dev/null; done 2>&1 | grep real
+real	0m0.112s
+real	0m0.096s
+real	0m0.095s
+real	0m0.099s
+real	0m0.095s
+real	0m0.095s
+real	0m0.095s
+real	0m0.097s
+real	0m0.096s
+real	0m0.094s
+real	0m0.103s
 ```
 ```
 # using gzip

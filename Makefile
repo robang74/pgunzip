@@ -11,14 +11,20 @@ TARBALL   = zlib-ng-$(VERSION).tar.gz
 REPOURL   = https://github.com/robang74/zlib-ng/archive/refs/tags
 URL       = $(REPOURL)/$(ARCHIVE)
 LIBZ_DIR  = libz
+MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
-TARGETS   = $(TARGET) pxgzip plgzip
+TARGETS   = $(TARGET) pxgzip plgzip pmgzip
 SRC       = ptgzip.c
 
 CC       ?= gcc
-CFLAGS   ?= -O2 -s
+CFLAGS   ?= -O2 -s -falign-functions=32
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
+
+MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
+MINZ_ARGS+= -Wl,--defsym=deflateBound=mz_deflateBound
+MINZ_ARGS+= -Wl,--defsym=deflateEnd=mz_deflateEnd
+MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 
 .PHONY: all clean distclean source
 
@@ -73,12 +79,21 @@ $(TARGET): $(SRC) $(LIBZ_DIR)/libz.a
 		-I./$(BUILD_DIR) -I./$(LIBZ_DIR) \
 		./$(LIBZ_DIR)/libz.a -lpthread
 
-
 pxgzip: pxgzip.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 plgzip: ptgzip.c
 	$(CC) $(CFLAGS) -o $@ $< -lz -lpthread -D_USE_ZLIB
+
+minz/.sync:
+	git submodule update --init --recursive
+	touch minz/.sync
+
+$(MINZ_DIR)/miniz.c: minz/.sync
+	cd minz && sh amalgamate.sh
+
+pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
+	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
 
 # -----------------------------------------------------------------------------
 # Cleanup
@@ -87,7 +102,7 @@ clean:
 	rm -f $(TARGETS)
 
 veryclean: clean
-	rm -rf libz
+	rm -rf libz minz/.sync
 
 distclean: veryclean
 	rm -f $(TARBALL)
