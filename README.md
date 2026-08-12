@@ -5,10 +5,12 @@ experimenting a 100% back-compatible parallel gzip inflate format
 ## benchmarks
 
 ```
-2669344	./qemu.elf.gz
-2672384	./qemu.elf.gz (ptest.sh, 0.12%)
-2677603	./qemu.elf.gz (pxgzip  , 0.31%)
-2717194	./qemu.elf.gz (ptgzip  , 1.79% <-- ##TODO##)
+2660782	./qemu.elf.gz (ptgzip -9 , -0.30%)
+2666065	./qemu.elf.gz (pigz -p8  , -0.12%)
+2669344	./qemu.elf.gz (gzip)
+2672384	./qemu.elf.gz (ptest.sh  , +0.12%)
+2677603	./qemu.elf.gz (pxgzip    , +0.31%)
+2717194	./qemu.elf.gz (ptgzip    , +1.79%)
 ```
 
 ```

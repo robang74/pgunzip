@@ -49,14 +49,14 @@ $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 	@echo ">>> Configuring zlib-ng (native API, ratio-tuned) ..."
 	@cmake -S $(LIBZ_DIR) -B $(BUILD_DIR) \
 		-DWITH_OPTIM=ON \
-		-DZLIB_COMPAT=OFF \
+		-DZLIB_COMPAT=ON \
 		-DWITH_GTEST=OFF \
 		-DZLIB_ALIASES=OFF \
-		-DWITH_GZFILEOP=ON \
+		-DWITH_GZFILEOP=OFF \
 		-DBUILD_TESTING=OFF \
 		-DBUILD_SHARED_LIBS=OFF \
 		-DWITH_ALL_FALLBACKS=OFF \
-		-DWITH_NEW_STRATEGIES=ON \
+		-DWITH_NEW_STRATEGIES=OFF \
 		-DWITH_RUNTIME_CPU_DETECTION=ON \
 		-DCMAKE_BUILD_TYPE=Release
 	@echo ">>> Building zlib-ng with $(THREADS) jobs ..."
@@ -69,7 +69,7 @@ $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 # -----------------------------------------------------------------------------
 $(TARGET): $(SRC) $(LIBZ_DIR)/libz.a
 	pwd
-	$(CC) $(CFLAGS) -o $@ $< -D_USE_ZNG=1 \
+	$(CC) $(CFLAGS) -o $@ $< -D_USE_ZNG=0 \
 		-I./$(BUILD_DIR) -I./$(LIBZ_DIR) \
 		./$(LIBZ_DIR)/libz.a -lpthread
 
