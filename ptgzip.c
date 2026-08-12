@@ -89,14 +89,17 @@ static void *thread_compress(void *arg)
      *    - Then Z_FINISH until deflate returns Z_STREAM_END.
      *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
-#if 0
-    ret = deflate(&strm, Z_FINISH);
-#else
+    if(c->out_cap >= c->len)
+        ret = deflate(&strm, Z_FINISH);
+#if 0 //RAF, TODO: code to be completed
+    else
     do {
-        if (strm.avail_in == 0)
+        if (strm.avail_in == 0) {
             ret = deflate(&strm, Z_FINISH);
-        else
+        } else {
             ret = deflate(&strm, Z_NO_FLUSH);
+            /* move the output out of the next_out buffer */
+        }
     } while (ret == Z_OK);
 #endif
     if (ret != Z_STREAM_END) {

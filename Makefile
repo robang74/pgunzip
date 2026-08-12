@@ -50,9 +50,14 @@ $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 	@cmake -S $(LIBZ_DIR) -B $(BUILD_DIR) \
 		-DWITH_OPTIM=ON \
 		-DZLIB_COMPAT=ON \
+		-DWITH_GTEST=OFF \
+		-DZLIB_ALIASES=OFF \
+		-DWITH_GZFILEOP=OFF \
 		-DBUILD_TESTING=OFF \
 		-DBUILD_SHARED_LIBS=OFF \
+		-DWITH_ALL_FALLBACKS=OFF \
 		-DWITH_NEW_STRATEGIES=OFF \
+		-DWITH_RUNTIME_CPU_DETECTION=ON \
 		-DCMAKE_BUILD_TYPE=Release
 	@echo ">>> Building zlib-ng with $(THREADS) jobs ..."
 	@cmake --build $(BUILD_DIR) --parallel $(THREADS)
