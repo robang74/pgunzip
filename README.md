@@ -56,17 +56,17 @@ real	0m0.078s
 $ gcc -O2 -s pxgzip.c -o pxgzip
 $ for i in $(seq 1 11); do time ./pxgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.094s
-real	0m0.091s
-real	0m0.089s
-real	0m0.090s
-real	0m0.092s
+real	0m0.099s
+real	0m0.093s
 real	0m0.092s
 real	0m0.091s
-real	0m0.092s
 real	0m0.091s
-real	0m0.094s
-real	0m0.087s
+real	0m0.091s
+real	0m0.088s
+real	0m0.092s
+real	0m0.093s
+real	0m0.091s
+real	0m0.092s
 
 # using gzip
 $ for i in $(seq 1 11); do time sh ptest.sh \

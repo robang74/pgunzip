@@ -9,15 +9,25 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
-#include <sys/mman.h>
+
+//#include <linux/fs.h>
 
 #define MAX_SEGMENTS    6
 #define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
+
+#ifndef _USE_SENDFILE
+#define _USE_SENDFILE 1
+#endif
+#ifndef _USE_MMPWRITE
+#define _USE_MMPWRITE 1
+#endif
 
 typedef struct {
     off_t   offset;
@@ -25,7 +35,7 @@ typedef struct {
     int     pout;       /* memfd: child -> parent (gzip stdout) */
     int     infd;
     pid_t   pid;
-} Chunk;
+} chunk_t;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -37,7 +47,7 @@ static ALWAYS_INLINE int create_memfd(const char *name)
     return fd;
 }
 
-static void chunk_destroy(Chunk *c)
+static void chunk_destroy(chunk_t *c)
 {
     if (c->pout >= 0) {
         close(c->pout);
@@ -57,9 +67,97 @@ static void chunk_destroy(Chunk *c)
 }
 
 /* ------------------------------------------------------------------ */
+/* Zero-copy staging: kernel copies from src_fd to dst_fd             */
+/* ------------------------------------------------------------------ */
+static int stage_chunk(int src_fd, size_t total, chunk_t *c)
+{
+  off_t src_off = c->offset;
+  size_t left = c->len;
+  int dst_fd = c->infd;
+#if 0 //copy_file_range: Invalid cross-device link
+    /* Try copy_file_range first (Linux 4.5+, pure kernel copy) */
+    //fprintf(stderr, "1\n");
+    while (left > 0) {
+        off_t off_out = 0;
+        ssize_t n = copy_file_range(src_fd, &src_off, dst_fd, &off_out, left, 0);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EINVAL || errno == ENOSYS || errno == EXDEV) {
+                //perror("copy_file_range");
+                break;          /* fall through to sendfile */
+            }
+            return -1;
+        }
+
+        if (n == 0)
+            break;
+        left -= n;
+    }
+    if (left == 0)
+        goto seek_reset;
+    if (ftruncate(dst_fd, 0) < 0)
+       return -1;              /* wipe partial copy_file_range data */
+#endif
+#if _USE_SENDFILE
+    /* Fallback: sendfile (Linux 2.6.33+, also kernel-internal copy) */
+    //fprintf(stderr, "2\n");
+    while (left > 0) {
+        ssize_t n = sendfile(dst_fd, src_fd, &src_off, left);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EINVAL || errno == ENOSYS || errno == EXDEV) {
+                //perror("sendfile");
+                break;           /* fall through to mmap+write */
+            }
+            return -1;
+        }
+        if (n == 0)
+            break;
+        left -= n;
+    }
+    if (left == 0)
+        goto seek_reset;
+#endif
+#if _USE_MMPWRITE
+    //fprintf(stderr, "3, left: %lu\n", left);
+    /* ---- mmap the whole file (zero-copy read source) ---- */
+    static unsigned char *mmap_base = NULL;
+    if(!mmap_base) {
+        mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, src_fd, 0);
+        if (mmap_base == MAP_FAILED) {
+            perror("mmap");
+            close(src_fd);
+            return 1;
+        }
+        close(src_fd);   /* fd no longer needed; mapping stays valid */
+        src_fd = -1;
+    }
+    /* Ultimate fallback: mmap + write (what you have now) */
+    unsigned char *src = mmap_base + src_off;
+    while (left > 0) {
+        ssize_t w = write(dst_fd, src, left);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("write");
+            return -1;
+        }
+        src += w;
+        left -= w;
+    }
+#endif
+seek_reset:
+    if (lseek(dst_fd, 0, SEEK_SET) == (off_t)-1)
+        return -1;
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Fork gzip; infd is a ready-to-read fd (e.g. memfd at offset 0)    */
 /* ------------------------------------------------------------------ */
-static inline int spawn_gzip(int infd, Chunk *c)
+static int spawn_gzip(int infd, chunk_t *c)
 {
     c->pout = create_memfd("gz_out");
     if (c->pout < 0) {
@@ -100,7 +198,7 @@ static inline int spawn_gzip(int infd, Chunk *c)
 /* Copy compressed chunk memfd to stdout                              */
 /* ------------------------------------------------------------------ */
 
-static ALWAYS_INLINE int dump_chunk_to_stdout(Chunk *c)
+static int dump_chunk_to_stdout(chunk_t *c)
 {
     static char *buf = NULL;
     if (lseek(c->pout, 0, SEEK_SET) == (off_t)-1)
@@ -136,7 +234,6 @@ int main(int argc, char **argv)
 {
     int ret = 0;
     off_t total;
-    unsigned char *mmap_base;
 
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
@@ -167,15 +264,6 @@ int main(int argc, char **argv)
     }
     total = st.st_size;
 
-    /* ---- mmap the whole file (zero-copy read source) ---- */
-    mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
-    if (mmap_base == MAP_FAILED) {
-        perror("mmap");
-        close(infd);
-        return 1;
-    }
-    close(infd);   /* fd no longer needed; mapping stays valid */
-
     /* ---- decide chunk size and total number of chunks ---- */
     int nseg = MAX_SEGMENTS, i = 1;
     size_t chunk_size = total;
@@ -189,7 +277,7 @@ int main(int argc, char **argv)
 
     off_t pos = 0;
     while (pos < total) {
-        Chunk chunks[MAX_SEGMENTS];
+        chunk_t chunks[MAX_SEGMENTS];
         int batch_chunks = 0;
 
         /* ---- define batch boundaries ---- */
@@ -208,23 +296,12 @@ int main(int argc, char **argv)
         /* ---- STAGE: copy each chunk into its own memfd ---- */
         for (int j = 0; j < batch_chunks; j++) {
             chunks[j].infd = create_memfd("chunk_in");
-            if (chunks[j].infd < 0)
+            if (chunks[j].infd < 0) {
+                perror("create_memfd");
                 goto cleanup;
-
-            size_t left = chunks[j].len;
-            unsigned char *src = mmap_base + chunks[j].offset;
-            while (left > 0) {
-                ssize_t w = write(chunks[j].infd, src, left);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    perror("write memfd");
-                    goto cleanup;
-                }
-                src += w;
-                left -= w;
             }
-            if (lseek(chunks[j].infd, 0, SEEK_SET) == (off_t)-1) {
-                perror("lseek memfd");
+            if (stage_chunk(infd, total, &chunks[j]) < 0) {
+                perror("stage_chunk");
                 goto cleanup;
             }
         }
@@ -235,12 +312,12 @@ int main(int argc, char **argv)
                 chunks[j].infd = -1; /* spawn closed it on failure */
                 goto cleanup;
             }
-            chunks[j].infd = -1; /* ownership transferred to child */
         }
-
 
         for (int j = 0; j < batch_chunks; j++) {
             int status;
+            fdatasync(chunks[j].infd);
+            chunks[j].infd = -1; /* ownership transferred to child */
             /* ---- WAIT children ---- */
             if (waitpid(chunks[j].pid, &status, 0) < 0)
                 perror("waitpid");
@@ -267,5 +344,6 @@ int main(int argc, char **argv)
     }
 
     //munmap(mmap_base, total);
+    //fdatasync(STDOUT_FILENO);
     return ret;
 }
