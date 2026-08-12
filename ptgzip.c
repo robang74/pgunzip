@@ -15,8 +15,12 @@
 #include <zlib.h>
 #include <pthread.h>
 
-#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 #define MAX_SEGMENTS    6
+#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
+
+#ifndef _BE_VERBOSE
+#define _BE_VERBOSE     0
+#endif
 
 typedef struct {
     off_t   offset;
@@ -26,11 +30,12 @@ typedef struct {
     size_t  out_cap;
     size_t  out_len;
     int     error;
-} Chunk;
+} chunk_t;
 
 /* ------------------------------------------------------------------ */
 /* Exact upper bound for a gzip chunk without keeping a stream alive   */
 /* ------------------------------------------------------------------ */
+#if 0
 static size_t gzip_bound_size(size_t src_len)
 {
     z_stream strm = {0};
@@ -41,19 +46,26 @@ static size_t gzip_bound_size(size_t src_len)
     deflateEnd(&strm);
     return bound;
 }
-
+#endif
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer     */
 /* ------------------------------------------------------------------ */
 static void *thread_compress(void *arg)
 {
-    Chunk *c = arg;
+    chunk_t *c = arg;
     z_stream strm = {0};
 
     int ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
                            15 + 16, 8, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         c->error = 1;
+        return NULL;
+    }
+    c->out_cap = c->len + (c->len >> 9) + 256;
+    c->out = malloc(c->out_cap);
+    if (!c->out) {
+        perror("malloc");
+        //munmap(mmap_base, total);
         return NULL;
     }
 
@@ -123,43 +135,35 @@ int main(int argc, char **argv)
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
-    int total_chunks;
-    size_t chunk_size;
-    {
-        int mult = 1;
-        do {
-            total_chunks = MAX_SEGMENTS * mult++;
-            chunk_size = (total + total_chunks - 1) / total_chunks;
-        } while (chunk_size > MAX_TARGET);
-    }
+    size_t chunk_size = total;
+    int nseg = 0;
+    do {
+        nseg += MAX_SEGMENTS;
+        chunk_size = (total + (nseg - 1)) / nseg;
+    } while (chunk_size > MAX_TARGET);
+    chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
+#if _BE_VERBOSE
     fprintf(stderr, "chunks: %d x %zu = %ld / %d\n",
-            MAX_SEGMENTS, chunk_size, total, total_chunks);
-
-    Chunk chunks[MAX_SEGMENTS];
+            MAX_SEGMENTS, chunk_size, total, nseg);
+#endif
+    chunk_t chunks[MAX_SEGMENTS];
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    for (int batch_start = 0; batch_start < total_chunks; batch_start += MAX_SEGMENTS) {
+    for (int batch_start = 0; batch_start < nseg; batch_start += MAX_SEGMENTS) {
         int batch_end = batch_start + MAX_SEGMENTS;
-        if (batch_end > total_chunks)
-            batch_end = total_chunks;
+        if (batch_end > nseg)
+            batch_end = nseg;
         int nbatch = batch_end - batch_start;
 
         /* setup chunk descriptors and output buffers */
         for (int i = 0; i < nbatch; i++) {
             int idx = batch_start + i;
             chunks[i].offset = (off_t)idx * chunk_size;
-            chunks[i].len = (idx == total_chunks - 1)
+            chunks[i].len = (idx == nseg - 1)
                           ? (size_t)(total - chunks[i].offset)
                           : chunk_size;
             chunks[i].in = mmap_base + chunks[i].offset;
-            chunks[i].out_cap = gzip_bound_size(chunks[i].len);
-            chunks[i].out = malloc(chunks[i].out_cap);
-            if (!chunks[i].out) {
-                perror("malloc");
-                //munmap(mmap_base, total);
-                return 1;
-            }
             chunks[i].error = 0;
         }
 

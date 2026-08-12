@@ -39,6 +39,10 @@
 #define _OUT_MEMAPW   1
 #endif
 
+#ifndef _BE_VERBOSE
+#define _BE_VERBOSE   0
+#endif
+
 typedef struct {
     off_t   offset;
     size_t  len;
@@ -194,7 +198,7 @@ static int spawn_gzip(int infd, chunk_t *c)
             _exit(126);
         close(c->pout);
 
-        execlp("/bin/gzip", "gzip", "-c", (char *)NULL);
+        execlp("/bin/gzip", "gzip", "-nc", (char *)NULL);
         _exit(127);
     }
 
@@ -366,15 +370,18 @@ int main(int argc, char **argv)
     total = st.st_size;
 
     /* ---- decide chunk size and total number of chunks ---- */
-    int nseg = MAX_SEGMENTS, i = 1;
     size_t chunk_size = total;
+    int nseg = 0;
     do {
-        chunk_size = (total + (nseg * i - 1)) / (nseg * i);
-        i++;
+        nseg += MAX_SEGMENTS;
+        chunk_size = (total + (nseg - 1)) / nseg;
     } while (chunk_size > MAX_TARGET);
-    i--; /* actual multiplier */
+    chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
+
+#if _BE_VERBOSE
     fprintf(stderr, "chunks: %d x %zu = %ld / %d\n",
-            nseg, chunk_size, total, nseg * i);
+            MAX_SEGMENTS, chunk_size, total, nseg);
+#endif
 
     off_t pos = 0;
     while (pos < total) {
@@ -383,7 +390,7 @@ int main(int argc, char **argv)
 
         /* ---- define batch boundaries ---- */
         off_t off = pos;
-        for (int j = 0; j < nseg && off < total; j++) {
+        for (int j = 0; j < MAX_SEGMENTS && off < total; j++) {
             chunks[j].offset = off;
             chunks[j].len = (off + (off_t)chunk_size > total)
                           ? (size_t)(total - off) : chunk_size;

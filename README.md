@@ -5,6 +5,13 @@ experimenting a 100% back-compatible parallel gzip inflate format
 ## benchmarks
 
 ```
+2669344	./qemu.elf.gz
+2672384	./qemu.elf.gz (ptest.sh, 0.12%)
+2677603	./qemu.elf.gz (pxgzip  , 0.31%)
+2734728	./qemu.elf.gz (ptgzip  , 2.45% **TODO**)
+```
+
+```
 # using zlib-ng + libpthread
 $ make
 $ for i in $(seq 1 11); do time ./ptgzip \
