@@ -14,9 +14,8 @@
 #include <signal.h>
 #include <sys/mman.h>
 
-#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 #define MAX_SEGMENTS    6
-#define IO_BUFSZ       (64 * 1024)
+#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 
 #define ALWAYS_INLINE __attribute__((always_inline)) inline
 
@@ -100,15 +99,16 @@ static inline int spawn_gzip(int infd, Chunk *c)
 /* ------------------------------------------------------------------ */
 /* Copy compressed chunk memfd to stdout                              */
 /* ------------------------------------------------------------------ */
-static inline int dump_chunk_to_stdout(Chunk *c)
-{
-    char buf[IO_BUFSZ];
 
+static ALWAYS_INLINE int dump_chunk_to_stdout(Chunk *c)
+{
+    static char *buf = NULL;
     if (lseek(c->pout, 0, SEEK_SET) == (off_t)-1)
         return -1;
-
+    if(!buf) buf = malloc(MAX_TARGET);
+    if(!buf) return -1;
     while (1) {
-        ssize_t n = read(c->pout, buf, IO_BUFSZ);
+        ssize_t n = read(c->pout, buf, MAX_TARGET);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -135,6 +135,8 @@ static inline int dump_chunk_to_stdout(Chunk *c)
 int main(int argc, char **argv)
 {
     int ret = 0;
+    off_t total;
+    unsigned char *mmap_base;
 
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
@@ -148,7 +150,6 @@ int main(int argc, char **argv)
         perror("open");
         return 1;
     }
-
     struct stat st;
     if (fstat(infd, &st) < 0) {
         perror("fstat");
@@ -160,15 +161,14 @@ int main(int argc, char **argv)
         close(infd);
         return 1;
     }
-
-    off_t total = st.st_size;
-    if (total == 0) {
+    if (st.st_size == 0) {
         close(infd);
         return 0;
     }
+    total = st.st_size;
 
     /* ---- mmap the whole file (zero-copy read source) ---- */
-    unsigned char *mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
+    mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
     if (mmap_base == MAP_FAILED) {
         perror("mmap");
         close(infd);
