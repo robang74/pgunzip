@@ -29,6 +29,16 @@
 #define _USE_MMPWRITE 1
 #endif
 
+#ifndef _OUT_SENDFILE
+#define _OUT_SENDFILE 1
+#endif
+#ifndef _OUT_SPLICE
+#define _OUT_SPLICE   1
+#endif
+#ifndef _OUT_MEMAPW
+#define _OUT_MEMAPW   1
+#endif
+
 typedef struct {
     off_t   offset;
     size_t  len;
@@ -200,31 +210,122 @@ static int spawn_gzip(int infd, chunk_t *c)
 
 static int dump_chunk_to_stdout(chunk_t *c)
 {
-    static char *buf = NULL;
-    if (lseek(c->pout, 0, SEEK_SET) == (off_t)-1)
-        return -1;
-    if(!buf) buf = malloc(MAX_TARGET);
-    if(!buf) return -1;
-    while (1) {
-        ssize_t n = read(c->pout, buf, MAX_TARGET);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (n == 0)
-            break;
+    off_t left = 0;
+    struct stat st_in;
 
-        size_t done = 0;
-        while (done < (size_t)n) {
-            ssize_t w = write(STDOUT_FILENO, buf + done, n - done);
-            if (w < 0) {
+    /* Learn how many bytes the child actually wrote */
+    if (fstat(c->pout, &st_in) < 0)
+        return -1;
+    left = st_in.st_size;
+    if (left == 0)
+        return 0;
+#if _OUT_SENDFILE || _OUT_SPLICE
+    static struct stat st_out;
+    static int first = 1;
+
+    if(first) {
+        if (fstat(STDOUT_FILENO, &st_out) < 0)
+            return -1;
+        first = 0;
+    }
+#endif
+#if _OUT_SENDFILE
+    if (S_ISREG(st_out.st_mode)) {
+    /* ---- 1. Regular file stdout: sendfile (zero-copy) ---- */
+    //fprintf(stderr, "1\n");
+        off_t off = 0;
+        while (left > 0) {
+            ssize_t n = sendfile(STDOUT_FILENO, c->pout, &off, left);
+            if (n < 0) {
                 if (errno == EINTR) continue;
+                if (errno == EINVAL || errno == ENOSYS || errno == EXDEV) {
+                    perror("sendfile");
+                    break;           /* fall through to splice */
+                }
                 return -1;
             }
-            done += w;
+            if (n == 0)
+                break;
+            left -= n;
         }
+        if (left == 0)
+            return 0;
+    } else
+#endif
+#if _OUT_SPLICE
+    if (S_ISFIFO(st_out.st_mode)) {
+    /* ---- 2. Pipe stdout: splice (zero-copy) ---- */
+    //fprintf(stderr, "2\n");
+        off_t off = 0;
+        while (left > 0) {
+            ssize_t n = splice(c->pout, &off, STDOUT_FILENO, NULL, left,
+                               SPLICE_F_MOVE | SPLICE_F_MORE);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                if (errno == EINVAL || errno == ENOSYS || errno == EXDEV) {
+                    perror("splice");
+                    break;           /* fall through to mmap+write */
+                }
+                return -1;
+            }
+            if (n == 0)
+                break;
+            left -= n;
+        }
+        if (left == 0)
+            return 0;
+    } else
+#endif
+    {
+#if _OUT_MEMAPW
+    /* ---- 3. Fallback: mmap memfd and write in large chunks ---- */
+    //fprintf(stderr, "3\n");
+      unsigned char *map = mmap(NULL, left, PROT_READ, MAP_PRIVATE, c->pout, 0);
+      if (map != MAP_FAILED) {
+          unsigned char *p = map;
+          while (left > 0) {
+              ssize_t w = write(STDOUT_FILENO, p, left);
+              if (w < 0) {
+                  if (errno == EINTR) continue;
+                  munmap(map, left);
+                  return -1;
+              }
+              p += w;
+              left -= w;
+          }
+          munmap(map, left);
+          return 0;
+      } else
+#endif
+      {
+    /* ---- 4. Ultimate fallback: old bounce buffer ---- */
+    //fprintf(stderr, "4\n");
+          static char *buf = NULL;
+          if (lseek(c->pout, 0, SEEK_SET) == (off_t)-1)
+              return -1;
+          if(!buf) buf = malloc(MAX_TARGET);
+          if(!buf) return -1;
+          while (1) {
+              ssize_t n = read(c->pout, buf, MAX_TARGET);
+              if (n < 0) {
+                  if (errno == EINTR) continue;
+                  return -1;
+              }
+              if (n == 0)
+                  break;
+              size_t done = 0;
+              while (done < (size_t)n) {
+                  ssize_t w = write(STDOUT_FILENO, buf + done, n - done);
+                  if (w < 0) {
+                      if (errno == EINTR) continue;
+                      return -1;
+                  }
+                  done += w;
+             }
+          }
+       }
     }
-    return 0;
+    return left;
 }
 
 /* ================================================================== */
