@@ -18,7 +18,7 @@ TARGETS   = $(TARGET) pxgzip plgzip pmgzip
 SRC       = ptgzip.c
 
 CC       ?= gcc
-CFLAGS   ?= -O2 -s -falign-functions=32
+CFLAGS   ?= -O2 -s -falign-functions=32 $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2

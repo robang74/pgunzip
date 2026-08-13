@@ -33,23 +33,11 @@ typedef struct {
 } chunk_t;
 
 /* ------------------------------------------------------------------ */
-/* Exact upper bound for a gzip chunk without keeping a stream alive   */
+/* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
-#if 0
-static size_t gzip_bound_size(size_t src_len)
-{
-    z_stream strm = {0};
-    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                     15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
-        return src_len + (src_len >> 9) + 256;
-    size_t bound = deflateBound(&strm, src_len);
-    deflateEnd(&strm);
-    return bound;
-}
+#ifndef _USE_OPT
+#define _USE_OPT 1
 #endif
-/* ------------------------------------------------------------------ */
-/* Thread worker: compress one chunk directly to its output buffer     */
-/* ------------------------------------------------------------------ */
 #ifndef _ONE_ZDF
 #define _ONE_ZDF 1
 #endif
@@ -91,6 +79,7 @@ static size_t gzip_bound_size(size_t src_len)
 #define _deflate           deflate
 #define _stream_t        z_stream
 #endif
+static int compression_level = Z_DEFAULT_COMPRESSION;
 static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
@@ -101,7 +90,7 @@ static void *thread_compress(void *arg)
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
      *    Without +16 the output cannot be concatenated into a valid .gz file.
      */
-    ret = _deflate_init2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+    ret = _deflate_init2(&strm, compression_level, Z_DEFLATED,
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         c->error = 1;
@@ -159,23 +148,116 @@ endfnc:
     return NULL;
 }
 
-/* ================================================================== */
-/* Main                                                               */
-/* ================================================================== */
+static size_t full_write(int fd, const void *buf, size_t len)
+{
+    unsigned char *p = (unsigned char *)buf;
+
+    while (len > 0) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            perror("write");
+            return 1;
+        }
+        p   += w;
+        len -= w;
+    }
+
+    return p - (unsigned char *)buf;
+}
+
+/* ========================================================================== */
+/* Main                                                                       */
+/* ========================================================================== */
+#include <getopt.h>
+#define print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
+
+static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
+static int opt_help      = 0;    /* -h, --help */
+static int opt_quiet     = 0;    /* -q, --quiet */
+       // compression_level ;    /* -#, --fast (=1), --best (=9) */
+static int opt_keep      = 0;    /* -k, --keep */
+static int opt_memory    = 0;    /* -m, --memory (KiB) */
+static int opt_verbose   = 0;    /* -v, --verbose */
+
+/* --- file list --- */
+static int   nfiles = 0;
+static char **names = NULL;
+
 #define TABLE_ITEMS ((uint32_t)nseg + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 #define PGZ_MAGIC_1 0x6274
 #define PGZ_MAGIC_2 0x7a70
+
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
-        return 1;
+    int c, ofd = STDOUT_FILENO, reterr = 0;
+#if _USE_OPT
+    static struct option longopts[] = {
+        {"stdout",      no_argument,       NULL, 'c'},
+        {"to-stdout",   no_argument,       NULL, 'c'},
+        {"help",        no_argument,       NULL, 'h'},
+        {"quiet",       no_argument,       NULL, 'q'},
+        {"fast",        no_argument,       NULL, '1'},
+        {"best",        no_argument,       NULL, '9'},
+        {"keep",        no_argument,       NULL, 'k'},
+        {"verbose",     no_argument,       NULL, 'v'},
+        {"memory",      required_argument, NULL, 'm'},
+        {NULL, 0, NULL, 0}
+    };
+
+    while (1) {
+        c = getopt_long(argc, argv, "chvqk123456789m:", longopts, NULL);
+        if(c == -1) break; else nfiles--;
+        switch (c) {
+        case 'c':
+            opt_stdout = 1;
+            break;
+        case 'h':
+        case '?':
+            opt_help = 1;
+            break;
+        case 'q':
+            opt_quiet = 1;
+            break;
+        case '1': case '2': case '3': case '4': case '5':
+        case '6': case '7': case '8': case '9':
+            compression_level = c - '0';
+            break;
+        case 'k':
+            opt_keep = 1;
+            break;
+        case 'v':
+            opt_verbose = 1;
+            break;
+        case 'm':
+            opt_memory = (size_t)strtoul(optarg, NULL, 0);
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* collect remaining arguments as filenames */
+    names = &argv[optind];
+    nfiles += argc;
+#else
+    names = &argv[1];
+    nfiles = (names != NULL);
+    opt_help = (argc < 2);
+#endif
+
+    if (opt_help || !nfiles) {
+        opt_quiet = 0;
+        print2("\n    Usage: %s [opts] <file>"
+               "\n     opts: -#, -v, -q, -c, -h\n\n",
+               basename(argv[0]));
+        return 0;
     }
 
     signal(SIGPIPE, SIG_IGN);
 
-    int infd = open(argv[1], O_RDONLY);
+    int infd = open(names[0], O_RDONLY);
     if (infd < 0) {
         perror("open");
         return 1;
@@ -187,7 +269,7 @@ int main(int argc, char **argv)
         return 1;
     }
     if (!S_ISREG(st.st_mode)) {
-        fprintf(stderr, "error: not a regular file\n");
+        print2("error: not a regular file\n");
         return 1;
     }
 
@@ -213,10 +295,6 @@ int main(int argc, char **argv)
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
-#if _BE_VERBOSE
-    fprintf(stderr, "chunks: %d x %zu = %ld / %d\n",
-            MAX_SEGMENTS, chunk_size, total, nseg);
-#endif
     chunk_t chunks[MAX_SEGMENTS];
     uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
     if(list) {
@@ -233,20 +311,25 @@ int main(int argc, char **argv)
         int nbatch = batch_end - batch_start;
 
         /* setup chunk descriptors and output buffers */
-        for (int i = 0; i < nbatch; i++) {
+        for (int i = 0; i < nbatch; i++)
+        {
+            chunk_t *c = &chunks[i];
             int idx = batch_start + i;
-            chunks[i].offset = (off_t)idx * chunk_size;
-            chunks[i].len = (idx == nseg - 1)
-                          ? (size_t)(total - chunks[i].offset)
-                          : chunk_size;
-            chunks[i].in = mmap_base + chunks[i].offset;
-            chunks[i].error = 0;
+            c->offset = (off_t)idx * chunk_size;
+            c->len = (idx == nseg - 1)
+                   ? (size_t)(total - c->offset)
+                   : chunk_size;
+            c->in = mmap_base + c->offset;
+            c->error = 0;
         }
 
         /* spawn worker threads */
         pthread_t threads[MAX_SEGMENTS];
-        for (int i = 0; i < nbatch; i++) {
-            if (pthread_create(&threads[i], NULL, thread_compress, &chunks[i]) != 0) {
+        for (int i = 0; i < nbatch; i++)
+        {
+            if (pthread_create(&threads[i], NULL,
+                thread_compress, &chunks[i]) != 0)
+            {
                 perror("pthread_create");
                 return 1;
             }
@@ -257,27 +340,18 @@ int main(int argc, char **argv)
             pthread_join(threads[i], NULL);
 
         /* write compressed chunks to stdout in strict segment order */
-        for (int i = 0; i < nbatch; i++) {
-            if (chunks[i].error) {
-                fprintf(stderr, "compression failed on chunk %d\n", batch_start + i);
-                return 1;
+        for (int i = 0; i < nbatch; i++)
+        {
+            chunk_t *c = &chunks[i];
+            if (c->error) {
+                print2("compression failed on chunk %d, size: %lu\n",
+                    batch_start + i, c->out_len);
+                reterr = 1;
             }
 
-            size_t left = chunks[i].out_len;
-            unsigned char *p = chunks[i].out;
-            if(list) list[n++] = left;
-            while (left > 0) {
-                ssize_t w = write(STDOUT_FILENO, p, left);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    perror("write");
-                    return 1;
-                }
-                p += w;
-                left -= w;
-                outlen += w;
-            }
-            free(chunks[i].out);
+            if(list) list[n++] = c->out_len;
+            outlen += full_write(ofd, c->out, c->out_len);
+            free(c->out);
         }
     }
     /*
@@ -292,21 +366,18 @@ int main(int argc, char **argv)
         };  sum += list[TABLE_ITEMS-1];
         left = TABLE_BSIZE;
         list[TABLE_ITEMS-2] = -sum; // sum checking code
-        
+
         unsigned char *p = (uint8_t *)list;
         unsigned r = outlen & 3; // 32-bit align
         left -= 4-r;
         p  = &p[4-r];
-        while(left > 0) {
-            ssize_t w = write(STDOUT_FILENO, p, left);
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                perror("write");
-                return 1;
-            }
-            p += w;
-            left -= w;
-        }
+        outlen += full_write(ofd, p, TABLE_BSIZE);
+    }
+
+    if(opt_verbose) {
+        fprintf(stderr, "file: %d x %zu = %ld, size: %lu (%0.1f%%, -%d)\n",
+            nseg, chunk_size, total, outlen, (float)outlen*100/total,
+            compression_level);
     }
 /*
     free(list);
@@ -314,5 +385,5 @@ int main(int argc, char **argv)
         free(chunks[j].out);
     munmap(mmap_base, total);
 */
-    return 0;
+    return reterr;
 }
