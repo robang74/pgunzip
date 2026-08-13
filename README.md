@@ -95,8 +95,8 @@ By the fixed size ELF taken as reference above, about compression troughput by t
 
 ```
 # zlib-ng + 6x libpthread (1.4x faster pigz, +2% .gz size)
-$ make
-$ nl=/dev/null; cmd="./ptgzip qemu.elf";
+$ rm -f ptgzip; make ptgzip
+$ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1350 records in
@@ -109,7 +109,7 @@ sys   0m0.188s
 ```
 ```
 # pigz -p6 (4.6x faster gzip)
-$ nl=/dev/null; cmd="/bin/pigz -cp6 qemu.elf";
+$ nl=/dev/null; cmd="/bin/pigz -cp6 qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1913 records in
@@ -122,8 +122,8 @@ sys   0m 0.176s
 ```
 ```
 # zlib-ng + 6x libpthread (3.5x faster gzip)
-# make
-$ nl=/dev/null; cmd="./ptgzip -9 qemu.elf";
+# rm -f ptgzip; make ptgzip
+$ nl=/dev/null; cmd="./ptgzip -9 qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1294 records in
@@ -136,8 +136,8 @@ sys   0m 0.189s
 ```
 ```
 # zlib + 6x libpthread (3.4x faster gzip)
-$ make
-$ nl=/dev/null; cmd="./plgzip qemu.elf";
+$ rm -f plgzip; make plgzip
+$ nl=/dev/null; cmd="./plgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1298 records in
@@ -150,8 +150,8 @@ sys   0m 0.160s
 ```
 ```
 # elf64 6x fork/exec gzip (3.3x faster gzip)
-$ make
-$ nl=/dev/null; cmd="./pxgzip qemu.elf";
+$ rm -f pxgzip; make pxgzip
+$ nl=/dev/null; cmd="./pxgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1339 records in
@@ -164,8 +164,8 @@ sys   0m 0.428s
 ```
 ```
 # miniz + 6x libpthread (3.1x faster gzip)
-$ make
-$ nl=/dev/null; cmd="./pmgzip qemu.elf";
+$ rm -f pmgzip; make pmgzip
+$ nl=/dev/null; cmd="./pmgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1307 records in
@@ -178,7 +178,7 @@ sys   0m 0.171s
 ```
 ```
 # script 6x fork/exec gzip (2.9x faster gzip)
-$ nl=/dev/null; cmd="sh ./ptest.sh qemu.elf";
+$ nl=/dev/null; cmd="sh ./ptest.sh qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1350 records in
@@ -194,7 +194,7 @@ pgz:012f # 0x12f << 12 = 303 x 4KiB = 1241088 (1:6 chunk size)
 ```
 ```
 # gzip
-$ nl=/dev/null; cmd="/bin/gzip -c qemu.elf";
+$ nl=/dev/null; cmd="/bin/gzip -c qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1230 records in
