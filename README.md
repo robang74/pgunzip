@@ -39,7 +39,7 @@ About compressed output suitable for the new format, and 100% back-compatible ve
 2660782	./qemu.elf.gz (ptgzip -9 , -0.30%)
 2666065	./qemu.elf.gz (pigz -p8  , -0.12%)
 2669344	./qemu.elf.gz (gzip)
-2672384	./qemu.elf.gz (ptest.sh  , +0.12%)
+2673225	./qemu.elf.gz (ptest.sh  , +0.15%)
 2676360	./qemu.elf.gz (pmgzip    , +0.26%)
 2677603	./qemu.elf.gz (pxgzip    , +0.31%)
 2717194	./qemu.elf.gz (ptgzip    , +1.79%)
@@ -82,118 +82,101 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 By the fixed size ELF taken as reference above, about compression troughput by time of execution:
 
 ```
-# zlib-ng + 6x libpthread (1.5x faster pigz, +2% .gz size)
+# zlib-ng + 6x libpthread (1.4x faster pigz, +2% .gz size)
 $ make
-$ for i in $(seq 1 11); do time ./ptgzip \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.057s
-real	0m0.043s
-real	0m0.044s
-real	0m0.042s
-real	0m0.043s
-real	0m0.045s
-real	0m0.044s
-real	0m0.042s
-real	0m0.045s
-real	0m0.044s
-real	0m0.044s
+$ nl=/dev/null; cmd="./ptgzip qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1350 records in
+0+1350 records out
+81517680 bytes (82 MB, 78 MiB) copied, 1.35674 s, 60.1 MB/s
+
+real  0m1.358s # avg: 45.3 ms
+user  0m5.873s
+sys   0m0.188s
 ```
 ```
-# pigz -p8 (5x faster gzip)
-$ for i in $(seq 1 11); do time /bin/pigz -c \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.083s
-real	0m0.061s
-real	0m0.061s
-real	0m0.062s
-real	0m0.062s
-real	0m0.064s
-real	0m0.063s
-real	0m0.063s
-real	0m0.063s
-real	0m0.064s
-real	0m0.063s
+# pigz -p6 (4.6x faster gzip)
+$ nl=/dev/null; cmd="/bin/pigz -cp6 qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1913 records in
+0+1913 records out
+79981950 bytes (80 MB, 76 MiB) copied, 1.90875 s, 41.9 MB/s
+
+real  0m 1.910s # avg: 63.7 ms
+user  0m10.809s
+sys   0m 0.176s
 ```
 ```
-# zlib + 6x libpthread (3x faster gzip)
-$ gcc -O2 -s ptgzip.c -o plgzip -lz -lpthread
-$ for i in $(seq 1 11); do time ./plgzip \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.100s
-real	0m0.076s
-real	0m0.078s
-real	0m0.080s
-real	0m0.081s
-real	0m0.077s
-real	0m0.075s
-real	0m0.077s
-real	0m0.075s
-real	0m0.079s
-real	0m0.078s
+# zlib + 6x libpthread (3.4x faster gzip)
+$ make
+$ nl=/dev/null; cmd="./plgzip qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1298 records in
+0+1298 records out
+80107320 bytes (80 MB, 76 MiB) copied, 2.58728 s, 31.0 MB/s
+
+real  0m 2.589s # avg: 86.3
+user  0m11.511s
+sys   0m 0.160s
 ```
 ```
-# 6x fork/exec gzip (3x faster gzip)
-$ gcc -O2 -s pxgzip.c -o pxgzip
-$ for i in $(seq 1 11); do time ./pxgzip \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.101s
-real	0m0.092s
-real	0m0.090s
-real	0m0.091s
-real	0m0.092s
-real	0m0.091s
-real	0m0.092s
-real	0m0.091s
-real	0m0.092s
-real	0m0.091s
-real	0m0.094s
+# elf64 6x fork/exec gzip (3.3x faster gzip)
+$ make
+$ nl=/dev/null; cmd="./pxgzip qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1339 records in
+0+1339 records out
+80328090 bytes (80 MB, 77 MiB) copied, 2.66351 s, 30.2 MB/s
+
+real  0m 2.665s # avg: 88.8 ms
+user  0m11.654s
+sys   0m 0.428s
 ```
 ```
-# miniz + 6x libpthread (3x faster gzip)
-$ for i in $(seq 1 11); do time ./pmgzip \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.112s
-real	0m0.096s
-real	0m0.095s
-real	0m0.099s
-real	0m0.095s
-real	0m0.095s
-real	0m0.095s
-real	0m0.097s
-real	0m0.096s
-real	0m0.094s
-real	0m0.103s
+# miniz + 6x libpthread (3.1x faster gzip)
+$ make
+$ nl=/dev/null; cmd="./pmgzip qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1307 records in
+0+1307 records out
+80292720 bytes (80 MB, 77 MiB) copied, 2.83811 s, 28.3 MB/s
+
+real  0m 2.839s # avg: 94.6 ms
+user  0m13.154s
+sys   0m 0.171s
 ```
 ```
-# 6x fork/exec gzip (3x faster gzip)
-$ for i in $(seq 1 11); do time sh ptest.sh \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.119s
-real	0m0.101s
-real	0m0.099s
-real	0m0.097s
-real	0m0.099s
-real	0m0.097s
-real	0m0.099s
-real	0m0.093s
-real	0m0.104s
-real	0m0.101s
-real	0m0.104s
+# script 6x fork/exec gzip (2.9x faster gzip)
+$ nl=/dev/null; cmd="sh ./ptest.sh qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1350 records in
+0+1350 records out
+80196750 bytes (80 MB, 76 MiB) copied, 2.98502 s, 26.9 MB/s
+
+real  0m 2.986s # avg: 99.5 ms
+user  0m11.567s
+sys   0m 0.793s
+
+$ tail -c8 qemu.elf.sgz
+pgz:012f # 0x12f << 12 = 303 x 4KiB = 1241088 (1:6 chunk size)
 ```
 ```
 # gzip
-$ for i in $(seq 1 11); do time /bin/gzip -c \
-  qemu.elf >/dev/null; done 2>&1 | grep real
-real	0m0.329s
-real	0m0.312s
-real	0m0.307s
-real	0m0.312s
-real	0m0.322s
-real	0m0.308s
-real	0m0.316s
-real	0m0.314s
-real	0m0.313s
-real	0m0.307s
-real	0m0.309s
+$ nl=/dev/null; cmd="/bin/gzip -c qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1230 records in
+0+1230 records out
+80080320 bytes (80 MB, 76 MiB) copied, 8.78252 s, 9.1 MB/s
+
+real  0m8.784s # avg: 292.8 ms
+user  0m8.679s
+sys   0m0.089s
 ```
 
