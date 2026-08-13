@@ -1,5 +1,17 @@
 # pgunzip
 
+Simplicity is the ultimate sophistication (cit.)
+
+### Index
+
+- [Rationale](#rationale) about un/gzip parallel format benefits
+- [Deflating](#deflating) about gzip parallel compress performance
+- [Inflating](#inflating) about gunzip parallel decompress testing
+
+<br>
+
+## Rationale
+
 Developing an experimental 100% back-compatible parallel `gzip` inflate format which can compete with `pgiz` when compressing but improve the throughput when decompressing leveraging the parallelism available on last decade low-power CPUs 15W TDP (Intel class-U for laptop, 2017). Obviously, the format can be leveraged also by ARM processors (Cortex-A65AE, 2019) which are providing a similar parallelism as capability.
 
 The RAM usage can vary between 2x6MB and 3x6MB, but the maximum buffer size is a configurable parameter that can be reduced by 2 or 4 times without creating a relevant downside effect. In a range between 512KB and 2MB each buffer of 6, the compression ratio is under 0.2%, while using a different library set can impact about 2% (actually, issue under investigation). Compression speed varies less than 10% by an initial raw estimation, while the library set can halve the time.
@@ -28,7 +40,7 @@ Last but not least, during the development of this project the support for gzip 
 
 <br>
 
-## Benchmarks
+## Deflating
 
 About compressed output suitable for the new format, and 100% back-compatible versus the standard gzip output:
 
@@ -192,5 +204,41 @@ $ eval "$cmd" >$nl; time for i in $(seq 1 30);
 real  0m8.784s # avg: 292.8 ms
 user  0m8.679s
 sys   0m0.089s
+```
+
+<br>
+
+## Inflating
+
+Clearly a shell script isn't the correct approach for inflating a parallel streams into a single file. Despite the shortcomings of the tools used, the evarage hot cached run is nearly 2x faster than standard `gzip` and faster than `pigz`, also.
+
+```
+# script 6x fork/exec gzip (1.9x faster gunzip)
+$ cmd="sh ptest.sh qemu.elf.sgz"; eval "$cmd";
+$ time for i in $(seq 1 60); do eval "$cmd"; done
+
+real  0m1.583s
+user  0m4.261s
+sys   0m2.419s
+
+$ diff qemu.elf qemu.elf.sgz.dz && echo res=OK
+res=OK
+```
+```
+# pigz -dc (1.3x faster gunzip)
+$ cmd="/bin/pigz -dc qemu.elf.sgz > test.dz"; eval "$cmd"
+$ time for i in $(seq 1 60); do eval "$cmd"; done
+
+real  0m2.152s
+user  0m1.972s
+sys   0m0.514s
+```
+```
+$ cmd="/bin/gzip -qdc qemu.elf.sgz > test.dz"; eval "$cmd"
+$ time for i in $(seq 1 60); do eval "$cmd"; done
+
+real  0m2.891s
+user  0m2.519s
+sys   0m0.296s
 ```
 
