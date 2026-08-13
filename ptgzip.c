@@ -40,6 +40,9 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
+#ifndef _OUT_FREE
+#define _OUT_FREE 0
+#endif
 #ifndef _USE_OPT
 #define _USE_OPT 1
 #endif
@@ -84,6 +87,7 @@ typedef struct {
 #define _deflate           deflate
 #define _stream_t        z_stream
 #endif
+#define ZBUF_MAX_SIZE (MAX_TARGET + (MAX_TARGET >> 9) + 256)
 static int compression_level = Z_DEFAULT_COMPRESSION;
 static void *thread_compress(void *arg)
 {
@@ -106,8 +110,10 @@ static void *thread_compress(void *arg)
      *    Incompressible data EXPANDS by ~0.1 % + headers.
      *    c->len alone guarantees a buffer overrun on random bytes.
      */
-    c->out_cap = _deflate_bound(&strm, c->len);
-    c->out = malloc(c->out_cap);
+    if(_OUT_FREE || !c->out) {
+        c->out_cap = _deflate_bound(&strm, c->len);
+        c->out = malloc(c->out_cap);
+    }
     if (!c->out) {
         goto reterr;
     }
@@ -135,8 +141,10 @@ static void *thread_compress(void *arg)
 #endif
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
+#if _OUT_FREE
         free(c->out);
         c->out = NULL;
+#endif
 reterr:
         c->error = 1;
 //      goto endfnc;
@@ -174,17 +182,42 @@ static off_t input_filesize;
 static size_t chunk_size;
 static int tot_nseg;
 
-static inline chunk_t *chunk_init(chunk_t *c, int idx)
+static ALWAYS_INLINE
+chunk_t *chunk_init(chunk_t *c, int idx)
 {
+    size_t len;
+init_retray:
     c->offset = (off_t)idx * chunk_size;
-    c->len = (idx == tot_nseg - 1)
+    len = (idx == tot_nseg - 1)
            ? (size_t)(input_filesize - c->offset)
            : chunk_size;
+#if _OUT_FREE
+#else
+    if(c->out && len > c->len) {
+        exit(127); //RAF,TODO: debug only
+        free(c->out);
+        memset(c, 0, sizeof(chunk_t));
+        goto init_retray;
+    }
+#endif
+    c->len = len;
     c->in = mmap_base + c->offset;
     c->state = 1;
     c->error = 0;
     c->idx = idx;
     return c;
+}
+
+static ALWAYS_INLINE
+int chunk_work_start(pthread_t *p, chunk_t *c, int idx)
+{
+    if (pthread_create(p, NULL, thread_compress, chunk_init(c, idx)))
+    {
+        perror("pthread_create");
+        return 1;
+    }
+    //pthread_join(*p, NULL);
+    return 0;
 }
 
 /* ========================================================================== */
@@ -318,7 +351,7 @@ int main(int argc, char **argv)
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
-    chunk_t chunks[MAX_SEGMENTS];
+    chunk_t chunks[MAX_SEGMENTS] = {0};
     uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
     if(list) {
         list[n++] =  0;
@@ -326,24 +359,19 @@ int main(int argc, char **argv)
     }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    for (int srt = 0; srt < tot_nseg; srt += MAX_SEGMENTS)
+    for (int current = 0; current < tot_nseg; )
     {
-        int end = srt + MAX_SEGMENTS;
+        int end = current + MAX_SEGMENTS;
         if (end > tot_nseg)
             end = tot_nseg;
-        int nbatch = end - srt;
+        int nbatch = end - current;
 
         /* setup chunk descriptors and output buffers, spawn worker threads */
         pthread_t threads[MAX_SEGMENTS];
         for (int i = 0; i < nbatch; i++)
-        {
-            if (pthread_create(&threads[i], NULL, thread_compress,
-                chunk_init(&chunks[i], srt + i)) != 0)
-            {
-                perror("pthread_create");
+            if (chunk_work_start(&threads[i],
+                &chunks[i], current++))
                 return 1;
-            }
-        }            
 
         /* write compressed chunks to stdout in strict segment order */
         for (int i = 0; i < nbatch; i++)
@@ -352,16 +380,20 @@ int main(int argc, char **argv)
             chunk_t *c = &chunks[i];
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
-                    srt + i, c->out_len);
+                    current + i, c->out_len);
                 return 1;
             }
 
             if(list) list[n++] = c->out_len;
             outlen += full_write(ofd, c->out, c->out_len);
+#if _OUT_FREE
             free(c->out);
+            c->out = NULL;
+#endif
             c->state = 0;
         }
     }
+
     /*
      * https://github.com/robang74/uzpexec#parallel-ungzip
      */
