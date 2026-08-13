@@ -42,19 +42,29 @@ Last but not least, during the development of this project the support for gzip 
 
 ## Deflating
 
-About compressed output suitable for the new format, and 100% back-compatible versus the standard gzip output:
+About compressed output suitable for the new format, and 100% back-compatible versus the standard gzip output.
+
+> [!NOTE]
+> 
+> Note that these numbers are related to `STDOUT` (redirected to `/dev/null`) which is sequential by definition and supports a single I/O thread. When writing to a file that can be addressed by lseek at every position then also I/O parallelism gets into the picture. Moreover, without strict ordered writing, the first thread that completes is served while currently the next-in-order is a blocking thread. Until it completes, the whole I/O process remains on pending status.
 
 ```
 7439552	qemu.elf: ELF 64-bit LSB executable, x86-64,
         version 1 (SYSV), statically linked, stripped
 
+2651894	./qemu.elf.gz (pigz -9p8 , -0.65% , +6%  )
+2654396	./qemu.elf.gz (gzip -9   , -0.56% , 1/3  )
+2660782	./qemu.elf.gz (= -p8 2^18, -0.30% , 4.3x )
 2660782	./qemu.elf.gz (ptgzip -9 , -0.30% , 3.5x )
+2666065	./qemu.elf.gz (pigz -p8  , -0.12% , 5.2x )
 2666065	./qemu.elf.gz (pigz -p6  , -0.12% , 4.6x )
 2669344	./qemu.elf.gz (gzip      ,   =    ,  =   )
+2670184	./qemu.elf.gz (plgzip    , +0.03% , 3.6x )
 2673225	./qemu.elf.gz (ptest.sh  , +0.15% , 2.9x )
 2676360	./qemu.elf.gz (pmgzip    , +0.26% , 3.1x )
 2677603	./qemu.elf.gz (pxgzip    , +0.31% , 3.3x )
-2717194	./qemu.elf.gz (ptgzip    , +1.79% , 6.5x )
+2717194	./qemu.elf.gz (ptgzip    , +1.79% , 6.8x )
+2717194	./qemu.elf.gz (= -p8 2^18, +1.79% , 8.2x )
 ```
 
 The format presented by this [table](https://github.com/robang74/uzpexec#parallel-ungzip) below is reported below in terms of hexadecimal values where `[0098 6274]` is the start of the table and the `[7a70 000c]` its end. The table is presented in its minimal size for a 6 chunks .gz file:
@@ -99,13 +109,14 @@ $ rm -f ptgzip; make ptgzip
 $ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1374 records in
-0+1374 records out
-81517740 bytes (82 MB, 78 MiB) copied, 1.30963 s, 62.2 MB/s
+0+1385 records in
+0+1385 records out
+81517740 bytes (82 MB, 78 MiB) copied, 1.30003 s, 62.7 MB/s
 
-real  0m1.311s
-user  0m5.867s
-sys   0m0.177s
+real  0m1.301s # avg: 43.4 ms
+user  0m5.967s
+sys   0m0.167s
+
 ```
 ```
 # pigz -p6 (4.6x faster gzip)
@@ -135,18 +146,18 @@ user  0m11.879s
 sys   0m 0.189s
 ```
 ```
-# zlib + 6x libpthread (3.4x faster gzip)
+# zlib + 6x libpthread (3.6x faster gzip)
 $ rm -f plgzip; make plgzip
 $ nl=/dev/null; cmd="./plgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1298 records in
-0+1298 records out
-80107320 bytes (80 MB, 76 MiB) copied, 2.58728 s, 31.0 MB/s
+0+1325 records in
+0+1325 records out
+80107440 bytes (80 MB, 76 MiB) copied, 2.46495 s, 32.5 MB/s
 
-real  0m 2.589s # avg: 86.3
-user  0m11.511s
-sys   0m 0.160s
+real  0m 2.466s # avg: 82.2 ms
+user  0m11.560s
+sys   0m 0.148s
 ```
 ```
 # elf64 6x fork/exec gzip (3.3x faster gzip)

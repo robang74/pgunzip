@@ -193,7 +193,8 @@ init_retray:
            : chunk_size;
 #if _OUT_FREE
 #else
-    if(c->out && len > c->len) {
+    if(c->out && c->len && len > c->len) {
+        fprintf(stderr, "DBG> chunk_init() c->len mess!\n");
         exit(127); //RAF,TODO: debug only
         free(c->out);
         memset(c, 0, sizeof(chunk_t));
@@ -351,7 +352,7 @@ int main(int argc, char **argv)
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
-    chunk_t chunks[MAX_SEGMENTS] = {0};
+    chunk_t chunks[2][MAX_SEGMENTS] = {0};
     uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
     if(list) {
         list[n++] =  0;
@@ -359,6 +360,7 @@ int main(int argc, char **argv)
     }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
+    int a = 0;
     for (int current = 0; current < tot_nseg; )
     {
         int end = current + MAX_SEGMENTS;
@@ -367,31 +369,60 @@ int main(int argc, char **argv)
         int nbatch = end - current;
 
         /* setup chunk descriptors and output buffers, spawn worker threads */
-        pthread_t threads[MAX_SEGMENTS];
-        for (int i = 0; i < nbatch; i++)
-            if (chunk_work_start(&threads[i],
-                &chunks[i], current++))
+        pthread_t threads[2][MAX_SEGMENTS];
+        for (int i = 0; i < nbatch; i++) {
+            if (chunk_work_start(&threads[a][i],
+                &chunks[a][i], current++))
                 return 1;
+            //RAF: the bottleneck is the next one in the ordered list
+            //     since after the first the father starts to write
+            //     then the bottleneck is the first one, let it go!
+            if(!i) sched_yield();
+        }
 
         /* write compressed chunks to stdout in strict segment order */
+compr_loop:
         for (int i = 0; i < nbatch; i++)
         {
-            pthread_join(threads[i], NULL);
-            chunk_t *c = &chunks[i];
+            pthread_join(threads[a][i], NULL);
+            chunk_t *c = &chunks[a][i];
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
                     current + i, c->out_len);
                 return 1;
             }
 
-            if(list) list[n++] = c->out_len;
-            outlen += full_write(ofd, c->out, c->out_len);
-#if _OUT_FREE
-            free(c->out);
+            void *buf  = c->out;
+            size_t len = c->out_len, cap = c->out_cap;
             c->out = NULL;
-#endif
             c->state = 0;
+            if (current < tot_nseg)
+                if (chunk_work_start(&threads[!a][i],
+                    &chunks[!a][i], current++))
+                    return 1;
+
+            if(list) list[n++] = len;
+            outlen += full_write(ofd, buf, len);
+#if _OUT_FREE
+            free(buf);
+#else
+            if(i+1 >= nbatch)
+                c = &chunks[ a][ 0 ]; //RAF: it will be the next one
+            else
+                c = &chunks[!a][i+1];
+            if(c->out) {
+                free(buf);
+            } else {
+                memset(c, 0, sizeof(chunk_t));
+                c->out_cap = cap;
+                c->out = buf;
+            }
+#endif
         }
+        a = !a;
+        for (int i = 0; i < nbatch; i++)
+            if(chunks[a][i].state)
+                goto compr_loop;
     }
 
     /*
@@ -420,6 +451,7 @@ int main(int argc, char **argv)
             (float)outlen*100/input_filesize,
             compression_level);
     }
+
 /*
     free(list);
     for (int j = 0; j < nbatch; j++)
