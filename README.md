@@ -210,11 +210,11 @@ sys   0m0.089s
 
 ## Inflating
 
-Clearly a shell script isn't the correct approach for inflating a parallel streams into a single file. Despite the shortcomings of the tools used, the evarage hot cached run is nearly 2x faster than standard `gzip` and faster than `pigz`, also.
+Clearly a shell script isn't the correct tool for inflating a parallel streams into a single file. Despite the shortcomings of the scripting, the evarage hot cached run is nearly 2x faster than standard `gzip` and faster than `pigz`, also.
 
 ```
 # script 6x fork/exec gzip (1.9x faster gunzip)
-$ cmd="sh ptest.sh qemu.elf.sgz"; eval "$cmd";
+$ sync; cmd="sh ptest.sh qemu.elf.sgz"; eval "$cmd"
 $ time for i in $(seq 1 60); do eval "$cmd"; done
 
 real  0m1.531s

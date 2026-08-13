@@ -11,47 +11,52 @@ test -r "$file" || exit 1
 gzcmd=${gzcmd:-/bin/gzip}
 
 zcatting() { zcat "$file" >"$file.dz"; exit $?; }
-prntcmds() {
-  printf "fn$3() "
-  if [ $1 -eq 0 ]; then
-    printf '{ dd if="'$file'" bs='$2' count=1 status=none | '
-  else
-    printf '{ dd if="'$file'" bs='$1' skip=1  status=none | head -c'$2' | '
-  fi
-  printf "$gzcmd"' -dc | dd bs='$4' seek='$3' conv=notrunc status=none of="'$file'.dz"; }'
+
+dd_opts="conv=notrunc status=none"
+
+func_1st() {
+    dd if="$file" bs=$1  count=1 $dd_opts |             $gzcmd -dc |
+        dd bs=$2                 $dd_opts of="$file.dz"
+}
+
+func_nth() {
+    dd if="$file" bs=$1   skip=1 $dd_opts | head -c$2 | $gzcmd -dc |
+        dd bs=$3 seek=$4         $dd_opts of="$file.dz"
 }
 
 if head -c4 "$file" | xxd | grep -q "1f8b 08";
 then
-  seg=0; prv=0; i=0
-  mgic=$(tail -c12 "$file" | grep "^pgz:" | cut -d: -f2)
-  test -n "$mgic" && seg=$(( mgic << 12 ))
-  test ${seg:-0} -gt 0 || zcatting
-  seg=$(( seg << 12 ))
-  lst=$(tail -c64 "$file" | cut -d: -f2-7 | tr : ' ')
+# rm -f "$file.dz"
+  str=$(tail -c68 "$file" | grep "^tbl.*pgz")
+  seg=$(printf "$str" | cut -f9)
+  test -n "$seg" || zcatting
+  prv=$(printf "$str" | cut -f2)
+  func_1st $prv $seg &
+  let i=1 "seg<<=12"
+  lst=$(printf "$str" | cut -f3-7)
   for n in $lst; do
-    eval $(prntcmds $prv $n $i $seg)
+    func_nth $prv $n $seg $i &
     let prv+=n i++
   done
-  for i in 0 1 2 3 4 5; do fn$i & done
   wait
 # du -b $file.dz
 else
   tmpf="test"
-  rm -f $tmpf.?.gz
+# rm -f $tmpf.?.gz
   tot=$(du -b "$file" | cut -f1)
   seg=$(( (((((tot + 5) / 6) + 4095)) >> 12) << 12 ))
   for i in 0 1 2 3 4 5; do
 	  dd if="$file" bs=$seg skip=$i count=1 status=none |
 	    $gzcmd -nc >$tmpf.$i.gz &
   done
-  wait
-  fles=$(ls -1 $tmpf.[0-5].gz | sort)
-  cat $fles
-  printf "tbl:"
-  for i in $fles; do
-    printf "%7d:" $(du -b $i | cut -f1)
+  fles=""
+  for i in 0 1 2 3 4 5; do
+	  fles="$fles $tmpf.$i.gz"
   done
-  printf "pgz:%8d" $((seg >> 12))
+  wait
+  cat $fles
+  # RAF: 8 digits -> 1E9 / 4KiB = 244140 -> 6 digits
+  printf "tbl\t%8d\t%8d\t%8d\t%8d\t%8d\t%8d\tpgz\t%6d" \
+    $(du -b $fles | cut -f1) $((seg >> 12))
   rm -f $fles
 fi
