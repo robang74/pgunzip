@@ -94,18 +94,18 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 By the fixed size ELF taken as reference above, about compression troughput by time of execution:
 
 ```
-# zlib-ng + 6x libpthread (1.4x faster pigz, +2% .gz size)
+# zlib-ng + 6x libpthread (1.5x faster pigz, +2% .gz size)
 $ rm -f ptgzip; make ptgzip
 $ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1350 records in
-0+1350 records out
-81517680 bytes (82 MB, 78 MiB) copied, 1.35674 s, 60.1 MB/s
+0+1368 records in
+0+1368 records out
+81517740 bytes (82 MB, 78 MiB) copied, 1.31873 s, 61.8 MB/s
 
-real  0m1.358s # avg: 45.3 ms
-user  0m5.873s
-sys   0m0.188s
+real  0m1.320s
+user  0m5.884s
+sys   0m0.202s
 ```
 ```
 # pigz -p6 (4.6x faster gzip)

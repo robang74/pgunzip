@@ -29,7 +29,8 @@ typedef struct {
     unsigned char *out;
     size_t   out_cap;
     size_t   out_len;
-    int      error;
+    char     status;
+    char     error;
 } chunk_t;
 
 /* ------------------------------------------------------------------ */
@@ -94,7 +95,7 @@ static void *thread_compress(void *arg)
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         c->error = 1;
-        return NULL;
+        goto endfnc;
     }
 
     /* 2. OUTPUT BUFFER: must be deflateBound(), never c->len.
@@ -142,8 +143,8 @@ reterr:
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
      *    Skipping it leaks several KiB per chunk.
      */
-    c->error = 0;
 endfnc:
+    c->status = 1;
     _deflate_end(&strm);
     return NULL;
 }
@@ -166,6 +167,23 @@ static size_t full_write(int fd, const void *buf, size_t len)
     return p - (unsigned char *)buf;
 }
 
+static unsigned char *mmap_base;
+static off_t input_filesize;
+static size_t chunk_size;
+static int tot_nseg;
+
+static inline chunk_t *chunk_init(chunk_t *c, int idx)
+{
+    c->offset = (off_t)idx * chunk_size;
+    c->len = (idx == tot_nseg - 1)
+           ? (size_t)(input_filesize - c->offset)
+           : chunk_size;
+    c->in = mmap_base + c->offset;
+    c->status = 0;
+    c->error = 0;
+    return c;
+}
+
 /* ========================================================================== */
 /* Main                                                                       */
 /* ========================================================================== */
@@ -184,7 +202,7 @@ static int opt_verbose   = 0;    /* -v, --verbose */
 static int   nfiles = 0;
 static char **names = NULL;
 
-#define TABLE_ITEMS ((uint32_t)nseg + 4)
+#define TABLE_ITEMS ((uint32_t)tot_nseg + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 #define PGZ_MAGIC_1 0x6274
 #define PGZ_MAGIC_2 0x7a70
@@ -273,25 +291,27 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    off_t total = st.st_size;
-    if (total == 0) {
+    input_filesize = st.st_size;
+    if (input_filesize == 0) {
         return 0;
     }
 
     /* ---- mmap entire file (zero-copy input for all threads) ---- */
-    unsigned char *mmap_base = mmap(NULL, total, PROT_READ, MAP_PRIVATE, infd, 0);
+    mmap_base = mmap(NULL, input_filesize, PROT_READ, MAP_PRIVATE, infd, 0);
     if (mmap_base == MAP_FAILED) {
         perror("mmap");
         return 1;
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
+
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
-    size_t outlen = 0, chunk_size = total;
-    int nseg = 0;
+    size_t outlen = 0;
+    chunk_size = input_filesize;
+    tot_nseg = 0;
     do {
-        nseg += MAX_SEGMENTS;
-        chunk_size = (total + (nseg - 1)) / nseg;
+        tot_nseg += MAX_SEGMENTS;
+        chunk_size = (input_filesize + (tot_nseg - 1)) / tot_nseg;
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
@@ -303,49 +323,33 @@ int main(int argc, char **argv)
     }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    for (int batch_start = 0; batch_start < nseg; batch_start += MAX_SEGMENTS)
+    for (int srt = 0; srt < tot_nseg; srt += MAX_SEGMENTS)
     {
-        int batch_end = batch_start + MAX_SEGMENTS;
-        if (batch_end > nseg)
-            batch_end = nseg;
-        int nbatch = batch_end - batch_start;
+        int end = srt + MAX_SEGMENTS;
+        if (end > tot_nseg)
+            end = tot_nseg;
+        int nbatch = end - srt;
 
-        /* setup chunk descriptors and output buffers */
-        for (int i = 0; i < nbatch; i++)
-        {
-            chunk_t *c = &chunks[i];
-            int idx = batch_start + i;
-            c->offset = (off_t)idx * chunk_size;
-            c->len = (idx == nseg - 1)
-                   ? (size_t)(total - c->offset)
-                   : chunk_size;
-            c->in = mmap_base + c->offset;
-            c->error = 0;
-        }
-
-        /* spawn worker threads */
+        /* setup chunk descriptors and output buffers, spawn worker threads */
         pthread_t threads[MAX_SEGMENTS];
         for (int i = 0; i < nbatch; i++)
         {
-            if (pthread_create(&threads[i], NULL,
-                thread_compress, &chunks[i]) != 0)
+            if (pthread_create(&threads[i], NULL, thread_compress,
+                chunk_init(&chunks[i], srt + i)) != 0)
             {
                 perror("pthread_create");
                 return 1;
             }
-        }
-
-        /* reap all threads in this batch */
-        for (int i = 0; i < nbatch; i++)
-            pthread_join(threads[i], NULL);
+        }            
 
         /* write compressed chunks to stdout in strict segment order */
         for (int i = 0; i < nbatch; i++)
         {
+            pthread_join(threads[i], NULL);
             chunk_t *c = &chunks[i];
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
-                    batch_start + i, c->out_len);
+                    srt + i, c->out_len);
                 reterr = 1;
             }
 
@@ -376,14 +380,15 @@ int main(int argc, char **argv)
 
     if(opt_verbose) {
         fprintf(stderr, "file: %d x %zu = %ld, size: %lu (%0.1f%%, -%d)\n",
-            nseg, chunk_size, total, outlen, (float)outlen*100/total,
+            tot_nseg, chunk_size, input_filesize, outlen,
+            (float)outlen*100/input_filesize,
             compression_level);
     }
 /*
     free(list);
     for (int j = 0; j < nbatch; j++)
         free(chunks[j].out);
-    munmap(mmap_base, total);
+    munmap(mmap_base, input_filesize);
 */
     return reterr;
 }
