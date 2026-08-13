@@ -68,7 +68,7 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 By the fixed size ELF taken as reference above, about compression troughput by time of execution:
 
 ```
-# using zlib-ng + libpthread
+# zlib-ng + 6x libpthread (1.5x faster pigz, +2% .gz size)
 $ make
 $ for i in $(seq 1 11); do time ./ptgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
@@ -85,7 +85,7 @@ real	0m0.044s
 real	0m0.044s
 ```
 ```
-# pigz
+# pigz -p8 (5x faster gzip)
 $ for i in $(seq 1 11); do time /bin/pigz -c \
   qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.083s
@@ -101,7 +101,7 @@ real	0m0.064s
 real	0m0.063s
 ```
 ```
-# using zlib + libpthread
+# zlib + 6x libpthread (3x faster gzip)
 $ gcc -O2 -s ptgzip.c -o plgzip -lz -lpthread
 $ for i in $(seq 1 11); do time ./plgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
@@ -118,7 +118,7 @@ real	0m0.079s
 real	0m0.078s
 ```
 ```
-# using gzip
+# 6x fork/exec gzip (3x faster gzip)
 $ gcc -O2 -s pxgzip.c -o pxgzip
 $ for i in $(seq 1 11); do time ./pxgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
@@ -135,7 +135,7 @@ real	0m0.091s
 real	0m0.094s
 ```
 ```
-# using miniz + libpthread
+# miniz + 6x libpthread (3x faster gzip)
 $ for i in $(seq 1 11); do time ./pmgzip \
   qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.112s
@@ -151,7 +151,7 @@ real	0m0.094s
 real	0m0.103s
 ```
 ```
-# using gzip
+# 6x fork/exec gzip (3x faster gzip)
 $ for i in $(seq 1 11); do time sh ptest.sh \
   qemu.elf >/dev/null; done 2>&1 | grep real
 real	0m0.119s
