@@ -45,7 +45,21 @@ About compressed output suitable for the new format, and 100% back-compatible ve
 2717194	./qemu.elf.gz (ptgzip    , +1.79%)
 ```
 
-The format presented by this [table](https://github.com/robang74/uzpexec#parallel-ungzip) is reported below in terms of hexadecimal values where `[0098 6274]` is the start of the table and the `[7a70 000c]` its end.
+The format presented by this [table](https://github.com/robang74/uzpexec#parallel-ungzip) below is reported below in terms of hexadecimal values where `[0098 6274]` is the start of the table and the `[7a70 000c]` its end. The table is presented in its minimal size for a 6 chunks .gz file:
+
+| size    | record meaning                 | unit | max |
+|---------|--------------------------------|-----:|----:|
+| zeros   | 32 bit alignment               |  -   |  3  |
+|         |                                |      |     |
+| 16 bits | a starting magic number        |  2   |  2  |
+| 16 bits | size of the uncompressed chunk |  2   |  2  |
+| 32 bits | a record for each chunk        |  4   | x6  |
+|         |                                |      | 24  |
+| 32 bits | a CRC32 code for the table     |  4   |  4  |
+|         |                                |      |     |
+| 16 bits | table size in 32-bit words     |  2   |  2  |
+| 16 bits | an ending magic number         |  2   |  2  |
+|         |                                | bytes| 39  |
 
 The last contains the `PGZ_MAGIC_2` and the number of chunks `0x0c = 12` from which we know the table size `12 + 4 = 16` 32-bit words. From the last, we can seek the first and find the `PGZ_MAGIC_1` and the size of the uncompressed chunk in `0x98 = 152` of 4KB blocks (622592 bytes).
 
