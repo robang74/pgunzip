@@ -8,12 +8,15 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sched.h>
 #include <signal.h>
-#include <sys/mman.h>
 #include <pthread.h>
+
+#define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 
 #define MAX_SEGMENTS    6
 #define MAX_TARGET     (1UL << 20)     /* max target size per segment */
@@ -29,8 +32,9 @@ typedef struct {
     unsigned char *out;
     size_t   out_cap;
     size_t   out_len;
-    char     status;
+    char     state;
     char     error;
+    int      idx;
 } chunk_t;
 
 /* ------------------------------------------------------------------ */
@@ -119,8 +123,7 @@ static void *thread_compress(void *arg)
      *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
 #if _ONE_ZDF
-    if(c->out_cap >= c->len)
-        ret = _deflate(&strm, Z_FINISH);
+     ret = _deflate(&strm, Z_FINISH);
 #else
     do {
         if (strm.avail_in == 0) {
@@ -130,22 +133,21 @@ static void *thread_compress(void *arg)
         }
     } while (ret == Z_OK);
 #endif
+    c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
         free(c->out);
         c->out = NULL;
 reterr:
         c->error = 1;
-        goto endfnc;
+//      goto endfnc;
     }
-
-    c->out_len = strm.total_out;
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
      *    Skipping it leaks several KiB per chunk.
      */
 endfnc:
-    c->status = 1;
     _deflate_end(&strm);
+    c->state = 2;
     return NULL;
 }
 
@@ -179,8 +181,9 @@ static inline chunk_t *chunk_init(chunk_t *c, int idx)
            ? (size_t)(input_filesize - c->offset)
            : chunk_size;
     c->in = mmap_base + c->offset;
-    c->status = 0;
+    c->state = 1;
     c->error = 0;
+    c->idx = idx;
     return c;
 }
 
@@ -209,7 +212,7 @@ static char **names = NULL;
 
 int main(int argc, char **argv)
 {
-    int c, ofd = STDOUT_FILENO, reterr = 0;
+    int ofd = STDOUT_FILENO;
 #if _USE_OPT
     static struct option longopts[] = {
         {"stdout",      no_argument,       NULL, 'c'},
@@ -225,9 +228,9 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        c = getopt_long(argc, argv, "chvqk123456789m:", longopts, NULL);
-        if(c == -1) break; else nfiles--;
-        switch (c) {
+        int ch = getopt_long(argc, argv, "chvqk123456789m:", longopts, NULL);
+        if(ch == -1) break; else nfiles--;
+        switch (ch) {
         case 'c':
             opt_stdout = 1;
             break;
@@ -240,7 +243,7 @@ int main(int argc, char **argv)
             break;
         case '1': case '2': case '3': case '4': case '5':
         case '6': case '7': case '8': case '9':
-            compression_level = c - '0';
+            compression_level = ch - '0';
             break;
         case 'k':
             opt_keep = 1;
@@ -350,12 +353,13 @@ int main(int argc, char **argv)
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
                     srt + i, c->out_len);
-                reterr = 1;
+                return 1;
             }
 
             if(list) list[n++] = c->out_len;
             outlen += full_write(ofd, c->out, c->out_len);
             free(c->out);
+            c->state = 0;
         }
     }
     /*
@@ -390,5 +394,5 @@ int main(int argc, char **argv)
         free(chunks[j].out);
     munmap(mmap_base, input_filesize);
 */
-    return reterr;
+    return 0;
 }

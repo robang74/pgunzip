@@ -99,13 +99,13 @@ $ rm -f ptgzip; make ptgzip
 $ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1368 records in
-0+1368 records out
-81517740 bytes (82 MB, 78 MiB) copied, 1.31873 s, 61.8 MB/s
+0+1374 records in
+0+1374 records out
+81517740 bytes (82 MB, 78 MiB) copied, 1.30963 s, 62.2 MB/s
 
-real  0m1.320s
-user  0m5.884s
-sys   0m0.202s
+real  0m1.311s
+user  0m5.867s
+sys   0m0.177s
 ```
 ```
 # pigz -p6 (4.6x faster gzip)
