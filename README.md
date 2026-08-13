@@ -36,13 +36,13 @@ About compressed output suitable for the new format, and 100% back-compatible ve
 7439552	qemu.elf: ELF 64-bit LSB executable, x86-64,
         version 1 (SYSV), statically linked, stripped
 
-2660782	./qemu.elf.gz (ptgzip -9 , -0.30%)
-2666065	./qemu.elf.gz (pigz -p8  , -0.12%)
-2669344	./qemu.elf.gz (gzip)
-2673225	./qemu.elf.gz (ptest.sh  , +0.15%)
-2676360	./qemu.elf.gz (pmgzip    , +0.26%)
-2677603	./qemu.elf.gz (pxgzip    , +0.31%)
-2717194	./qemu.elf.gz (ptgzip    , +1.79%)
+2660782	./qemu.elf.gz (ptgzip -9 , -0.30% , 3.5x )
+2666065	./qemu.elf.gz (pigz -p6  , -0.12% , 4.6x )
+2669344	./qemu.elf.gz (gzip      ,   =    ,  =   )
+2673225	./qemu.elf.gz (ptest.sh  , +0.15% , 2.9x )
+2676360	./qemu.elf.gz (pmgzip    , +0.26% , 3.1x )
+2677603	./qemu.elf.gz (pxgzip    , +0.31% , 3.3x )
+2717194	./qemu.elf.gz (ptgzip    , +1.79% , 6.5x )
 ```
 
 The format presented by this [table](https://github.com/robang74/uzpexec#parallel-ungzip) below is reported below in terms of hexadecimal values where `[0098 6274]` is the start of the table and the `[7a70 000c]` its end. The table is presented in its minimal size for a 6 chunks .gz file:
@@ -107,6 +107,20 @@ $ eval "$cmd" >$nl; time for i in $(seq 1 30);
 real  0m 1.910s # avg: 63.7 ms
 user  0m10.809s
 sys   0m 0.176s
+```
+```
+# zlib-ng + 6x libpthread (3.5x faster gzip)
+# make
+$ nl=/dev/null; cmd="./ptgzip -9 qemu.elf";
+$ eval "$cmd" >$nl; time for i in $(seq 1 30);
+      do eval "$cmd"; done | dd bs=1M of=$nl
+0+1294 records in
+0+1294 records out
+79441440 bytes (79 MB, 76 MiB) copied, 2.48544 s, 32.0 MB/s
+
+real  0m 2.487s # avg: 82.9 ms
+user  0m11.879s
+sys   0m 0.189s
 ```
 ```
 # zlib + 6x libpthread (3.4x faster gzip)
