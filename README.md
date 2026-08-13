@@ -217,9 +217,9 @@ Clearly a shell script isn't the correct approach for inflating a parallel strea
 $ cmd="sh ptest.sh qemu.elf.sgz"; eval "$cmd";
 $ time for i in $(seq 1 60); do eval "$cmd"; done
 
-real  0m1.583s
-user  0m4.261s
-sys   0m2.419s
+real  0m1.531s
+user  0m4.083s
+sys   0m2.455s
 
 $ diff qemu.elf qemu.elf.sgz.dz && echo res=OK
 res=OK

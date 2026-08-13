@@ -4,33 +4,36 @@
 #
 
 file=${1:-}
-tmpf="test"
 test -r "$file" || exit 1
+# Same performace, useless to check
+#test -z ${gzcmd:-0} -a -x /bin/pigz &&
+#  gzcmd="/bin/pigz -m -p1"
+gzcmd=${gzcmd:-/bin/gzip}
 
-zcatting() { zcat "$file"; exit $?; }
+zcatting() { zcat "$file" >"$file.dz"; exit $?; }
 prntcmds() {
-    printf "fn$3() "
-    if [ $1 -eq 0 ]; then
-      printf '{ dd if="'$file'" bs='$2' count=1 status=none |'
-    else
-      printf '{ dd if="'$file'" bs='$1' skip=1  status=none | head -c'$2' |'
-    fi
-    printf ' /bin/gzip -dc | dd bs='$4' seek='$3' conv=notrunc status=none of="'$file'.dz"; }'
+  printf "fn$3() "
+  if [ $1 -eq 0 ]; then
+    printf '{ dd if="'$file'" bs='$2' count=1 status=none | '
+  else
+    printf '{ dd if="'$file'" bs='$1' skip=1  status=none | head -c'$2' | '
+  fi
+  printf "$gzcmd"' -dc | dd bs='$4' seek='$3' conv=notrunc status=none of="'$file'.dz"; }'
 }
 
-if head -c4 "$file" | xxd | grep -q "1f8b 08"; then
-  mgic=$(tail -c8 "$file" | grep "^pgz:" | cut -d: -f2)
-  test -n "$mgic" || zcatting
-  seg=$(( $(printf "%d" 0x$mgic) << 12 ))
+if head -c4 "$file" | xxd | grep -q "1f8b 08";
+then
+  seg=0; prv=0; i=0
+  mgic=$(tail -c12 "$file" | grep "^pgz:" | cut -d: -f2)
+  test -n "$mgic" && seg=$(( mgic << 12 ))
   test ${seg:-0} -gt 0 || zcatting
-  prv=0; i=0
-  lst=$(tail -c66 qemu.elf.sgz | cut -d: -f2-7 | tr : ' ')
+  seg=$(( seg << 12 ))
+  lst=$(tail -c64 "$file" | cut -d: -f2-7 | tr : ' ')
   for n in $lst; do
     eval $(prntcmds $prv $n $i $seg)
-    prv=$((prv + n))
-    i=$((i + 1))
+    let prv+=n i++
   done
-  for i in 0 1 2 3 4 5; do eval "fn$i" & done
+  for i in 0 1 2 3 4 5; do fn$i & done
   wait
 # du -b $file.dz
 else
@@ -40,15 +43,15 @@ else
   seg=$(( (((((tot + 5) / 6) + 4095)) >> 12) << 12 ))
   for i in 0 1 2 3 4 5; do
 	  dd if="$file" bs=$seg skip=$i count=1 status=none |
-	    /bin/gzip -nc >$tmpf.$i.gz &
+	    $gzcmd -nc >$tmpf.$i.gz &
   done
   wait
   fles=$(ls -1 $tmpf.[0-5].gz | sort)
   cat $fles
   printf "tbl:"
   for i in $fles; do
-    printf "%8d:" $(du -b $i | cut -f1)
+    printf "%7d:" $(du -b $i | cut -f1)
   done
-  printf "pgz:%04x" $((seg >> 12))
+  printf "pgz:%8d" $((seg >> 12))
   rm -f $fles
 fi
