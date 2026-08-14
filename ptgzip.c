@@ -464,6 +464,8 @@ int main(int argc, char **argv)
         //     then the bottleneck is the first one, let it go!
 #if _THR_WAIT
         if(!i) _cpu_relax();
+#else
+        pthread_detach(threads[a][i]);
 #endif
     }
 
@@ -475,10 +477,7 @@ int main(int argc, char **argv)
 #if _THR_WAIT
             pthread_join(threads[a][i], NULL);
 #else
-            if(threads[a][i])
-                pthread_tryjoin_np(threads[a][i], NULL);
-            else
-                _cpu_relax();
+            _cpu_relax();
 #endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
@@ -504,6 +503,10 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                 if (chunk_work_start(&threads[b][i],
                     &chunks[b][i], current++, ofd))
                     return 1;
+#if _THR_WAIT
+#else
+                pthread_detach(threads[a][i]);
+#endif
             }
 
             /* ordered writing on STDOUT, only */
@@ -518,7 +521,6 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 #endif
 
             /* disposing the thread */
-            pthread_detach(threads[a][i]);
             threads[a][i] = 0;
 
             /* granting the correct order */
