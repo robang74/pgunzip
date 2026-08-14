@@ -169,7 +169,7 @@ static size_t full_write(int fd, const void *buf, size_t len)
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("write");
-            return 1;
+            return -1;
         }
         p   += w;
         len -= w;
