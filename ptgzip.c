@@ -179,10 +179,13 @@ static int chunk_write(chunk_t *c)
     unsigned char *p = c->out;
 
     while (len > 0) {
-        ssize_t w = pwrite(ofd, p, len, off);
+        ssize_t w = (ofd == STDOUT_FILENO)
+                  ?  write(ofd, p, len)
+                  : pwrite(ofd, p, len, off)
+                  ;
         if (w < 0) {
             if (errno == EINTR) continue;
-            perror("pwrite");
+            perror("p/write");
             break;
         }
         p   += w;
@@ -195,14 +198,10 @@ static int chunk_write(chunk_t *c)
 }
 
 static ALWAYS_INLINE
-size_t append_write(int fd, const void *buf, size_t len)
+size_t full_write(int fd, const void *buf, size_t len)
 {
     unsigned char *p = (unsigned char *)buf;
 
-    if(lseek(fd, 0, SEEK_END) < 0) {
-        perror("lseek");
-        return -1;
-    }
     while (len > 0) {
         ssize_t w = write(fd, p, len);
         if (w < 0) {
@@ -467,8 +466,7 @@ int main(int argc, char **argv)
             }
             if (c->state != 3)
                 continue;
-            fprintf(stderr, ">>> idx: %2d / %2d, cur: %2d / %2d, off: %ld\n",
-                next_idx, tot_nseg, current, nbatch, c->offset);
+
             /* create another thread to do work */
             if(threads[a][i]) {
                 threads[a][i] = 0;
@@ -519,48 +517,43 @@ int main(int argc, char **argv)
 out_of_loop:
     if (ofd == STDOUT_FILENO)
         goto write_table;
-    for(int i = 2; i < n; i++)
-         fprintf(stderr, ">>> list[%2d]: %u\n", i, list[i]);
 
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
      */
     /* Loop through all compressed chunk lengths stored in list[]  */
-
-    size_t write_size;
-    off_t read_pos, write_pos = 0;
-
+    off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
     for (int i = 1; i < tot_nseg; i++) {
-        read_pos = (off_t)i * chunk_size;
-        write_pos += list[i + 1];
-        write_size = list[i + 2];
+        off_t read_pos = (off_t)i * chunk_size;
+        size_t write_size = list[i + 2];
 
-        if (read_pos == write_pos)
-            continue;
+        if (read_pos != write_pos) {
+            off_t off_in  = read_pos;
+            off_t off_out = write_pos;
+            size_t bytes  = write_size;
 
-        /* Zero-copy shift using the kernel (no userspace buffers) */
-        off_t off_in  = read_pos;
-        off_t off_out = write_pos;
-        size_t bytes  = write_size;
-        while (bytes > 0) {
-            fprintf(stderr, "1>> off_in: %ld, off_out: %ld, left: %ld\n",
-                off_in, off_out, bytes);
-            ssize_t ret = copy_file_range(ofd,
-                &off_in, ofd, &off_out, bytes, 0);
-            fprintf(stderr, "2>> off_in: %ld, off_out: %ld, left: %ld\n",
-                off_in, off_out, bytes);
-            if (ret < 0) {
-                if (errno == EINTR) continue;
-                perror("copy_file_range");
-                return 1;
+            while (bytes > 0) {
+                ssize_t ret = copy_file_range(ofd,
+                    &off_in, ofd, &off_out, bytes, 0);
+                if (ret < 0) {
+                    if (errno == EINTR) continue;
+                    perror("copy_file_range");
+                    return 1;
+                }
+                bytes -= ret;
             }
-            bytes -= ret;
         }
+        write_pos += write_size;
     }
-    /* Truncate the trailing sparse holes left behind */
-    if (ftruncate(ofd, write_pos) < 0) {
+    /* Update outlen and truncate remaining sparse tail */
+    outlen = write_pos;
+    if (ftruncate(ofd, outlen) < 0) {
         perror("ftruncate");
         return 1;
+    }
+    if(lseek(ofd, 0, SEEK_END) < 0) {
+        perror("lseek");
+        return -1;
     }
 
 write_table:
@@ -581,7 +574,7 @@ write_table:
         unsigned r = outlen & 3; // 32-bit align
         left -= 4-r;
         p  = &p[4-r];
-        outlen += append_write(ofd, p, TABLE_BSIZE);
+        outlen += full_write(ofd, p, TABLE_BSIZE);
     }
 
     if(opt_verbose) {

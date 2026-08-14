@@ -103,11 +103,15 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 0000050
 
 # Sanity check: compile, run and test (try: make tests)
-$ rm -f ptgzip && make ptgzip && ./ptgzip qemu.elf |
-  zcat >qemu.dgz; diff qemu.elf qemu.dgz && echo OK
+$ rm -f ptgzip qemu.dgz dz && make ptgzip
 cc -o ptgzip ptgzip.c -Ilibz/build -Ilibz libz/libz.a \
   -D_USE_ZNG=0 -lpthread -g0 -O2 -s -falign-functions=32
-OK
+$ ./ptgzip -c qemu.elf | zcat >qemu.dgz &&
+  diff qemu.elf qemu.dgz && echo res=OK
+res=OK
+$ ./ptgzip qemu.elf && zcat qemu.elf.gz >dz &&
+  diff qemu.elf dz && echo res=OK
+res=OK
 ```
 
 By the fixed size ELF taken as reference above, about compression troughput by time of execution:
