@@ -11,6 +11,7 @@ TARBALL   = zlib-ng-$(VERSION).tar.gz
 REPOURL   = https://github.com/robang74/zlib-ng/archive/refs/tags
 URL       = $(REPOURL)/$(ARCHIVE)
 LIBZ_DIR  = libz
+LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
@@ -18,7 +19,7 @@ TARGETS   = $(TARGET) pxgzip plgzip pmgzip
 SRC       = ptgzip.c
 
 CC       ?= gcc
-CFLAGS   ?= -O2 -s -falign-functions=32 $(EXTRA_CFLAGS)
+CFLAGS   ?= -g0 -O2 -s -falign-functions=32 $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
@@ -35,7 +36,7 @@ all: $(TARGETS)
 # -----------------------------------------------------------------------------
 # source target: download tarball, extract, rename to libz/, build static lib
 # -----------------------------------------------------------------------------
-source: $(LIBZ_DIR)/libz.a
+source: $(LIBZ_A)
 
 $(TARBALL):
 	@echo ">>> Downloading $(TARBALL) ..."
@@ -49,7 +50,7 @@ $(LIBZ_DIR): $(TARBALL)
 	@mv zlib-ng-2.3.3 $(LIBZ_DIR)
 	@touch $@
 
-$(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
+$(LIBZ_A): $(LIBZ_DIR)
 	@which cmake >/dev/null 2>&1 || \
 		{ echo "Error: cmake is required to build zlib-ng"; exit 1; }
 	@echo ">>> Configuring zlib-ng (native API, ratio-tuned) ..."
@@ -73,11 +74,9 @@ $(LIBZ_DIR)/libz.a: $(LIBZ_DIR)
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
-$(TARGET): $(SRC) $(LIBZ_DIR)/libz.a
-	pwd
-	$(CC) $(CFLAGS) -o $@ $< -D_USE_ZNG=0 \
-		-I./$(BUILD_DIR) -I./$(LIBZ_DIR) \
-		./$(LIBZ_DIR)/libz.a -lpthread
+$(TARGET): $(SRC) $(LIBZ_A)
+	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) $(LIBZ_A) \
+	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
 
 pxgzip: pxgzip.c
 	$(CC) $(CFLAGS) -o $@ $<

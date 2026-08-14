@@ -88,10 +88,11 @@ The last contains the `PGZ_MAGIC_2` and the number of chunks `0x0c = 12` from wh
 Everything else is the compressed chunk sizes list and the checksum which zeroes when the whole table is sum-up. The checksum is designed to be trivial to compute in Assembly: a summary over an item + 4 loop, and the last operation should trigger the zero flag as validation event.
 
 ```
-# Compiled with -D_BE_VERBOSE = 1
+# Compiled with -D _BE_VERBOSE = 1
 $ ./ptgzip ./qemu.elf > ./qemu.pgz && du -b ./qemu.pgz
 chunks: 6 x 622592 = 7439552 / 12
 2717256	./qemu.pgz
+
 $ tail -c 80 ./qemu.elf.pgz | hexdump
 0000000 d5de f2f8  8cdb 5e0f  03ff 3d44  59f4 04c0
 0000010 0009 0000 [0098 6274] b43f 0004  a778 0004
@@ -99,6 +100,13 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 0000030 e9f2 0003  c703 0001  37d4 0002  6381 0004
 0000040 ccc9 0001  e422 0000  947e 9d49 [7a70 000c]
 0000050
+
+# Sanity check: compile, run and test
+$ rm -f ptgzip && make ptgzip && ./ptgzip qemu.elf |
+  zcat >qemu.dgz; diff qemu.elf qemu.dgz && echo OK
+cc -o ptgzip ptgzip.c -Ilibz/build -Ilibz libz/libz.a \
+  -D_USE_ZNG=0 -lpthread -g0 -O2 -s -falign-functions=32
+OK
 ```
 
 By the fixed size ELF taken as reference above, about compression troughput by time of execution:

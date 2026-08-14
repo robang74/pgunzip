@@ -361,30 +361,25 @@ int main(int argc, char **argv)
     }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    int a = 0, next_idx = 0;
-    for (int current = 0; current < tot_nseg; )
+    int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
+
+    /* setup chunk descriptors and output buffers, spawn worker threads */
+    pthread_t threads[2][MAX_SEGMENTS];
+    memset(threads, 0, sizeof(threads));
+    for (int i = 0; i < nbatch; i++) {
+        if (chunk_work_start(&threads[a][i],
+            &chunks[a][i], current++))
+            return 1;
+        //RAF: the bottleneck is the next one in the ordered list
+        //     since after the first the father starts to write
+        //     then the bottleneck is the first one, let it go!
+        if(!i) sched_yield();
+    }
+
+    /* write compressed chunks to stdout in strict segment order */
+    while(next_idx < tot_nseg)
     {
-        int end = current + MAX_SEGMENTS;
-        if (end > tot_nseg)
-            end = tot_nseg;
-        int nbatch = end - current;
-
-        /* setup chunk descriptors and output buffers, spawn worker threads */
-        pthread_t threads[2][MAX_SEGMENTS];
-        memset(threads, 0, sizeof(threads));
-        for (int i = 0; i < nbatch; i++) {
-            if (chunk_work_start(&threads[a][i],
-                &chunks[a][i], current++))
-                return 1;
-            //RAF: the bottleneck is the next one in the ordered list
-            //     since after the first the father starts to write
-            //     then the bottleneck is the first one, let it go!
-            if(!i) sched_yield();
-        }
-
-        /* write compressed chunks to stdout in strict segment order */
-compr_loop:
-        for (int i = 0; i < nbatch; i++)
+        for (int i = 0, b = !a; i < nbatch; i++)
         {
             pthread_join(threads[a][i], NULL);
             chunk_t *c = &chunks[a][i];
@@ -403,8 +398,8 @@ compr_loop:
             c->len = 0;
 */
             if (current < tot_nseg)
-                if (chunk_work_start(&threads[!a][i],
-                    &chunks[!a][i], current++))
+                if (chunk_work_start(&threads[b][i],
+                    &chunks[b][i], current++))
                     return 1;
 
             if(list) list[n++] = len;
@@ -415,9 +410,9 @@ compr_loop:
             free(buf);
 #else
             if(i+1 >= nbatch)
-                c = &chunks[ a][ 0 ]; //RAF: it will be the next one
+                c = &chunks[a][ 0 ]; //RAF: it will be the next one
             else
-                c = &chunks[!a][i+1];
+                c = &chunks[b][i+1];
             if(c->out) {
                 free(buf);
             } else {
@@ -427,8 +422,6 @@ compr_loop:
 #endif
         }
         a = !a;
-        if(next_idx < tot_nseg)
-            goto compr_loop;
     }
 
     /*
