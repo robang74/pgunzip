@@ -98,14 +98,23 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-tests: test-clean test-basic test-speed test-gzip
+.PHONY: tests blkline _test-clean _test-basic _test-speed _test-speef _test-gzip
+.PHONY: _test-crash test-clean test-basic test-speed test-speef test-gzip test-crash
 
-test-clean:
+blkline:
+	@echo
+
+tests: _test-clean _test-basic blkline _test-speed _test-gzip
+	@echo
+
+_test-clean:
 	@printf "\n=== ptgzip compilation test ===\n\n"
 	rm -f ptgzip && make ptgzip
 	@rm -f libz.tar libz.tar.gz
 
-test-basic:
+test-clean: _test-clean blkline
+
+_test-basic:
 	@printf "\n=== ptgzip file sanity check ===\n\n"
 	test -r libz.tar || tar cf libz.tar libz
 	./ptgzip libz.tar && du -b libz.tar*
@@ -116,9 +125,10 @@ test-basic:
 	./ptgzip -c libz.tar | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
-	@echo
 
-test-speed:
+test-basic: _test-basic blkline
+
+_test-speed:
 	@printf "\n=== speed test preparation ===\n\n"
 	test -r libz.tar || tar cf libz.tar libz
 	@printf "\n=== ptgzip '-c' speed test ===\n\n"
@@ -126,18 +136,33 @@ test-speed:
     eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
-test-gzip:
+test-speed: _test-speed blkline
+
+_test-speef:
+	@printf "\n=== speed test preparation ===\n\n"
+	test -r libz.tar || tar cf libz.tar libz
+	@printf "\n=== ptgzip file speed test ===\n\n"
+	nl=/dev/null && cmd="./ptgzip libz.tar" && sync && \
+    eval "$$cmd" && time for i in $$(seq 1 30); do \
+    eval "$$cmd"; done
+
+test-speef: _test-speef blkline
+
+_test-gzip:
 	@printf "\n=== gzip '-c' compare test ===\n\n"
 	test -r libz.tar || tar cf libz.tar libz
 	nl=/dev/null && cmd="/bin/gzip -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
-	@echo
 
-test-crash:
+test-gzip: _test-gzip blkline
+
+_test-crash:
 	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0"
-	make test-basic test-speed
+	make _test-basic _test-speed _test-speef blkline
+
+test-crash: _test-crash blkline
 
 # -----------------------------------------------------------------------------
 # Cleanup
