@@ -95,6 +95,24 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
 
 # -----------------------------------------------------------------------------
+# Tests
+# -----------------------------------------------------------------------------
+
+tests:
+	@printf "\n=== ptgzip compilation test ===\n\n"
+	rm -f ptgzip test.dz && make ptgzip
+	@printf "\n=== ptgzip file sanity check ===\n\n"
+	rm -f libz.tar && tar cf libz.tar libz
+	./ptgzip libz.tar && du -b libz.tar*
+	zcat libz.tar.gz | tee test.dz | wc -c
+	diff test.dz libz.tar && echo ">>> Result: OK"
+	@printf "\n=== ptgzip '-c' sanity check ===\n\n"
+	./ptgzip -c libz.tar | zcat | tee test.dz | wc -c
+	diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f libz.tar libz.tar.gz
+	@echo
+
+# -----------------------------------------------------------------------------
 # Cleanup
 # -----------------------------------------------------------------------------
 clean:
