@@ -246,6 +246,9 @@ static char **names = NULL;
 #define PGZ_MAGIC_1 0x6274
 #define PGZ_MAGIC_2 0x7a70
 
+#define LICENSE \
+    "(c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2"
+
 int main(int argc, char **argv)
 {
     int ofd = STDOUT_FILENO;
@@ -259,6 +262,7 @@ int main(int argc, char **argv)
         {"best",        no_argument,       NULL, '9'},
         {"keep",        no_argument,       NULL, 'k'},
         {"verbose",     no_argument,       NULL, 'v'},
+        {"license",     no_argument,       NULL, 'L'},
         {"memory",      required_argument, NULL, 'm'},
         {NULL, 0, NULL, 0}
     };
@@ -274,6 +278,9 @@ int main(int argc, char **argv)
         case '?':
             opt_help = 1;
             break;
+        case 'L':
+            fprintf(stderr, "%s\n", LICENSE);
+            return 0;
         case 'q':
             opt_quiet = 1;
             break;
@@ -342,6 +349,19 @@ int main(int argc, char **argv)
         return 1;
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
+
+    if(!opt_stdout) {
+        size_t len = strlen(names[0]) + 4;
+        char *str = malloc(len);
+        snprintf(str, len, "%s.gz", names[0]);
+        //RAF, TODO: to check the original file permissions, if any than STDIN
+        ofd = creat(str, S_IRUSR | S_IWUSR | S_IRGRP);
+        if (ofd < 0) {
+            perror("open");
+            return 1;
+        }
+        free(str);
+    }
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
     size_t outlen = 0;

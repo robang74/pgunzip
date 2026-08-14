@@ -114,17 +114,16 @@ By the fixed size ELF taken as reference above, about compression troughput by t
 ```
 # zlib-ng + 6x libpthread (1.5x faster pigz, +2% .gz size)
 $ rm -f ptgzip; make ptgzip
-$ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
+$ nl=/dev/null; cmd="./ptgzip -c qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1400 records in
-0+1400 records out
-81517740 bytes (82 MB, 78 MiB) copied, 1.29005 s, 63.2 MB/s
+0+1398 records in
+0+1398 records out
+81517740 bytes (82 MB, 78 MiB) copied, 1.27882 s, 63.7 MB/s
 
-real  0m1.292s # avg: 43.1 ms
-user  0m6.527s
-sys   0m1.211s
-
+real  0m1.280s # avg: 43.0 ms
+user  0m6.516s
+sys   0m1.188s
 ```
 ```
 # pigz -p6 (4.6x faster gzip)
@@ -142,7 +141,7 @@ sys   0m 0.176s
 ```
 # zlib-ng + 6x libpthread (3.5x faster gzip)
 # rm -f ptgzip; make ptgzip
-$ nl=/dev/null; cmd="./ptgzip -9 qemu.elf"; sync
+$ nl=/dev/null; cmd="./ptgzip -9c qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1294 records in
@@ -156,7 +155,7 @@ sys   0m 0.189s
 ```
 # zlib + 6x libpthread (3.6x faster gzip)
 $ rm -f plgzip; make plgzip
-$ nl=/dev/null; cmd="./plgzip qemu.elf"; sync
+$ nl=/dev/null; cmd="./plgzip -c qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1325 records in
@@ -184,7 +183,7 @@ sys   0m 0.428s
 ```
 # miniz + 6x libpthread (3.1x faster gzip)
 $ rm -f pmgzip; make pmgzip
-$ nl=/dev/null; cmd="./pmgzip qemu.elf"; sync
+$ nl=/dev/null; cmd="./pmgzip -c qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
 0+1307 records in
