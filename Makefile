@@ -98,7 +98,9 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-tests:
+tests: test-basic test-speed
+
+test-basic:
 	@printf "\n=== ptgzip compilation test ===\n\n"
 	rm -f ptgzip test.dz && make ptgzip
 	@printf "\n=== ptgzip file sanity check ===\n\n"
@@ -109,6 +111,17 @@ tests:
 	@printf "\n=== ptgzip '-c' sanity check ===\n\n"
 	./ptgzip -c libz.tar | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f libz.tar libz.tar.gz
+	@echo
+
+test-speed:
+	@printf "\n=== speed test preparation ===\n\n"
+	rm -f ptgzip test.dz && make ptgzip
+	rm -f libz.tar && tar cf libz.tar libz
+	@printf "\n=== ptgzip '-c' speed test ===\n\n"
+	nl=/dev/null && cmd="./ptgzip -c libz.tar" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do   \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
 	@rm -f libz.tar libz.tar.gz
 	@echo
 
