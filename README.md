@@ -7,6 +7,7 @@ Simplicity is the ultimate sophistication (cit.)
 - [Rationale](#rationale) about un/gzip parallel format benefits
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
+- [Development](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
 
 <br>
 
