@@ -101,7 +101,7 @@ $ tail -c 80 ./qemu.elf.pgz | hexdump
 0000040 ccc9 0001  e422 0000  947e 9d49 [7a70 000c]
 0000050
 
-# Sanity check: compile, run and test
+# Sanity check: compile, run and test (try: make tests)
 $ rm -f ptgzip && make ptgzip && ./ptgzip qemu.elf |
   zcat >qemu.dgz; diff qemu.elf qemu.dgz && echo OK
 cc -o ptgzip ptgzip.c -Ilibz/build -Ilibz libz/libz.a \

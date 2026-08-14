@@ -120,7 +120,11 @@ test-speed:
 	rm -f libz.tar && tar cf libz.tar libz
 	@printf "\n=== ptgzip '-c' speed test ===\n\n"
 	nl=/dev/null && cmd="./ptgzip -c libz.tar" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do   \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
+	@printf "\n=== gzip '-c' compare test ===\n\n"
+	nl=/dev/null && cmd="/bin/gzip -c libz.tar" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 	@rm -f libz.tar libz.tar.gz
 	@echo
