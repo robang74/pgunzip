@@ -35,6 +35,7 @@ typedef struct {
     char     state;
     char     error;
     int      idx;
+    int      ofd;
 } chunk_t __attribute((aligned(4)));
 
 /* ------------------------------------------------------------------ */
@@ -90,8 +91,12 @@ typedef struct {
 #define _deflate           deflate
 #define _stream_t        z_stream
 #endif
+
 #define ZBUF_MAX_SIZE (MAX_TARGET + (MAX_TARGET >> 9) + 256)
+
 static int compression_level = Z_DEFAULT_COMPRESSION;
+static int chunk_write(chunk_t *c);
+
 static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
@@ -144,10 +149,6 @@ static void *thread_compress(void *arg)
 #endif
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
-#if _OUT_FREE
-        free(c->out);
-        c->out = NULL;
-#endif
 reterr:
         c->error = 1;
 //      goto endfnc;
@@ -159,14 +160,48 @@ reterr:
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-//  pthread_exit(NULL);
+    if(c->ofd != STDOUT_FILENO && c->out)
+        c->error |= chunk_write(c);
+#if _OUT_FREE
+    free(c->out);
+    c->out = NULL;
+#endif
+    c->state = 3;
     return NULL;
 }
 
-static size_t full_write(int fd, const void *buf, size_t len)
+static int chunk_write(chunk_t *c)
+{
+    int ofd = c->ofd;
+    off_t off = c->offset;
+    size_t len = c->out_len;
+    unsigned char *p = c->out;
+
+    while (len > 0) {
+        ssize_t w = pwrite(ofd, p, len, off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            perror("pwrite");
+            break;
+        }
+        p   += w;
+        off += w;
+        len -= w;
+    }
+    c->len = c->out_len - len;
+
+    return !!len;
+}
+
+static ALWAYS_INLINE
+size_t append_write(int fd, const void *buf, size_t len)
 {
     unsigned char *p = (unsigned char *)buf;
 
+    if(lseek(fd, 0, SEEK_END) < 0) {
+        perror("lseek");
+        return -1;
+    }
     while (len > 0) {
         ssize_t w = write(fd, p, len);
         if (w < 0) {
@@ -187,7 +222,7 @@ static size_t chunk_size;
 static int tot_nseg;
 
 static ALWAYS_INLINE
-chunk_t *chunk_init(chunk_t *c, int idx)
+chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 {
     size_t len;
 init_retray:
@@ -210,13 +245,14 @@ init_retray:
     c->state = 1;
     c->error = 0;
     c->idx = idx;
+    c->ofd = ofd;
     return c;
 }
 
 static ALWAYS_INLINE
-int chunk_work_start(pthread_t *p, chunk_t *c, int idx)
+int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
 {
-    if (pthread_create(p, NULL, thread_compress, chunk_init(c, idx)))
+    if (pthread_create(p, NULL, thread_compress, chunk_init(c, idx, ofd)))
     {
         perror("pthread_create");
         return 1;
@@ -231,6 +267,7 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx)
 /* ========================================================================== */
 #include <getopt.h>
 #define print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
+#define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
 
 static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help      = 0;    /* -h, --help */
@@ -392,16 +429,13 @@ int main(int argc, char **argv)
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nbatch; i++) {
         if (chunk_work_start(&threads[a][i],
-            &chunks[a][i], current++))
+            &chunks[a][i], current++, ofd))
             return 1;
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
 #if _THR_WAIT
-        if(!i) {
-            if(sched_yield()) usleep(1);
-//          pthread_tryjoin_np(threads[a][0], NULL);
-        }
+        if(!i) _cpu_relax();
 #endif
     }
 
@@ -410,10 +444,10 @@ int main(int argc, char **argv)
     {
         for (int i = 0, b = !a; i < nbatch; i++)
         {
-            sched_yield();
 #if _THR_WAIT
             pthread_join(threads[a][i], NULL);
 #else
+            _cpu_relax();
             if(threads[a][i])
                 pthread_tryjoin_np(threads[a][i], NULL);
 #endif
@@ -423,32 +457,38 @@ int main(int argc, char **argv)
                     current + i, c->out_len);
                 return 1;
             }
-            if (c->state != 2)
+            if (c->state != 3)
                 continue;
+            fprintf(stderr, ">>> idx: %2d / %2d, cur: %2d / %2d, off: %ld\n",
+                next_idx, tot_nseg, current, nbatch, c->offset);
+            /* create another thread to do work */
             if(threads[a][i]) {
                 threads[a][i] = 0;
                 if (current < tot_nseg)
                     if (chunk_work_start(&threads[b][i],
-                        &chunks[b][i], current++))
+                        &chunks[b][i], current++, ofd))
                         return 1;
             }
-            if(c->idx != next_idx)
-                continue;
 
-            void *buf  = c->out;
-            size_t len = c->out_len, cap = c->out_cap;
-            memset(c, 0, sizeof(chunk_t));
-/*
-            c->out = NULL;
-            c->state = 0;
-            c->len = 0;
-*/
-
-
-            if(list) list[n++] = len;
-            outlen += full_write(ofd, buf, len);
+            /* ordered writing on STDOUT, only */
+            if (ofd == STDOUT_FILENO) {
+                if (c->idx != next_idx)
+                    continue;
+                if(chunk_write(c))
+                    return 1;
+            } else {
+            //RAF: after chun_write() c->len contains the written size
+                c->len = c->out_len;
+            }
             /* granting the correct order */
             next_idx++;
+            outlen += c->len;
+            if(list) list[n++] = c->len;
+
+            /* disposing the chunk and its buffer */
+            void *buf = c->out;
+            size_t cap = c->out_cap;
+            memset(c, 0, sizeof(chunk_t));
 #if _OUT_FREE
             free(buf);
 #else
@@ -468,6 +508,7 @@ int main(int argc, char **argv)
         a = !a;
     }
 
+out_of_loop:
     /*
      * https://github.com/robang74/uzpexec#parallel-ungzip
      */
@@ -485,7 +526,7 @@ int main(int argc, char **argv)
         unsigned r = outlen & 3; // 32-bit align
         left -= 4-r;
         p  = &p[4-r];
-        outlen += full_write(ofd, p, TABLE_BSIZE);
+        outlen += append_write(ofd, p, TABLE_BSIZE);
     }
 
     if(opt_verbose) {
