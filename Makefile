@@ -98,36 +98,46 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-tests: test-basic test-speed
+tests: test-clean test-basic test-speed test-gzip
+
+test-clean:
+	@printf "\n=== ptgzip compilation test ===\n\n"
+	rm -f ptgzip && make ptgzip
+	@rm -f libz.tar libz.tar.gz
 
 test-basic:
-	@printf "\n=== ptgzip compilation test ===\n\n"
-	rm -f ptgzip test.dz && make ptgzip
 	@printf "\n=== ptgzip file sanity check ===\n\n"
-	rm -f libz.tar && tar cf libz.tar libz
+	test -r libz.tar || tar cf libz.tar libz
 	./ptgzip libz.tar && du -b libz.tar*
 	zcat libz.tar.gz | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f test.dz
 	@printf "\n=== ptgzip '-c' sanity check ===\n\n"
 	./ptgzip -c libz.tar | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
-	@rm -f libz.tar libz.tar.gz
+	@rm -f test.dz
 	@echo
 
 test-speed:
 	@printf "\n=== speed test preparation ===\n\n"
-	rm -f ptgzip test.dz && make ptgzip
-	rm -f libz.tar && tar cf libz.tar libz
+	test -r libz.tar || tar cf libz.tar libz
 	@printf "\n=== ptgzip '-c' speed test ===\n\n"
 	nl=/dev/null && cmd="./ptgzip -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
+
+test-gzip:
 	@printf "\n=== gzip '-c' compare test ===\n\n"
+	test -r libz.tar || tar cf libz.tar libz
 	nl=/dev/null && cmd="/bin/gzip -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 30); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
-	@rm -f libz.tar libz.tar.gz
 	@echo
+
+test-crash:
+	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
+	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0"
+	make test-basic test-speed
 
 # -----------------------------------------------------------------------------
 # Cleanup
