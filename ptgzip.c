@@ -179,10 +179,7 @@ static int chunk_write(chunk_t *c)
     unsigned char *p = c->out;
 
     while (len > 0) {
-        ssize_t w = (ofd == STDOUT_FILENO)
-                  ?  write(ofd, p, len)
-                  : pwrite(ofd, p, len, off)
-                  ;
+        ssize_t w = pwrite(ofd, p, len, off);
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("p/write");
@@ -480,21 +477,21 @@ int main(int argc, char **argv)
             if (ofd == STDOUT_FILENO) {
                 if (c->idx != next_idx)
                     continue;
-                if(chunk_write(c))
-                    return 1;
-            } else {
-            //RAF: after chun_write() c->len contains the written size
-                c->len = c->out_len;
             }
-            /* granting the correct order */
-            next_idx++;
-            outlen += c->len;
-            list[n++] = c->len;
 
             /* disposing the chunk and its buffer */
-            void *buf = c->out;
+            void  *buf = c->out;
             size_t cap = c->out_cap;
+            size_t len = c->out_len;
             memset(c, 0, sizeof(chunk_t));
+
+            /* granting the correct order */
+            next_idx++;
+            outlen += len;
+            list[n++] = (ofd == STDOUT_FILENO)
+                      ? full_write(ofd, buf, len)
+                      : len
+                      ;
 #if _OUT_FREE
             free(buf);
 #else
