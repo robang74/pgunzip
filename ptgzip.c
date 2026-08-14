@@ -406,13 +406,13 @@ int main(int argc, char **argv)
 
     chunk_t chunks[2][MAX_SEGMENTS];
     memset(chunks, 0, sizeof(chunks));
-    uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
+    uint32_t *list = malloc(TABLE_ITEMS << 2);
     if(!list) {
         perror("malloc");
         return 1;
     }
-    list[n++] =  0;
-    list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
+    list[0] =  0;
+    list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
 
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     if(!opt_stdout) {
@@ -475,9 +475,10 @@ int main(int argc, char **argv)
 #if _THR_WAIT
             pthread_join(threads[a][i], NULL);
 #else
-            _cpu_relax();
             if(threads[a][i])
                 pthread_tryjoin_np(threads[a][i], NULL);
+            else
+                _cpu_relax();
 #endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
@@ -488,13 +489,21 @@ int main(int argc, char **argv)
             if (c->state != 3)
                 continue;
 
+#if 0
+if (ofd != STDOUT_FILENO || c->idx == next_idx)
+fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    current, tot_nseg, c->idx, next_idx, ofd,
+    threads[a][i], chunks[b][i].state);
+#endif
+
             /* create another thread to do work */
-            if(threads[a][i]) {
-                threads[a][i] = 0;
-                if (current < tot_nseg)
-                    if (chunk_work_start(&threads[b][i],
-                        &chunks[b][i], current++, ofd))
-                        return 1;
+            if (!chunks[b][i].state
+            && !threads[b][i]
+            && current < tot_nseg
+            ){
+                if (chunk_work_start(&threads[b][i],
+                    &chunks[b][i], current++, ofd))
+                    return 1;
             }
 
             /* ordered writing on STDOUT, only */
@@ -503,19 +512,28 @@ int main(int argc, char **argv)
                     continue;
             }
 
-            /* disposing the chunk and its buffer */
-            void  *buf = c->out;
-            size_t cap = c->out_cap;
-            size_t len = c->out_len;
-            memset(c, 0, sizeof(chunk_t));
+#if 0
+fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
+    threads[a][i], ofd, next_idx, tot_nseg);
+#endif
+
+            /* disposing the thread */
+            pthread_detach(threads[a][i]);
+            threads[a][i] = 0;
 
             /* granting the correct order */
             next_idx++;
-            outlen += len;
-            list[n++] = (ofd == STDOUT_FILENO)
-                      ? full_write(ofd, buf, len)
-                      : len
-                      ;
+            outlen += c->out_len;
+            list[ 2+c->idx ] = (ofd == STDOUT_FILENO)
+                             ? full_write(ofd, c->out, c->out_len)
+                             : c->out_len
+                             ;
+
+            /* disposing the chunk and its buffer */
+            void  *buf = c->out;
+            size_t cap = c->out_cap;
+            memset(c, 0, sizeof(chunk_t));
+
 #if _OUT_FREE
             free(buf);
 #else
