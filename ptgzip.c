@@ -156,6 +156,7 @@ reterr:
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
+//  pthread_exit(NULL);
     return NULL;
 }
 
@@ -217,7 +218,8 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx)
         perror("pthread_create");
         return 1;
     }
-    //pthread_join(*p, NULL);
+//  idx = pthread_tryjoin_np(*p, NULL);
+//  return (!idx || idx == EBUSY);
     return 0;
 }
 
@@ -341,7 +343,6 @@ int main(int argc, char **argv)
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
-
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
     size_t outlen = 0;
     chunk_size = input_filesize;
@@ -360,6 +361,7 @@ int main(int argc, char **argv)
         list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
     }
 
+#define _THR_WAIT 0
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
     int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
 
@@ -373,7 +375,12 @@ int main(int argc, char **argv)
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
-        if(!i) sched_yield();
+#if _THR_WAIT
+        if(!i) {
+            if(sched_yield()) usleep(1);
+//          pthread_tryjoin_np(threads[a][0], NULL);
+        }
+#endif
     }
 
     /* write compressed chunks to stdout in strict segment order */
@@ -381,13 +388,30 @@ int main(int argc, char **argv)
     {
         for (int i = 0, b = !a; i < nbatch; i++)
         {
+            sched_yield();
+#if _THR_WAIT
             pthread_join(threads[a][i], NULL);
+#else
+            if(threads[a][i])
+                pthread_tryjoin_np(threads[a][i], NULL);
+#endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
                     current + i, c->out_len);
                 return 1;
             }
+            if (c->state != 2)
+                continue;
+            if(threads[a][i]) {
+                threads[a][i] = 0;
+                if (current < tot_nseg)
+                    if (chunk_work_start(&threads[b][i],
+                        &chunks[b][i], current++))
+                        return 1;
+            }
+            if(c->idx != next_idx)
+                continue;
 
             void *buf  = c->out;
             size_t len = c->out_len, cap = c->out_cap;
@@ -397,10 +421,7 @@ int main(int argc, char **argv)
             c->state = 0;
             c->len = 0;
 */
-            if (current < tot_nseg)
-                if (chunk_work_start(&threads[b][i],
-                    &chunks[b][i], current++))
-                    return 1;
+
 
             if(list) list[n++] = len;
             outlen += full_write(ofd, buf, len);
@@ -409,10 +430,11 @@ int main(int argc, char **argv)
 #if _OUT_FREE
             free(buf);
 #else
-            if(i+1 >= nbatch)
-                c = &chunks[a][ 0 ]; //RAF: it will be the next one
-            else
+            if(i+1 < nbatch)
                 c = &chunks[b][i+1];
+            else
+                c = &chunks[a][ 0 ]; //RAF: it will be the next one
+
             if(c->out) {
                 free(buf);
             } else {

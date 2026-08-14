@@ -117,13 +117,13 @@ $ rm -f ptgzip; make ptgzip
 $ nl=/dev/null; cmd="./ptgzip qemu.elf"; sync
 $ eval "$cmd" >$nl; time for i in $(seq 1 30);
       do eval "$cmd"; done | dd bs=1M of=$nl
-0+1385 records in
-0+1385 records out
-81517740 bytes (82 MB, 78 MiB) copied, 1.30003 s, 62.7 MB/s
+0+1400 records in
+0+1400 records out
+81517740 bytes (82 MB, 78 MiB) copied, 1.29005 s, 63.2 MB/s
 
-real  0m1.301s # avg: 43.4 ms
-user  0m5.967s
-sys   0m0.167s
+real  0m1.292s # avg: 43.1 ms
+user  0m6.527s
+sys   0m1.211s
 
 ```
 ```
