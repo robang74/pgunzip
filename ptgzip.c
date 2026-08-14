@@ -44,6 +44,10 @@ typedef struct {
 #ifndef _THR_WAIT
 #define _THR_WAIT 1
 #endif
+#ifndef _USE_MMAP
+#define _USE_MMAP 0
+#define _OUT_FREE 0
+#endif
 #ifndef _OUT_FREE
 #define _OUT_FREE 0
 #endif
@@ -279,6 +283,8 @@ static int opt_verbose   = 0;    /* -v, --verbose */
 static int   nfiles = 0;
 static char **names = NULL;
 
+static unsigned char *out_mmap_base = NULL;
+
 #define TABLE_ITEMS ((uint32_t)tot_nseg + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 #define PGZ_MAGIC_1 0x6274
@@ -383,27 +389,10 @@ int main(int argc, char **argv)
     /* ---- mmap entire file (zero-copy input for all threads) ---- */
     mmap_base = mmap(NULL, input_filesize, PROT_READ, MAP_PRIVATE, infd, 0);
     if (mmap_base == MAP_FAILED) {
-        perror("mmap");
+        perror("mmap infd");
         return 1;
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
-
-    if(!opt_stdout) {
-        size_t len = strlen(names[0]) + 4;
-        char *str = malloc(len);
-        if(!str) {
-            perror("malloc");
-            return 1;
-        }
-        snprintf(str, len, "%s.gz", names[0]);
-        //RAF, TODO: to check the original file permissions, if any than STDIN
-        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
-        if (ofd < 0) {
-            perror("open");
-            return 1;
-        }
-        free(str);
-    }
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
     size_t outlen = 0;
@@ -424,6 +413,41 @@ int main(int argc, char **argv)
     }
     list[n++] =  0;
     list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
+
+    /* ---- deal with the output file, when '-c' isn't among arguments ---- */
+    if(!opt_stdout) {
+        size_t len = strlen(names[0]) + 4;
+        char *str = malloc(len);
+        if(!str) {
+            perror("malloc");
+            return 1;
+        }
+        snprintf(str, len, "%s.gz", names[0]);
+        //RAF, TODO: to check the original file permissions, if any than STDIN
+        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
+        if (ofd < 0) {
+            perror("open");
+            return 1;
+        }
+        free(str);
+#if _USE_MMAP
+        size_t max_out_size = ((size_t)tot_nseg * ZBUF_MAX_SIZE) + TABLE_BSIZE;
+
+        /* 1. Pre-allocate max size for output mmap */
+        if (ftruncate(ofd, max_out_size) < 0) {
+            perror("ftruncate");
+            return 1;
+        }
+
+        /* 2. Map output file into virtual memory */
+        out_mmap_base = mmap(NULL, max_out_size,
+            PROT_READ | PROT_WRITE, MAP_SHARED, ofd, 0);
+        if (out_mmap_base == MAP_FAILED) {
+            perror("mmap out");
+            return 1;
+        }
+#endif
+    }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
     int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
