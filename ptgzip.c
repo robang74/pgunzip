@@ -40,6 +40,9 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
+#ifndef _THR_WAIT
+#define _THR_WAIT 1
+#endif
 #ifndef _OUT_FREE
 #define _OUT_FREE 0
 #endif
@@ -381,7 +384,6 @@ int main(int argc, char **argv)
         list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
     }
 
-#define _THR_WAIT 0
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
     int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
 
