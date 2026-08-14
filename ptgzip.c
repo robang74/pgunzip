@@ -123,6 +123,7 @@ static void *thread_compress(void *arg)
         c->out = malloc(c->out_cap);
     }
     if (!c->out) {
+        perror("malloc");
         goto reterr;
     }
 
@@ -266,6 +267,7 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
 /* Main                                                                       */
 /* ========================================================================== */
 #include <getopt.h>
+#define list_enabled 1
 #define print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
 
@@ -393,9 +395,13 @@ int main(int argc, char **argv)
     if(!opt_stdout) {
         size_t len = strlen(names[0]) + 4;
         char *str = malloc(len);
+        if(!str) {
+            perror("malloc");
+            return 1;
+        }
         snprintf(str, len, "%s.gz", names[0]);
         //RAF, TODO: to check the original file permissions, if any than STDIN
-        ofd = creat(str, S_IRUSR | S_IWUSR | S_IRGRP);
+        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
         if (ofd < 0) {
             perror("open");
             return 1;
@@ -416,10 +422,12 @@ int main(int argc, char **argv)
     chunk_t chunks[2][MAX_SEGMENTS];
     memset(chunks, 0, sizeof(chunks));
     uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
-    if(list) {
-        list[n++] =  0;
-        list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
+    if(!list) {
+        perror("malloc");
+        return 1;
     }
+    list[n++] =  0;
+    list[n++] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
     int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
@@ -483,7 +491,7 @@ int main(int argc, char **argv)
             /* granting the correct order */
             next_idx++;
             outlen += c->len;
-            if(list) list[n++] = c->len;
+            list[n++] = c->len;
 
             /* disposing the chunk and its buffer */
             void *buf = c->out;
@@ -509,10 +517,57 @@ int main(int argc, char **argv)
     }
 
 out_of_loop:
+    if (ofd == STDOUT_FILENO)
+        goto write_table;
+    for(int i = 2; i < n; i++)
+         fprintf(stderr, ">>> list[%2d]: %u\n", i, list[i]);
+
+    /*
+     * In-place File Reorganization using Kernel-Level Zero-Copy
+     */
+    /* Loop through all compressed chunk lengths stored in list[]  */
+
+    size_t write_size;
+    off_t read_pos, write_pos = 0;
+
+    for (int i = 1; i < tot_nseg; i++) {
+        read_pos = (off_t)i * chunk_size;
+        write_pos += list[i + 1];
+        write_size = list[i + 2];
+
+        if (read_pos == write_pos)
+            continue;
+
+        /* Zero-copy shift using the kernel (no userspace buffers) */
+        off_t off_in  = read_pos;
+        off_t off_out = write_pos;
+        size_t bytes  = write_size;
+        while (bytes > 0) {
+            fprintf(stderr, "1>> off_in: %ld, off_out: %ld, left: %ld\n",
+                off_in, off_out, bytes);
+            ssize_t ret = copy_file_range(ofd,
+                &off_in, ofd, &off_out, bytes, 0);
+            fprintf(stderr, "2>> off_in: %ld, off_out: %ld, left: %ld\n",
+                off_in, off_out, bytes);
+            if (ret < 0) {
+                if (errno == EINTR) continue;
+                perror("copy_file_range");
+                return 1;
+            }
+            bytes -= ret;
+        }
+    }
+    /* Truncate the trailing sparse holes left behind */
+    if (ftruncate(ofd, write_pos) < 0) {
+        perror("ftruncate");
+        return 1;
+    }
+
+write_table:
     /*
      * https://github.com/robang74/uzpexec#parallel-ungzip
      */
-    if(list) {
+    if(list_enabled) {
         size_t sum = 0, left = TABLE_BSIZE;
         list[TABLE_ITEMS-1]  = ((TABLE_ITEMS-4) << 16);
         list[TABLE_ITEMS-1] |=   PGZ_MAGIC_2; // items + magic
@@ -536,11 +591,5 @@ out_of_loop:
             compression_level);
     }
 
-/*
-    free(list);
-    for (int j = 0; j < nbatch; j++)
-        free(chunks[j].out);
-    munmap(mmap_base, input_filesize);
-*/
     return 0;
 }
