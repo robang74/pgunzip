@@ -26,8 +26,8 @@
 #endif
 
 typedef struct {
-    off_t   offset;
-    size_t  len;
+    size_t   len;
+    off_t    offset;
     unsigned char *in;      /* pointer into mmap */
     unsigned char *out;
     size_t   out_cap;
@@ -35,7 +35,7 @@ typedef struct {
     char     state;
     char     error;
     int      idx;
-} chunk_t;
+} chunk_t __attribute((aligned(4)));
 
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer    */
@@ -352,7 +352,8 @@ int main(int argc, char **argv)
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
-    chunk_t chunks[2][MAX_SEGMENTS] = {0};
+    chunk_t chunks[2][MAX_SEGMENTS];
+    memset(chunks, 0, sizeof(chunks));
     uint32_t n = 0, *list = malloc(TABLE_ITEMS << 2);
     if(list) {
         list[n++] =  0;
@@ -360,7 +361,7 @@ int main(int argc, char **argv)
     }
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    int a = 0;
+    int a = 0, next_idx = 0;
     for (int current = 0; current < tot_nseg; )
     {
         int end = current + MAX_SEGMENTS;
@@ -370,6 +371,7 @@ int main(int argc, char **argv)
 
         /* setup chunk descriptors and output buffers, spawn worker threads */
         pthread_t threads[2][MAX_SEGMENTS];
+        memset(threads, 0, sizeof(threads));
         for (int i = 0; i < nbatch; i++) {
             if (chunk_work_start(&threads[a][i],
                 &chunks[a][i], current++))
@@ -394,8 +396,12 @@ compr_loop:
 
             void *buf  = c->out;
             size_t len = c->out_len, cap = c->out_cap;
+            memset(c, 0, sizeof(chunk_t));
+/*
             c->out = NULL;
             c->state = 0;
+            c->len = 0;
+*/
             if (current < tot_nseg)
                 if (chunk_work_start(&threads[!a][i],
                     &chunks[!a][i], current++))
@@ -403,6 +409,8 @@ compr_loop:
 
             if(list) list[n++] = len;
             outlen += full_write(ofd, buf, len);
+            /* granting the correct order */
+            next_idx++;
 #if _OUT_FREE
             free(buf);
 #else
@@ -413,16 +421,14 @@ compr_loop:
             if(c->out) {
                 free(buf);
             } else {
-                memset(c, 0, sizeof(chunk_t));
                 c->out_cap = cap;
                 c->out = buf;
             }
 #endif
         }
         a = !a;
-        for (int i = 0; i < nbatch; i++)
-            if(chunks[a][i].state)
-                goto compr_loop;
+        if(next_idx < tot_nseg)
+            goto compr_loop;
     }
 
     /*
