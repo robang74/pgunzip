@@ -112,7 +112,7 @@ libz.tar:
 blkline:
 	@echo
 
-tests: _test-clean _test-basic blkline _test-speed _test-gzip
+tests: _test-clean _test-basic blkline _test-speed _test-gzipc
 	@echo
 
 _test-clean:
