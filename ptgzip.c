@@ -243,7 +243,8 @@ size_t full_write(int fd, const void *buf, size_t len)
 
 #define is_chunk_freeable(_c) (_c->out && !_c->map)
 
-static unsigned char *read_mmap_base;
+static unsigned char *read_mmap_base = NULL;
+static unsigned char *out_mmap_base = NULL;
 static off_t read_filesize;
 static size_t max_out_size;
 static size_t chunk_size;
@@ -323,8 +324,6 @@ static int opt_verbose   = 0;    /* -v, --verbose */
 /* --- file list --- */
 static int   nfiles = 0;
 static char **names = NULL;
-
-static unsigned char *out_mmap_base = NULL;
 
 #define TABLE_ITEMS ((uint32_t)tot_nseg + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
@@ -617,8 +616,8 @@ out_of_loop:
         }
         write_ptr += c_len;
     }
-    msync(out_mmap_base, out_mmap_base, MS_SYNC);
     outlen = write_ptr - out_mmap_base;
+    msync(out_mmap_base, outlen, MS_SYNC);
 #else
     /* Loop through all compressed chunk lengths stored in list[]  */
     off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
