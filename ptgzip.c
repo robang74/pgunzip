@@ -31,7 +31,7 @@
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 
 #define MAX_SEGMENTS    6
-#define MAX_TARGET     (1UL << 20)     /* max target size per segment */
+#define MAX_TARGET     (1UL << 18)     /* max target size per segment */
 
 #ifndef _BE_VERBOSE
 #define _BE_VERBOSE     0
@@ -78,6 +78,7 @@ typedef struct {
 #endif
 #if   _USE_ZNG
 #include "zlib-ng.h"
+#define libz_name      "zlib-ng"
 #define _deflate_init2 zng_deflateInit2
 #define _deflate_bound zng_deflateBound
 #define _deflate_end   zng_deflateEnd
@@ -85,6 +86,7 @@ typedef struct {
 #define _stream_t      zng_stream
 #elif _USE_MNZ
 #include <miniz.h>
+#define libz_name       "miniz"
 #define _deflate_init2  mz_deflateInit2
 #define _deflate_bound  mz_deflateBound
 #define _deflate_end    mz_deflateEnd
@@ -102,6 +104,7 @@ typedef struct {
 #define Z_DEFAULT_COMPRESSION 6
 #else
 #include <zlib.h>
+#define libz_name          "zlib"
 #define _deflate_init2     deflateInit2
 #define _deflate_bound     deflateBound
 #define _deflate_end       deflateEnd
@@ -109,10 +112,14 @@ typedef struct {
 #define _stream_t        z_stream
 #endif
 
+#ifndef libz_name
+#define libz_name          "none"
+#endif
+
 #define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
 #define ZBUF_MAX_SIZE zbuf_max_size(chunk_size)
 
-static int compression_level = Z_DEFAULT_COMPRESSION;
+static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 
 static void *thread_compress(void *arg)
@@ -202,7 +209,8 @@ endfnc:
     return NULL;
 }
 
-static int chunk_write(chunk_t *c)
+static ALWAYS_INLINE
+int chunk_write(chunk_t *c)
 {
     int ofd = c->ofd;
     off_t off = c->offset;
@@ -339,6 +347,8 @@ static char **names = NULL;
 int main(int argc, char **argv)
 {
     int ofd = STDOUT_FILENO;
+    int nbatch;
+
 #if _USE_OPT
     static struct option longopts[] = {
         {"stdout",      no_argument,       NULL, 'c'},
@@ -406,6 +416,13 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    nbatch = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nbatch > MAX_SEGMENTS)
+        nbatch = MAX_SEGMENTS;
+    else
+    if (nbatch < 1)
+        nbatch = 2;
+
     signal(SIGPIPE, SIG_IGN);
 
     int infd = open(names[0], O_RDONLY);
@@ -444,7 +461,7 @@ int main(int argc, char **argv)
     chunk_size = read_filesize;
     tot_nseg = 0;
     do {
-        tot_nseg += MAX_SEGMENTS;
+        tot_nseg += nbatch;
         chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
@@ -493,10 +510,9 @@ int main(int argc, char **argv)
         }
 #endif
     }
-not_use_mmap:
 
-    /* ---- process in batches of exactly MAX_SEGMENTS ---- */
-    int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
+not_use_mmap:
+    int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
     pthread_t threads[2][MAX_SEGMENTS];
@@ -692,10 +708,9 @@ write_table:
     }
 
     if(opt_verbose) {
-        fprintf(stderr, "file: %d x %zu = %ld, size: %lu (%0.1f%%, -%d)\n",
-            tot_nseg, chunk_size, read_filesize, outlen,
-            (float)outlen*100/read_filesize,
-            compression_level);
+        fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
+            " zlvl: %d\n", libz_name, nbatch, tot_nseg, chunk_size, read_filesize,
+                outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
     if(read_mmap_base)
