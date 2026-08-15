@@ -547,7 +547,7 @@ not_use_mmap:
                     current + i, c->out_len);
                 return 1;
             }
-            if (c->state < 2)
+            if (c->state < 2 + (ofd == STDOUT_FILENO))
                 continue;
 
 #if 0
@@ -591,7 +591,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             /* granting the correct order */
             next_idx++;
             if(ofd == STDOUT_FILENO)
-                c->out_len = full_write(ofd, c->out, c->out_len);
+                full_write(ofd, c->out, c->out_len);
             outlen += c->out_len;
             list[ 2+c->idx ] = c->out_len;
 
@@ -600,8 +600,8 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             size_t cap = c->out_cap;
             memset(c, 0, sizeof(chunk_t));
 
-#if _USE_MMAP
-#else
+            if(out_mmap_base)
+                continue;
   #if _USE_FREE
             free(buf);
   #else
@@ -609,7 +609,6 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 c = &chunks[b][i+1];
             else
                 c = &chunks[a][ 0 ]; //RAF: it will be the next one
-
             if(c->out) {
                 free(buf);
             } else {
@@ -617,7 +616,6 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 c->out = buf;
             }
   #endif
-#endif
         }
         a = !a;
     }
