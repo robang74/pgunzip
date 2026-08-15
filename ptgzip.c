@@ -55,10 +55,10 @@ typedef struct {
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
 #ifndef _THR_WAIT
-#define _THR_WAIT 1
+#define _THR_WAIT 0
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP 0 /* 1, when code will be completed and tested */
+#define _USE_MMAP 1
 #define _USE_FREE 0
 #endif
 #ifndef _USE_FREE
@@ -187,8 +187,11 @@ reterr:
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
+#if _USE_MMAP
+#else
     if(c->ofd != STDOUT_FILENO && c->out)
         c->error |= chunk_write(c);
+#endif
 #if _USE_FREE
     if (is_chunk_freeable(c)) {
         free(c->out);
@@ -568,20 +571,21 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 
             /* granting the correct order */
             next_idx++;
+            if(ofd == STDOUT_FILENO)
+                c->out_len = full_write(ofd, c->out, c->out_len);
             outlen += c->out_len;
-            list[ 2+c->idx ] = (ofd == STDOUT_FILENO)
-                             ? full_write(ofd, c->out, c->out_len)
-                             : c->out_len
-                             ;
+            list[ 2+c->idx ] = c->out_len;
 
             /* disposing the chunk and its buffer */
             void  *buf = c->out;
             size_t cap = c->out_cap;
             memset(c, 0, sizeof(chunk_t));
 
-#if _USE_FREE
-            free(buf);
+#if _USE_MMAP
 #else
+  #if _USE_FREE
+            free(buf);
+  #else
             if(i+1 < nbatch)
                 c = &chunks[b][i+1];
             else
@@ -593,6 +597,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 c->out_cap = cap;
                 c->out = buf;
             }
+  #endif
 #endif
         }
         a = !a;
@@ -616,7 +621,7 @@ out_of_loop:
         }
         write_ptr += c_len;
     }
-    outlen = write_ptr - out_mmap_base;
+    outlen += write_ptr - out_mmap_base;
     msync(out_mmap_base, outlen, MS_SYNC);
 #else
     /* Loop through all compressed chunk lengths stored in list[]  */
