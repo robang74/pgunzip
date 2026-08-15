@@ -58,7 +58,7 @@ typedef struct {
 #define _THR_WAIT 1
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP 0
+#define _USE_MMAP 0 /* 1, when code will be completed and tested */
 #define _USE_FREE 0
 #endif
 #ifndef _USE_FREE
@@ -110,7 +110,7 @@ typedef struct {
 #endif
 
 #define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
-#define ZBUF_MAX_SIZE zbuf_max_size(MAX_TARGET)
+#define ZBUF_MAX_SIZE zbuf_max_size(chunk_size)
 
 static int compression_level = Z_DEFAULT_COMPRESSION;
 static int chunk_write(chunk_t *c);
@@ -138,7 +138,7 @@ static void *thread_compress(void *arg)
      */
     if (!c->out) {
         /*
-        * RAF: potentially the bound could be larger than the zbuf_max_size()
+        * RAF: potentially the bound could be larger than the ZBUF_MAX_SIZE
         *      in case the library differs from the current ones tested and
         *      in such a case there is a good canche that USE_MMAP would fail
         *      silently, in some corner cases when writing out of bond will
@@ -243,8 +243,9 @@ size_t full_write(int fd, const void *buf, size_t len)
 
 #define is_chunk_freeable(_c) (_c->out && !_c->map)
 
-static unsigned char *mmap_base;
-static off_t input_filesize;
+static unsigned char *read_mmap_base;
+static off_t read_filesize;
+static size_t max_out_size;
 static size_t chunk_size;
 static int tot_nseg;
 
@@ -256,14 +257,14 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 
     offset = (off_t)idx * chunk_size;
     len    = (idx == tot_nseg - 1)
-           ? (size_t)(input_filesize - offset)
+           ? (size_t)(read_filesize - offset)
            : chunk_size;
-    c->in  = mmap_base + offset;
-    c->out_cap = zbuf_max_size(chunk_size);
+    c->in  = read_mmap_base + offset;
+    c->out_cap = ZBUF_MAX_SIZE;
     c->map = 0;
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
-    if (ofd != STDOUT_FILENO) {
+    if (out_mmap_base) {
         c->out = out_mmap_base + ((off_t)idx * c->out_cap);
         c->map = 1;
     }
@@ -421,14 +422,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    input_filesize = st.st_size;
-    if (input_filesize == 0) {
+    if(!st.st_size) {
+        print2("warning: zero lenght file\n");
         return 0;
     }
+    read_filesize = st.st_size;
 
     /* ---- mmap entire file (zero-copy input for all threads) ---- */
-    mmap_base = mmap(NULL, input_filesize, PROT_READ, MAP_PRIVATE, infd, 0);
-    if (mmap_base == MAP_FAILED) {
+    //RAF, TODO: we take mmap() for granted but code should work also without it
+    read_mmap_base = mmap(NULL, read_filesize, PROT_READ, MAP_PRIVATE, infd, 0);
+    if (read_mmap_base == MAP_FAILED) {
         perror("mmap infd");
         return 1;
     }
@@ -436,11 +439,11 @@ int main(int argc, char **argv)
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
     size_t outlen = 0;
-    chunk_size = input_filesize;
+    chunk_size = read_filesize;
     tot_nseg = 0;
     do {
         tot_nseg += MAX_SEGMENTS;
-        chunk_size = (input_filesize + (tot_nseg - 1)) / tot_nseg;
+        chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
     } while (chunk_size > MAX_TARGET);
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
@@ -471,12 +474,12 @@ int main(int argc, char **argv)
         }
         free(str);
 #if _USE_MMAP
-        size_t max_out_size = ((size_t)tot_nseg * ZBUF_MAX_SIZE) + TABLE_BSIZE;
+        max_out_size = ((size_t)tot_nseg * ZBUF_MAX_SIZE) + TABLE_BSIZE;
 
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
             perror("ftruncate");
-            return 1;
+            goto not_use_mmap;
         }
 
         /* 2. Map output file into virtual memory */
@@ -484,10 +487,11 @@ int main(int argc, char **argv)
             PROT_READ | PROT_WRITE, MAP_SHARED, ofd, 0);
         if (out_mmap_base == MAP_FAILED) {
             perror("mmap out");
-            return 1;
+            goto not_use_mmap;
         }
 #endif
     }
+not_use_mmap:
 
     /* ---- process in batches of exactly MAX_SEGMENTS ---- */
     int a = 0, next_idx = 0, current = 0, nbatch = MAX_SEGMENTS;
@@ -602,6 +606,20 @@ out_of_loop:
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
      */
+#if _USE_MMAP
+    unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
+    for (int i = 1; i < tot_nseg; i++) {
+        unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
+        size_t c_len = list[i + 2];
+
+        if (read_ptr != write_ptr) {
+            memmove(write_ptr, read_ptr, c_len);
+        }
+        write_ptr += c_len;
+    }
+    msync(out_mmap_base, out_mmap_base, MS_SYNC);
+    outlen = write_ptr - out_mmap_base;
+#else
     /* Loop through all compressed chunk lengths stored in list[]  */
     off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
     for (int i = 1; i < tot_nseg; i++) {
@@ -626,8 +644,10 @@ out_of_loop:
         }
         write_pos += write_size;
     }
-    /* Update outlen and truncate remaining sparse tail */
     outlen = write_pos;
+#endif
+
+    /* Update outlen and truncate remaining sparse tail */
     if (ftruncate(ofd, outlen) < 0) {
         perror("ftruncate");
         return 1;
@@ -639,7 +659,8 @@ out_of_loop:
 
 write_table:
     /*
-     * https://github.com/robang74/uzpexec#parallel-ungzip
+     * Append metadata table as initially described at this link
+     *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
      */
     if(list_enabled) {
         size_t sum = 0, left = TABLE_BSIZE;
@@ -655,15 +676,27 @@ write_table:
         unsigned r = outlen & 3; // 32-bit align
         left -= 4-r;
         p  = &p[4-r];
-        outlen += full_write(ofd, p, TABLE_BSIZE);
+        if (out_mmap_base) {
+            memcpy(out_mmap_base + outlen, p, TABLE_BSIZE);
+            outlen += TABLE_BSIZE;
+        } else {
+            outlen += full_write(ofd, p, TABLE_BSIZE);
+        }
     }
 
     if(opt_verbose) {
         fprintf(stderr, "file: %d x %zu = %ld, size: %lu (%0.1f%%, -%d)\n",
-            tot_nseg, chunk_size, input_filesize, outlen,
-            (float)outlen*100/input_filesize,
+            tot_nseg, chunk_size, read_filesize, outlen,
+            (float)outlen*100/read_filesize,
             compression_level);
     }
+
+    if(read_mmap_base)
+        munmap(read_mmap_base, read_filesize);
+    if(out_mmap_base)
+        munmap(out_mmap_base, max_out_size);
+    close(ofd);
+    free(list);
 
     return 0;
 }
