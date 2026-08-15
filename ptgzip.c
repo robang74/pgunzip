@@ -57,7 +57,6 @@ typedef struct {
 #ifndef _THR_WAIT
 #define _THR_WAIT 1
 #endif
-#define  THR_WAIT (_THR_WAIT || ofd == STDOUT_FILENO)
 #ifndef _USE_MMAP
 #define _USE_MMAP 1
 #define _USE_FREE 0
@@ -525,11 +524,11 @@ not_use_mmap:
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
-        if (THR_WAIT) {
-            if(!i) _cpu_relax();
-        } else {
-            pthread_detach(threads[a][i]);
-        }
+#if _THR_WAIT
+        if(!i) _cpu_relax();
+#else
+        pthread_detach(threads[a][i]);
+#endif
     }
 
     /* write compressed chunks to stdout in strict segment order */
@@ -537,11 +536,11 @@ not_use_mmap:
     {
         for (int i = 0, b = !a; i < nbatch; i++)
         {
-            if (THR_WAIT)
-                pthread_join(threads[a][i], NULL);
-            else
-                _cpu_relax();
-
+#if _THR_WAIT
+            pthread_join(threads[a][i], NULL);
+#else
+            _cpu_relax();
+#endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
                 print2("compression failed on chunk %d, size: %lu\n",
@@ -569,13 +568,14 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             }
 
             /* ordered writing on STDOUT, only */
-            if (THR_WAIT || ofd == STDOUT_FILENO) {
+            if (ofd == STDOUT_FILENO) {
                 if (c->idx != next_idx)
                     continue;
-            } else {
-                if (c->state != 3)
-                    continue;
             }
+            /* thread write done or ready to */
+            if (c->state != 3)
+                continue;
+
 #if 0
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
     threads[a][i], ofd, next_idx, tot_nseg);
