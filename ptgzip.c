@@ -1,4 +1,16 @@
-// (c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2
+/*
+ * (c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2
+ *
+ * Note: some comment has been written by AI (diverse AI) because the AI was
+ *       involved in writing templates about using specific functions or was
+ *       asked to peer-review the code and/or commenting it. Sometimes also
+ *       the code has been written by AI when like re-arranging the file by
+ *       the list[] as source of truth, the implementation can vary but the
+ *       conceptual problem as a deterministc mechanical solution. In that
+ *       case my role as author was to remove the AI's overthinking related
+ *       to general list[] corner cases which do not happen here by design.
+ *       Memento: the AI is just a tool, as long as properly used, useful.
+ */
 
 #define _GNU_SOURCE
 
@@ -32,10 +44,11 @@ typedef struct {
     unsigned char *out;
     size_t   out_cap;
     size_t   out_len;
-    char     state;
-    char     error;
     int      idx;
     int      ofd;
+    char     map;
+    char     state;
+    char     error;
 } chunk_t __attribute((aligned(4)));
 
 /* ------------------------------------------------------------------ */
@@ -46,10 +59,10 @@ typedef struct {
 #endif
 #ifndef _USE_MMAP
 #define _USE_MMAP 0
-#define _OUT_FREE 0
+#define _USE_FREE 0
 #endif
-#ifndef _OUT_FREE
-#define _OUT_FREE 0
+#ifndef _USE_FREE
+#define _USE_FREE 0
 #endif
 #ifndef _USE_OPT
 #define _USE_OPT 1
@@ -96,7 +109,8 @@ typedef struct {
 #define _stream_t        z_stream
 #endif
 
-#define ZBUF_MAX_SIZE (MAX_TARGET + (MAX_TARGET >> 9) + 256)
+#define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
+#define ZBUF_MAX_SIZE zbuf_max_size(MAX_TARGET)
 
 static int compression_level = Z_DEFAULT_COMPRESSION;
 static int chunk_write(chunk_t *c);
@@ -122,15 +136,23 @@ static void *thread_compress(void *arg)
      *    Incompressible data EXPANDS by ~0.1 % + headers.
      *    c->len alone guarantees a buffer overrun on random bytes.
      */
-    if(_OUT_FREE || !c->out) {
-        c->out_cap = _deflate_bound(&strm, c->len);
-        c->out = malloc(c->out_cap);
-    }
     if (!c->out) {
-        perror("malloc");
-        goto reterr;
+        /*
+        * RAF: potentially the bound could be larger than the zbuf_max_size()
+        *      in case the library differs from the current ones tested and
+        *      in such a case there is a good canche that USE_MMAP would fail
+        *      silently, in some corner cases when writing out of bond will
+        *      corrupt data and thus creating a corrupted gzip archive or when
+        *      the ending bound would be violated and thus the kernel SEGVDEF.
+        */
+        size_t cap = _deflate_bound(&strm, c->len);
+        if (cap > c->out_cap) c->out_cap = cap;
+        c->out = malloc(c->out_cap);
+        if (!c->out) {
+            perror("malloc");
+            goto reterr;
+        }
     }
-
     strm.next_in   = c->in;
     strm.avail_in  = c->len;
     strm.next_out  = c->out;
@@ -167,9 +189,11 @@ endfnc:
     c->state = 2;
     if(c->ofd != STDOUT_FILENO && c->out)
         c->error |= chunk_write(c);
-#if _OUT_FREE
-    free(c->out);
-    c->out = NULL;
+#if _USE_FREE
+    if (is_chunk_freeable(c)) {
+        free(c->out);
+        c->out = NULL;
+    }
 #endif
     c->state = 3;
     return NULL;
@@ -217,6 +241,8 @@ size_t full_write(int fd, const void *buf, size_t len)
     return p - (unsigned char *)buf;
 }
 
+#define is_chunk_freeable(_c) (_c->out && !_c->map)
+
 static unsigned char *mmap_base;
 static off_t input_filesize;
 static size_t chunk_size;
@@ -226,27 +252,41 @@ static ALWAYS_INLINE
 chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 {
     size_t len;
-init_retray:
-    c->offset = (off_t)idx * chunk_size;
-    len = (idx == tot_nseg - 1)
-           ? (size_t)(input_filesize - c->offset)
+    off_t offset;
+
+    offset = (off_t)idx * chunk_size;
+    len    = (idx == tot_nseg - 1)
+           ? (size_t)(input_filesize - offset)
            : chunk_size;
-#if _OUT_FREE
-#else
-    if(c->out && c->len && len > c->len) {
-        fprintf(stderr, "DBG> chunk_init() c->len mess!\n");
-        exit(127); //RAF,TODO: debug only
-        free(c->out);
-        memset(c, 0, sizeof(chunk_t));
-        goto init_retray;
+    c->in  = mmap_base + offset;
+    c->out_cap = zbuf_max_size(chunk_size);
+    c->map = 0;
+#if _USE_MMAP
+    /* Assign output pointer inside mapped output file space */
+    if (ofd != STDOUT_FILENO) {
+        c->out = out_mmap_base + ((off_t)idx * c->out_cap);
+        c->map = 1;
     }
+    else
 #endif
+    if (is_chunk_freeable(c)
+#if _USE_FREE
+#else /* RAF: free() here is a corner case that "should" never happen by
+       *      design but if it would happen, it is better deal than oops
+       */
+    &&  c->len && len > c->len
+#endif
+    ){
+        free(c->out);
+        c->out = NULL;
+    }
+    c->offset = offset;
     c->len = len;
-    c->in = mmap_base + c->offset;
     c->state = 1;
     c->error = 0;
     c->idx = idx;
     c->ofd = ofd;
+
     return c;
 }
 
@@ -536,7 +576,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             size_t cap = c->out_cap;
             memset(c, 0, sizeof(chunk_t));
 
-#if _OUT_FREE
+#if _USE_FREE
             free(buf);
 #else
             if(i+1 < nbatch)
