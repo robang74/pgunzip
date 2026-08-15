@@ -531,7 +531,7 @@ not_use_mmap:
                     current + i, c->out_len);
                 return 1;
             }
-            if (c->state != 3)
+            if (c->state < 2)
                 continue;
 
 #if 0
@@ -560,6 +560,9 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                 if (c->idx != next_idx)
                     continue;
             }
+
+            if (c->state != 3)
+                continue;
 
 #if 0
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
