@@ -30,7 +30,7 @@
 
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 
-#define MAX_SEGMENTS    6
+#define MAX_SEGMENTS    16
 #define MAX_TARGET     (1UL << 18)     /* max target size per segment */
 
 #ifndef _BE_VERBOSE
@@ -55,7 +55,7 @@ typedef struct {
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
 #ifndef _THR_WAIT
-#define _THR_WAIT 0
+#define _THR_WAIT 1
 #endif
 #ifndef _USE_MMAP
 #define _USE_MMAP 1
