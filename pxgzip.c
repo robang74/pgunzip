@@ -77,7 +77,6 @@ static void chunk_destroy(chunk_t *c)
         close(c->infd);
         c->infd = -1;
     }
-
 }
 
 /* ------------------------------------------------------------------ */
@@ -340,7 +339,7 @@ int main(int argc, char **argv)
     int ret = 0;
     off_t total;
 
-    if (argc != 2) {
+    if (argc < 2) {
         fprintf(stderr, "Usage: %s <filename>\n", argv[0]);
         return 1;
     }

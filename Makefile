@@ -107,6 +107,12 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
 
 CMD2T ?= ptgzip
+CMDVF  =
+CMDVC  = -c
+ifeq ($(CMD2T),pxgzip)
+CMDVF  = > libz.tar.gz
+CMDVC  =
+endif
 
 libz.tar:
 	@tar cf libz.tar libz
@@ -117,47 +123,55 @@ blkline:
 tests: test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
 	@echo
 
-speed: $(CMD2T)
+speed:
 	@make _test-basic _test-speed _test-speef CMD2T=$(CMD2T) blkline
 	@echo
 
-_test-clean:
+/bin/pigz:
+	@printf "\nERROR: $@ not installed, abort\n\n"
+	false
+
+/bin/gzip:
+	@printf "\nERROR: $@ not installed, abort\n\n"
+	false
+
+_test-clean: $(CMD2T)
 	@printf "\n=== $(CMD2T) compilation test ===\n\n"
 	rm -f $(CMD2T) && make $(CMD2T)
 	@rm -f libz.tar libz.tar.gz
 
 test-clean: _test-clean blkline
 
-_test-basic: _test-clean libz.tar
+_test-basic: _test-clean libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file sanity check ===\n\n"
-	./$(CMD2T) libz.tar && du -b libz.tar*
+	./$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
 	zcat libz.tar.gz | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
-	./$(CMD2T) -c libz.tar | zcat | tee test.dz | wc -c
+	./$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 
 test-basic: _test-basic blkline
 
-_test-speed: libz.tar
+_test-speed: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="./$(CMD2T) -c libz.tar" && sync && \
+	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
 test-speed: _test-speed blkline
 
-_test-speef: libz.tar
+_test-speef: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="./$(CMD2T) libz.tar" && sync && \
+	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVF)" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 
 test-speef: _test-speef blkline
 
-_test-gzipc: libz.tar
+_test-gzipc: libz.tar /bin/gzip
 	@printf "\n=== gzip '-c' compare test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="/bin/gzip -kn -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
@@ -165,7 +179,7 @@ _test-gzipc: libz.tar
 
 test-gzipc: _test-gzipc blkline
 
-_test-gzipf: libz.tar
+_test-gzipf: libz.tar /bin/gzip
 	@printf "\n=== gzip file compare test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="/bin/gzip -knf libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
@@ -173,7 +187,7 @@ _test-gzipf: libz.tar
 
 test-gzipf: _test-gzipf blkline
 
-_test-pigzf: libz.tar
+_test-pigzf: libz.tar /bin/pigz
 	@printf "\n=== pigz file compare test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="/bin/pigz -p6 -knmf libz.tar" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
@@ -181,7 +195,7 @@ _test-pigzf: libz.tar
 
 test-pigzf: _test-pigzf blkline
 
-_test-pigzc: libz.tar
+_test-pigzc: libz.tar /bin/pigz
 	@printf "\n=== pigz '-c' compare test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="/bin/pigz -p6 -knmf -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
@@ -196,7 +210,7 @@ _test-crash:
 
 test-crash: _test-crash blkline
 
-_test-zsize: libz.tar
+_test-zsize: libz.tar ptgzip
 	@printf "\n=== compress size/time comparison (zlib-ng) ===\n"
 	@printf "\n>>> NOTE: for a fair comparison 'pigz -p6', same as 'ptgzip' by default\n\n"
 	@rm -f libz.tar.gz pigz-?.gz gzip-?.gz ptgz-?.gz
