@@ -51,6 +51,10 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
+#ifndef _GZ_WRITE
+#define _GZ_WRITE 1
+#define _USE_MMAP 0
+#endif
 #ifndef _THR_WAIT
 #define _THR_WAIT 1
 #endif
