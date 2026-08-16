@@ -738,12 +738,13 @@ do_verbose:
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
+#if 0 // RAF: the Linux kernel does it for us at exit(), redundant
     if(read_mmap_base)
         munmap(read_mmap_base, read_filesize);
     if(out_mmap_base)
         munmap(out_mmap_base, max_out_size);
     close(ofd);
     free(list);
-
+#endif
     return 0;
 }
