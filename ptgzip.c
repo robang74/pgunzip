@@ -270,6 +270,25 @@ size_t full_write(int fd, const void *buf, size_t len)
 }
 
 static ALWAYS_INLINE
+size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
+{
+    size_t len = size;
+
+    while (len > 0) {
+        ssize_t w = copy_file_range(ofd,
+            &off_in, ofd, &off_out, len, 0);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            perror("copy_file_range");
+            return -1;
+        }
+        len -= w;
+    }
+
+    return size - len;
+}
+
+static ALWAYS_INLINE
 chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 {
     size_t len;
@@ -671,12 +690,11 @@ out_of_loop:
         size_t c_len = list[i + 2];
 
         if (read_ptr != write_ptr) {
-            memmove(write_ptr, read_ptr, c_len);
+            __builtin_memmove(write_ptr, read_ptr, c_len);
         }
         write_ptr += c_len;
     }
     outlen += write_ptr - out_mmap_base;
-    msync(out_mmap_base, outlen, MS_SYNC);
 #else
     /* Loop through all compressed chunk lengths stored in list[]  */
     off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
@@ -737,7 +755,7 @@ write_table:
     left -= 4-r;
     p  = &p[4-r];
     if (out_mmap_base) {
-        memcpy(out_mmap_base + outlen, p, TABLE_BSIZE);
+        __builtin_memmove(out_mmap_base + outlen, p, TABLE_BSIZE);
         outlen += TABLE_BSIZE;
     } else {
         outlen += full_write(ofd, p, TABLE_BSIZE);
@@ -753,8 +771,10 @@ do_verbose:
 #if 0 // RAF: the Linux kernel does it for us at exit(), redundant
     if(read_mmap_base)
         munmap(read_mmap_base, read_filesize);
-    if(out_mmap_base)
+    if(out_mmap_base) {
+        msync(out_mmap_base, outlen, MS_SYNC);
         munmap(out_mmap_base, max_out_size);
+    }
     close(ofd);
     free(list);
 #endif
