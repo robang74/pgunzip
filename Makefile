@@ -197,7 +197,7 @@ test-gzipf: _test-gzipf blkline
 
 _test-pigzf: libz.tar /bin/pigz
 	@printf "\n=== pigz file compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/pigz -p6 -knmf libz.tar" && sync && \
+	nl=/dev/null && cmd="/bin/pigz -knmf libz.tar" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 
@@ -205,7 +205,7 @@ test-pigzf: _test-pigzf blkline
 
 _test-pigzc: libz.tar /bin/pigz
 	@printf "\n=== pigz '-c' compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/pigz -p6 -knmf -c libz.tar" && sync && \
+	nl=/dev/null && cmd="/bin/pigz -knmf -c libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
@@ -220,18 +220,18 @@ test-crash: _test-crash blkline
 
 _test-zsize: libz.tar ptgzip
 	@printf "\n=== compress size/time comparison (zlib-ng) ===\n"
-	@printf "\n>>> NOTE: for a fair comparison 'pigz -p6', same as 'ptgzip' by default\n\n"
+	@printf "\n>>> NOTE: for a fair comparison 'pigz -p6', isn't requried anymore.\n\n"
 	@rm -f libz.tar.gz pigz-?.gz gzip-?.gz ptgz-?.gz
 	{ time ./ptgzip      -9k    -c libz.tar > ptgz-9.gz; } 2>&1 | grep real
-	{ time /bin/pigz -p6 -9knmf -c libz.tar > pigz-9.gz; } 2>&1 | grep real
+	{ time /bin/pigz     -9knmf -c libz.tar > pigz-9.gz; } 2>&1 | grep real
 	{ time /bin/gzip     -9kn   -c libz.tar > gzip-9.gz; } 2>&1 | grep real
 	@echo
 	{ time ./ptgzip      -6k    -c libz.tar > ptgz-6.gz; } 2>&1 | grep real
-	{ time /bin/pigz -p6 -6knmf -c libz.tar > pigz-6.gz; } 2>&1 | grep real
+	{ time /bin/pigz     -6knmf -c libz.tar > pigz-6.gz; } 2>&1 | grep real
 	{ time /bin/gzip     -6kn   -c libz.tar > gzip-6.gz; } 2>&1 | grep real
 	@echo
 	{ time ./ptgzip      -3k    -c libz.tar > ptgz-3.gz; } 2>&1 | grep real
-	{ time /bin/pigz -p6 -3knmf -c libz.tar > pigz-3.gz; } 2>&1 | grep real
+	{ time /bin/pigz     -3knmf -c libz.tar > pigz-3.gz; } 2>&1 | grep real
 	{ time /bin/gzip     -3kn   -c libz.tar > gzip-3.gz; } 2>&1 | grep real
 	@echo
 	for i in 9 6 3; do { echo; du -b *[zp]-$$i.gz; }| sort -n; done # groups
