@@ -129,10 +129,10 @@ speed:
 
 stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test /bin/ ===\n\n"
-	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC); done | dd bs=1M of=$$nl' && \
-    sync && echo "$$cmd" && nl=/dev/null && \
-    list="$(shell find /bin/ -type f | sort)" && \
-    eval "$$cmd"
+	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
+    && sync && echo "$$cmd" && nl=/dev/null \
+    && list="$(shell find /bin/ -type f | sort)" \
+    && eval "$$cmd" | dd bs=1M of=$$nl
 	@echo
 
 /bin/pigz:

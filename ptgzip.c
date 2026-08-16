@@ -73,44 +73,48 @@ typedef struct {
 #endif
 #ifndef _USE_ZNG
 #define _USE_ZNG 0
+#else
+#define libz_name "zlib-ng"
 #endif
 #ifndef _USE_MNZ
 #define _USE_MNZ 0
 #endif
+
 #if   _USE_ZNG
-#include "zlib-ng.h"
-#define libz_name      "zlib-ng"
-#define _deflate_init2 zng_deflateInit2
-#define _deflate_bound zng_deflateBound
-#define _deflate_end   zng_deflateEnd
-#define _deflate       zng_deflate
-#define _stream_t      zng_stream
+  #include "zlib-ng.h"
+  #define _deflate_init2 zng_deflateInit2
+  #define _deflate_bound zng_deflateBound
+  #define _deflate_end   zng_deflateEnd
+  #define _deflate       zng_deflate
+  #define _stream_t      zng_stream
 #elif _USE_MNZ
-#include <miniz.h>
-#define libz_name       "miniz"
-#define _deflate_init2  mz_deflateInit2
-#define _deflate_bound  mz_deflateBound
-#define _deflate_end    mz_deflateEnd
-#define _deflate        mz_deflate
-#define _stream_t       mz_stream
-/*
-#define Z_OK                  MZ_OK
-#define Z_FINISH              MZ_FINISH
-#define Z_NO_FLUSH            MZ_NO_FLUSH
-#define Z_DEFLATED            MZ_DEFLATED
-#define Z_STREAM_END          MZ_STREAM_END
-#define Z_DEFAULT_STRATEGY    MZ_DEFAULT_STRATEGY
-*/
-#undef  Z_DEFAULT_COMPRESSION
-#define Z_DEFAULT_COMPRESSION 6
+  #include <miniz.h>
+  #define libz_name       "miniz"
+  #define _deflate_init2  mz_deflateInit2
+  #define _deflate_bound  mz_deflateBound
+  #define _deflate_end    mz_deflateEnd
+  #define _deflate        mz_deflate
+  #define _stream_t       mz_stream
+  /*
+  #define Z_OK                  MZ_OK
+  #define Z_FINISH              MZ_FINISH
+  #define Z_NO_FLUSH            MZ_NO_FLUSH
+  #define Z_DEFLATED            MZ_DEFLATED
+  #define Z_STREAM_END          MZ_STREAM_END
+  #define Z_DEFAULT_STRATEGY    MZ_DEFAULT_STRATEGY
+  */
+  #undef  Z_DEFAULT_COMPRESSION
+  #define Z_DEFAULT_COMPRESSION 6
 #else
-#include <zlib.h>
-#define libz_name          "zlib"
-#define _deflate_init2     deflateInit2
-#define _deflate_bound     deflateBound
-#define _deflate_end       deflateEnd
-#define _deflate           deflate
-#define _stream_t        z_stream
+  #include <zlib.h>
+  #ifndef libz_name
+  #define libz_name          "zlib"
+  #endif
+  #define _deflate_init2     deflateInit2
+  #define _deflate_bound     deflateBound
+  #define _deflate_end       deflateEnd
+  #define _deflate           deflate
+  #define _stream_t        z_stream
 #endif
 
 #ifndef libz_name
@@ -119,6 +123,15 @@ typedef struct {
 
 #define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
 #define ZBUF_MAX_SIZE zbuf_max_size(chunk_size)
+
+#define is_chunk_freeable(_c) (_c->out && !_c->map)
+
+static unsigned char *read_mmap_base = NULL;
+static unsigned char *out_mmap_base = NULL;
+static off_t read_filesize = 0;
+static size_t max_out_size = 0;
+static size_t chunk_size   = 0;
+static int tot_nseg        = 0;
 
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
@@ -180,10 +193,16 @@ static void *thread_compress(void *arg)
     if (ret != Z_STREAM_END)
 #endif
     ret = _deflate(&strm, Z_FINISH);
+#if 0
+    if(strm.total_out >= ZBUF_MAX_SIZE) {
+        fprintf(stderr, "tot: %ld, max: %ld\n",
+            strm.total_out, ZBUF_MAX_SIZE);
+    }
+#endif
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
 reterr:
-        c->error = ret; //RAF: rarely it returns Z_OK = 0
+        c->error = ret|1; //RAF: rarely it returns Z_OK = 0
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -249,15 +268,6 @@ size_t full_write(int fd, const void *buf, size_t len)
 
     return p - (unsigned char *)buf;
 }
-
-#define is_chunk_freeable(_c) (_c->out && !_c->map)
-
-static unsigned char *read_mmap_base = NULL;
-static unsigned char *out_mmap_base = NULL;
-static off_t read_filesize = 0;
-static size_t max_out_size = 0;
-static size_t chunk_size   = 0;
-static int tot_nseg        = 0;
 
 static ALWAYS_INLINE
 chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
@@ -440,7 +450,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if(!st.st_size) {
+    if(!st.st_size || st.st_size < 0) {
         print2("warning: zero lenght file\n");
         return 0;
     }
@@ -466,15 +476,27 @@ int main(int argc, char **argv)
             chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
         } while (chunk_size > MAX_TARGET);
     } else {
-        nbatch = (read_filesize + MIN_TARGET - 1) / MIN_TARGET;
+        nbatch = (read_filesize + MAX_TARGET - 1) / MAX_TARGET;
         chunk_size = (read_filesize + nbatch - 1) / nbatch;
         tot_nseg = nbatch;
     }
     chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
+    if (nbatch > 1 && read_filesize % chunk_size < MIN_TARGET) {
 #if 0
-    fprintf(stderr, "chnk: %ld, nthr: %d, read: %ld\n",
-        chunk_size, nbatch, read_filesize);
+        chunk_size += ((read_filesize % MIN_TARGET) + nbatch - 1) / nbatch;
+        chunk_size = ((chunk_size + 7) >> 3) << 3;
 #endif
+        while (read_filesize % chunk_size < MIN_TARGET)
+            chunk_size += MAX_SEGMENTS;
+        tot_nseg--;
+        nbatch--;
+    }
+#if 0
+    if (nbatch > 1 && read_filesize % chunk_size < MIN_TARGET)
+        fprintf(stderr, "chnk: %ld, nthr: %d, read: %ld, rst: %ld\n",
+            chunk_size, nbatch, read_filesize, read_filesize % chunk_size);
+#endif
+
     chunk_t chunks[2][MAX_SEGMENTS];
     memset(chunks, 0, sizeof(chunks));
 
