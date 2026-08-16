@@ -69,7 +69,7 @@ typedef struct {
 #define _USE_OPT 1
 #endif
 #ifndef _ONE_ZDF
-#define _ONE_ZDF 1
+#define _ONE_ZDF 1 //RAF: no difference in .gz size
 #endif
 #ifndef _USE_ZNG
 #define _USE_ZNG 0
@@ -158,7 +158,8 @@ static void *thread_compress(void *arg)
         c->out = malloc(c->out_cap);
         if (!c->out) {
             perror("malloc cbuf");
-            goto reterr;
+            c->error = -1;
+            return NULL;
         }
     }
     strm.next_in   = c->in;
@@ -172,21 +173,17 @@ static void *thread_compress(void *arg)
      *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
 #if _ONE_ZDF
-     ret = _deflate(&strm, Z_FINISH);
 #else
     do {
-        if (strm.avail_in == 0) {
-            ret = deflate(&strm, Z_FINISH);
-        } else {
-            ret = deflate(&strm, Z_NO_FLUSH);
-        }
+        ret = deflate(&strm, Z_NO_FLUSH);
     } while (ret == Z_OK);
+    if (ret != Z_STREAM_END)
 #endif
+    ret = _deflate(&strm, Z_FINISH);
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
 reterr:
-        c->error = 1;
-//      goto endfnc;
+        c->error = ret; //RAF: rarely it returns Z_OK = 0
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -559,7 +556,8 @@ not_use_mmap:
             chunk_t *c = &chunks[a][i];
             if (c->error) {
                 print2("file: '%s'\n    compression failed on chunk %d,"
-                    " size: %lu\n", names[0], current + i, c->out_len);
+                    " size: %lu, err: %d\n", names[0], current + i,
+                        c->out_len, c->error);
                 return 1;
             }
             if (c->state < 2)
