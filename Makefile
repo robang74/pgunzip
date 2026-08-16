@@ -217,7 +217,7 @@ test-pigzc: _test-pigzc blkline
 
 _test-crash:
 	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
-	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0"
+	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0 -D_GZ_WRITE=0"
 	make _test-basic _test-speed _test-speef blkline # NP=-p$(NPROC)
 # make _test-basic _test-speed _test-pigzc _test-speef _test-pigzf blkline
 	@sync
