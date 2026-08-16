@@ -32,6 +32,7 @@
 
 #define MAX_SEGMENTS    16
 #define MAX_TARGET     (1UL << 18)     /* max target size per segment */
+#define MIN_TARGET     (1UL << 16)     /* 2x min gzip compress window */
 
 #ifndef _BE_VERBOSE
 #define _BE_VERBOSE     0
@@ -156,7 +157,7 @@ static void *thread_compress(void *arg)
         if (cap > c->out_cap) c->out_cap = cap;
         c->out = malloc(c->out_cap);
         if (!c->out) {
-            perror("malloc");
+            perror("malloc cbuf");
             goto reterr;
         }
     }
@@ -256,10 +257,10 @@ size_t full_write(int fd, const void *buf, size_t len)
 
 static unsigned char *read_mmap_base = NULL;
 static unsigned char *out_mmap_base = NULL;
-static off_t read_filesize;
-static size_t max_out_size;
-static size_t chunk_size;
-static int tot_nseg;
+static off_t read_filesize = 0;
+static size_t max_out_size = 0;
+static size_t chunk_size   = 0;
+static int tot_nseg        = 0;
 
 static ALWAYS_INLINE
 chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
@@ -320,7 +321,7 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
 /* Main                                                                       */
 /* ========================================================================== */
 #include <getopt.h>
-#define list_enabled 1
+
 #define print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
 
@@ -346,6 +347,7 @@ static char **names = NULL;
 
 int main(int argc, char **argv)
 {
+    uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
     int nbatch;
 
@@ -458,30 +460,43 @@ int main(int argc, char **argv)
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
     size_t outlen = 0;
-    chunk_size = read_filesize;
-    tot_nseg = 0;
-    do {
-        tot_nseg += nbatch;
-        chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
-    } while (chunk_size > MAX_TARGET);
-    chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
 
+    tot_nseg = 0;
+    if (MAX_TARGET * nbatch < read_filesize) {
+        chunk_size = read_filesize;
+        do {
+            tot_nseg += nbatch;
+            chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
+        } while (chunk_size > MAX_TARGET);
+    } else {
+        nbatch = (read_filesize + MIN_TARGET - 1) / MIN_TARGET;
+        chunk_size = (read_filesize + nbatch - 1) / nbatch;
+        tot_nseg = nbatch;
+    }
+    chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
+#if 0
+    fprintf(stderr, "chnk: %ld, nthr: %d, read: %ld\n",
+        chunk_size, nbatch, read_filesize);
+#endif
     chunk_t chunks[2][MAX_SEGMENTS];
     memset(chunks, 0, sizeof(chunks));
-    uint32_t *list = malloc(TABLE_ITEMS << 2);
-    if(!list) {
-        perror("malloc");
-        return 1;
-    }
-    list[0] =  0;
-    list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
 
+    if(tot_nseg > 1) {
+        list = malloc(TABLE_ITEMS << 2);
+        if(!list) {
+            perror("malloc list");
+            return 1;
+        } else { //RAF: possible fallback without list
+            list[0] =  0;
+            list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
+        }
+    }
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     if(!opt_stdout) {
         size_t len = strlen(names[0]) + 4;
         char *str = malloc(len);
         if(!str) {
-            perror("malloc");
+            perror("malloc strn");
             return 1;
         }
         snprintf(str, len, "%s.gz", names[0]);
@@ -543,8 +558,8 @@ not_use_mmap:
 #endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
-                print2("compression failed on chunk %d, size: %lu\n",
-                    current + i, c->out_len);
+                print2("file: '%s'\n    compression failed on chunk %d,"
+                    " size: %lu\n", names[0], current + i, c->out_len);
                 return 1;
             }
             if (c->state < 2)
@@ -589,7 +604,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             if(ofd == STDOUT_FILENO)
                 full_write(ofd, c->out, c->out_len);
             outlen += c->out_len;
-            list[ 2+c->idx ] = c->out_len;
+            if(list) list[ 2+c->idx ] = c->out_len;
 
             /* disposing the chunk and its buffer */
             void  *buf = c->out;
@@ -623,6 +638,7 @@ out_of_loop:
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
      */
+    if(!list) goto skip_table;
 #if _USE_MMAP
     unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
     for (int i = 1; i < tot_nseg; i++) {
@@ -664,6 +680,7 @@ out_of_loop:
     outlen = write_pos;
 #endif
 
+skip_table:
     /* Update outlen and truncate remaining sparse tail */
     if (ftruncate(ofd, outlen) < 0) {
         perror("ftruncate");
@@ -679,28 +696,29 @@ write_table:
      * Append metadata table as initially described at this link
      *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
      */
-    if(list_enabled) {
-        size_t sum = 0, left = TABLE_BSIZE;
-        list[TABLE_ITEMS-1]  = ((TABLE_ITEMS-4) << 16);
-        list[TABLE_ITEMS-1] |=   PGZ_MAGIC_2; // items + magic
-        for(uint32_t *u = &list[1]; left > 0; left-=4) {
-            sum += *u++;
-        };  sum += list[TABLE_ITEMS-1];
-        left = TABLE_BSIZE;
-        list[TABLE_ITEMS-2] = -sum; // sum checking code
+    if(!list) goto do_verbose;
 
-        unsigned char *p = (uint8_t *)list;
-        unsigned r = outlen & 3; // 32-bit align
-        left -= 4-r;
-        p  = &p[4-r];
-        if (out_mmap_base) {
-            memcpy(out_mmap_base + outlen, p, TABLE_BSIZE);
-            outlen += TABLE_BSIZE;
-        } else {
-            outlen += full_write(ofd, p, TABLE_BSIZE);
-        }
+    size_t sum = 0, left = TABLE_BSIZE;
+    list[TABLE_ITEMS-1]  = ((TABLE_ITEMS-4) << 16);
+    list[TABLE_ITEMS-1] |=   PGZ_MAGIC_2; // items + magic
+    for(uint32_t *u = &list[1]; left > 0; left-=4) {
+        sum += *u++;
+    };  sum += list[TABLE_ITEMS-1];
+    left = TABLE_BSIZE;
+    list[TABLE_ITEMS-2] = -sum; // sum checking code
+
+    unsigned char *p = (uint8_t *)list;
+    unsigned r = outlen & 3; // 32-bit align
+    left -= 4-r;
+    p  = &p[4-r];
+    if (out_mmap_base) {
+        memcpy(out_mmap_base + outlen, p, TABLE_BSIZE);
+        outlen += TABLE_BSIZE;
+    } else {
+        outlen += full_write(ofd, p, TABLE_BSIZE);
     }
 
+do_verbose:
     if(opt_verbose) {
         fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
             " zlvl: %d\n", libz_name, nbatch, tot_nseg, chunk_size, read_filesize,
