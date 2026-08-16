@@ -99,7 +99,7 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-.PHONY: tests blkline
+.PHONY: tests blkline speed stress
 .PHONY:  test-clean  test-basic  test-speed  test-pigzc
 .PHONY: _test-clean _test-basic _test-speed _test-pigzc
 .PHONY:  test-speef  test-gzipc  test-crash  test-pigzf
@@ -125,6 +125,14 @@ tests: test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
 
 speed:
 	@make _test-basic _test-speed _test-speef CMD2T=$(CMD2T) blkline
+	@echo
+
+stress: libz.tar $(CMD2T)
+	@printf "\n=== $(CMD2T) '-c' stress test /bin/ ===\n\n"
+	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC); done | dd bs=1M of=$$nl' && \
+    sync && echo "$$cmd" && nl=/dev/null && \
+    list="$(shell find /bin/ -type f | sort)" && \
+    eval "$$cmd"
 	@echo
 
 /bin/pigz:
