@@ -480,6 +480,7 @@ single_thread:
             chunk_size = INTDIV(read_filesize, tot_chunks_num);
         } while (chunk_size > max_size);
         chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
+        tot_chunks_num = INTDIV(read_filesize, chunk_size);
     }
     while(!tot_chunks_num) {
         int r, n = INTDIV(read_filesize, nthreads);
