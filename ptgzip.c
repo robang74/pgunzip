@@ -335,6 +335,7 @@ static int opt_quiet     = 0;    /* -q, --quiet */
        // compression_level ;    /* -#, --fast (=1), --best (=9) */
 static int opt_keep      = 0;    /* -k, --keep */
 static int opt_memory    = 0;    /* -m, --memory (KiB) */
+static int opt_processes = 0;    /* -p, --processes */
 static int opt_verbose   = 0;    /* -v, --verbose */
 
 /* --- file list --- */
@@ -367,11 +368,12 @@ int main(int argc, char **argv)
         {"verbose",     no_argument,       NULL, 'v'},
         {"license",     no_argument,       NULL, 'L'},
         {"memory",      required_argument, NULL, 'm'},
+        {"processes",   required_argument, NULL, 'p'},
         {NULL, 0, NULL, 0}
     };
 
     while (1) {
-        int ch = getopt_long(argc, argv, "chvqk123456789m:", longopts, NULL);
+        int ch = getopt_long(argc, argv, "chvqk123456789m:p:", longopts, NULL);
         if(ch == -1) break; else nfiles--;
         switch (ch) {
         case 'c':
@@ -398,7 +400,10 @@ int main(int argc, char **argv)
             opt_verbose = 1;
             break;
         case 'm':
-            opt_memory = (size_t)strtoul(optarg, NULL, 0);
+            opt_memory = (int)strtoul(optarg, NULL, 0);
+            break;
+        case 'p':
+            opt_processes = (int)strtoul(optarg, NULL, 0);
             break;
         default:
             break;
@@ -422,12 +427,15 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if(!opt_processes)
+        opt_processes = MAX_THREADS;
+
     nthreads = sysconf(_SC_NPROCESSORS_ONLN);
-    if (nthreads > MAX_THREADS)
-        nthreads = MAX_THREADS;
+    if (nthreads > opt_processes)
+        nthreads = opt_processes;
     else
     if (nthreads < 1)
-        nthreads = 2;
+        nthreads = 1;
 
     signal(SIGPIPE, SIG_IGN);
 

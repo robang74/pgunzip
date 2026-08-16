@@ -106,6 +106,7 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 .PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
 
+NPROC ?= 4
 CMD2T ?= ptgzip
 CMDVF  =
 CMDVC  = -c
@@ -173,9 +174,10 @@ test-speed: _test-speed blkline
 
 _test-speef: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVF)" && sync && \
+	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVF) $(NP)" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
+	@sync
 
 test-speef: _test-speef blkline
 
@@ -192,6 +194,7 @@ _test-gzipf: libz.tar /bin/gzip
 	nl=/dev/null && cmd="/bin/gzip -knf libz.tar" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
+	@sync
 
 test-gzipf: _test-gzipf blkline
 
@@ -200,6 +203,7 @@ _test-pigzf: libz.tar /bin/pigz
 	nl=/dev/null && cmd="/bin/pigz -knmf libz.tar" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
+	@sync
 
 test-pigzf: _test-pigzf blkline
 
@@ -214,8 +218,9 @@ test-pigzc: _test-pigzc blkline
 _test-crash:
 	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0"
-	make _test-basic _test-speed _test-speef blkline
+	make _test-basic _test-speed _test-speef blkline # NP=-p$(NPROC)
 # make _test-basic _test-speed _test-pigzc _test-speef _test-pigzf blkline
+	@sync
 
 test-crash: _test-crash blkline
 
