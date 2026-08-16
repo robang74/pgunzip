@@ -325,8 +325,9 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
 /* ========================================================================== */
 #include <getopt.h>
 
-#define print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
+#define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
+#define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
 
 static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help      = 0;    /* -h, --help */
@@ -415,7 +416,7 @@ int main(int argc, char **argv)
 
     if (opt_help || !nfiles) {
         opt_quiet = 0;
-        print2("\n    Usage: %s [opts] <file>"
+        _print2("\n    Usage: %s [opts] <file>"
                "\n     opts: -#, -v, -q, -c, -h\n\n",
                basename(argv[0]));
         return 0;
@@ -442,12 +443,12 @@ int main(int argc, char **argv)
         return 1;
     }
     if (!S_ISREG(st.st_mode)) {
-        print2("error: not a regular file\n");
+        _print2("error: not a regular file\n");
         return 1;
     }
 
     if(!st.st_size || st.st_size < 0) {
-        print2("warning: zero lenght file\n");
+        _print2("warning: zero lenght file\n");
         return 0;
     }
     read_filesize = st.st_size;
@@ -461,53 +462,33 @@ int main(int argc, char **argv)
     }
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
-    /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
-    #define INTDIV(a, b) ((a + b - 1) / b)
-    size_t outlen = 0, max_size = MAX_CHUNK_SIZE;
+    /* ---- decide chunk size and total number of chunks ---- */
+    size_t outlen = 0;
     tot_chunks_num = 0;
-    if(read_filesize <= (MAX_CHUNK_SIZE >> 1)) {
-        //fprintf(stderr, "c1 ");
-single_thread:
+
+    if (read_filesize <= MIN_CHUNK_SIZE) {
         nthreads = 1;
         tot_chunks_num = 1;
         chunk_size = read_filesize;
-    } else
-    if(read_filesize >= (max_size * nthreads)) {
-        //fprintf(stderr, "c2 ");
-        chunk_size = read_filesize;
-        do {
-            tot_chunks_num += nthreads;
-            chunk_size = INTDIV(read_filesize, tot_chunks_num);
-        } while (chunk_size > max_size);
-        chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
-        tot_chunks_num = INTDIV(read_filesize, chunk_size);
+    } else {
+        /* Target: split evenly across all CPUs */
+        chunk_size = _int_div(read_filesize, nthreads);
+
+        /* Clamp to the design limits */
+        if (chunk_size < MIN_CHUNK_SIZE)
+            chunk_size = MIN_CHUNK_SIZE;
+        else
+        if (chunk_size > MAX_CHUNK_SIZE)
+            chunk_size = MAX_CHUNK_SIZE;
+
+        /* Page-align for I/O efficiency */
+        chunk_size = ((chunk_size + 4095) >> 12) << 12;
+        tot_chunks_num = _int_div(read_filesize, chunk_size);
+
+        /* Never keep more threads than chunks */
+        if (nthreads > tot_chunks_num)
+            nthreads = tot_chunks_num;
     }
-    while(!tot_chunks_num) {
-        int r, n = INTDIV(read_filesize, nthreads);
-#if 0
-        n += 8 - (n & 7); //RAF: 64-bit aligned
-#else
-        n = ((n + 511) >> 9) << 9; // 512 blocks
-        while (n < MAX_CHUNK_SIZE && (r = read_filesize % n) && r < 512) {
-            n += 512;
-            if (INTDIV(read_filesize, n) < nthreads)
-                nthreads--;
-            if (nthreads == 1)
-                goto single_thread;
-        }
-#endif
-        if(n >= MIN_CHUNK_SIZE && n <= MAX_CHUNK_SIZE) {
-            tot_chunks_num = INTDIV(read_filesize, n);
-            chunk_size = n;
-        } else
-            nthreads--;
-        //fprintf(stderr, "c3,t:%d ", nthreads);
-    }
-#if 0
-    if (nthreads > 1 && read_filesize % chunk_size < MIN_CHUNK_SIZE)
-        fprintf(stderr, "chnk: %ld, nthr: %d, read: %ld, rst: %ld\n",
-            chunk_size, nthreads, read_filesize, read_filesize % chunk_size);
-#endif
 
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
@@ -589,7 +570,7 @@ not_use_mmap:
 #endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
-                print2("file: '%s'\n    compression failed on chunk %d,"
+                _print2("file: '%s'\n    compression failed on chunk %d,"
                     " size: %lu, err: %d\n", names[0], current + i,
                         c->out_len, c->error);
                 return 1;
