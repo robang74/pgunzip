@@ -125,7 +125,7 @@ tests: test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
 	@echo
 
 speed:
-	@make _test-basic _test-speed _test-speef CMD2T=$(CMD2T) blkline
+	@make _test-speed _test-speef CMD2T=$(CMD2T) blkline
 	@echo
 
 stress: libz.tar $(CMD2T)
