@@ -30,13 +30,9 @@
 
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 
-#define MAX_SEGMENTS    16
-#define MAX_TARGET     (1UL << 18)     /* max target size per segment */
-#define MIN_TARGET     (1UL << 16)     /* 2x min gzip compress window */
-
-#ifndef _BE_VERBOSE
-#define _BE_VERBOSE     0
-#endif
+#define MAX_THREADS         16
+#define MAX_CHUNK_SIZE     (1UL << 18)     /* max target size per segment */
+#define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
 
 typedef struct {
     size_t   len;
@@ -131,7 +127,7 @@ static unsigned char *out_mmap_base = NULL;
 static off_t read_filesize = 0;
 static size_t max_out_size = 0;
 static size_t chunk_size   = 0;
-static int tot_nseg        = 0;
+static int tot_chunks_num  = 0;
 
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
@@ -276,7 +272,7 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
     off_t offset;
 
     offset = (off_t)idx * chunk_size;
-    len    = (idx == tot_nseg - 1)
+    len    = (idx == tot_chunks_num - 1)
            ? (size_t)(read_filesize - offset)
            : chunk_size;
     c->in  = read_mmap_base + offset;
@@ -344,7 +340,7 @@ static int opt_verbose   = 0;    /* -v, --verbose */
 static int   nfiles = 0;
 static char **names = NULL;
 
-#define TABLE_ITEMS ((uint32_t)tot_nseg + 4)
+#define TABLE_ITEMS ((uint32_t)tot_chunks_num + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 #define PGZ_MAGIC_1 0x6274
 #define PGZ_MAGIC_2 0x7a70
@@ -356,7 +352,7 @@ int main(int argc, char **argv)
 {
     uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
-    int nbatch;
+    int nthreads;
 
 #if _USE_OPT
     static struct option longopts[] = {
@@ -425,12 +421,12 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    nbatch = sysconf(_SC_NPROCESSORS_ONLN);
-    if (nbatch > MAX_SEGMENTS)
-        nbatch = MAX_SEGMENTS;
+    nthreads = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nthreads > MAX_THREADS)
+        nthreads = MAX_THREADS;
     else
-    if (nbatch < 1)
-        nbatch = 2;
+    if (nthreads < 1)
+        nthreads = 2;
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -466,41 +462,56 @@ int main(int argc, char **argv)
     close(infd);   /* kernel keeps the mapping via vnode reference */
 
     /* ---- decide chunk size and total number of chunks (multiples of 6) ---- */
-    size_t outlen = 0;
-
-    tot_nseg = 0;
-    if (MAX_TARGET * nbatch < read_filesize) {
+    #define INTDIV(a, b) ((a + b - 1) / b)
+    size_t outlen = 0, max_size = MAX_CHUNK_SIZE;
+    tot_chunks_num = 0;
+    if(read_filesize <= (MAX_CHUNK_SIZE >> 1)) {
+        //fprintf(stderr, "c1 ");
+single_thread:
+        nthreads = 1;
+        tot_chunks_num = 1;
+        chunk_size = read_filesize;
+    } else
+    if(read_filesize >= (max_size * nthreads)) {
+        //fprintf(stderr, "c2 ");
         chunk_size = read_filesize;
         do {
-            tot_nseg += nbatch;
-            chunk_size = (read_filesize + (tot_nseg - 1)) / tot_nseg;
-        } while (chunk_size > MAX_TARGET);
-    } else {
-        nbatch = (read_filesize + MAX_TARGET - 1) / MAX_TARGET;
-        chunk_size = (read_filesize + nbatch - 1) / nbatch;
-        tot_nseg = nbatch;
+            tot_chunks_num += nthreads;
+            chunk_size = INTDIV(read_filesize, tot_chunks_num);
+        } while (chunk_size > max_size);
+        chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
     }
-    chunk_size = ((chunk_size + 4095) >> 12) << 12; // 4KB units
-    if (nbatch > 1 && read_filesize % chunk_size < MIN_TARGET) {
+    while(!tot_chunks_num) {
+        int r, n = INTDIV(read_filesize, nthreads);
 #if 0
-        chunk_size += ((read_filesize % MIN_TARGET) + nbatch - 1) / nbatch;
-        chunk_size = ((chunk_size + 7) >> 3) << 3;
+        n += 8 - (n & 7); //RAF: 64-bit aligned
+#else
+        n = ((n + 511) >> 9) << 9; // 512 blocks
+        while (n < MAX_CHUNK_SIZE && (r = read_filesize % n) && r < 512) {
+            n += 512;
+            if (INTDIV(read_filesize, n) < nthreads)
+                nthreads--;
+            if (nthreads == 1)
+                goto single_thread;
+        }
 #endif
-        while (read_filesize % chunk_size < MIN_TARGET)
-            chunk_size += MAX_SEGMENTS;
-        tot_nseg--;
-        nbatch--;
+        if(n >= MIN_CHUNK_SIZE && n <= MAX_CHUNK_SIZE) {
+            tot_chunks_num = INTDIV(read_filesize, n);
+            chunk_size = n;
+        } else
+            nthreads--;
+        //fprintf(stderr, "c3,t:%d ", nthreads);
     }
 #if 0
-    if (nbatch > 1 && read_filesize % chunk_size < MIN_TARGET)
+    if (nthreads > 1 && read_filesize % chunk_size < MIN_CHUNK_SIZE)
         fprintf(stderr, "chnk: %ld, nthr: %d, read: %ld, rst: %ld\n",
-            chunk_size, nbatch, read_filesize, read_filesize % chunk_size);
+            chunk_size, nthreads, read_filesize, read_filesize % chunk_size);
 #endif
 
-    chunk_t chunks[2][MAX_SEGMENTS];
+    chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    if(tot_nseg > 1) {
+    if(tot_chunks_num > 1) {
         list = malloc(TABLE_ITEMS << 2);
         if(!list) {
             perror("malloc list");
@@ -527,7 +538,7 @@ int main(int argc, char **argv)
         }
         free(str);
 #if _USE_MMAP
-        max_out_size = ((size_t)tot_nseg * ZBUF_MAX_SIZE) + TABLE_BSIZE;
+        max_out_size = ((size_t)tot_chunks_num * ZBUF_MAX_SIZE) + TABLE_BSIZE;
 
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
@@ -549,9 +560,9 @@ not_use_mmap:
     int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
-    pthread_t threads[2][MAX_SEGMENTS];
+    pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
-    for (int i = 0; i < nbatch; i++) {
+    for (int i = 0; i < nthreads; i++) {
         if (chunk_work_start(&threads[a][i],
             &chunks[a][i], current++, ofd))
             return 1;
@@ -566,9 +577,9 @@ not_use_mmap:
     }
 
     /* write compressed chunks to stdout in strict segment order */
-    while(next_idx < tot_nseg)
+    while(next_idx < tot_chunks_num)
     {
-        for (int i = 0, b = !a; i < nbatch; i++)
+        for (int i = 0, b = !a; i < nthreads; i++)
         {
 #if _THR_WAIT
             pthread_join(threads[a][i], NULL);
@@ -588,14 +599,14 @@ not_use_mmap:
 #if 0
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, tot_nseg, c->idx, next_idx, ofd,
+    current, tot_chunks_num, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
 #endif
 
             /* create another thread to do work */
             if (!chunks[b][i].state
             && !threads[b][i]
-            && current < tot_nseg
+            && current < tot_chunks_num
             ){
                 if (chunk_work_start(&threads[b][i],
                     &chunks[b][i], current++, ofd))
@@ -613,7 +624,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
 
 #if 0
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    threads[a][i], ofd, next_idx, tot_nseg);
+    threads[a][i], ofd, next_idx, tot_chunks_num);
 #endif
 
             /* disposing the thread */
@@ -636,7 +647,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
   #if _USE_FREE
             free(buf);
   #else
-            if(i+1 < nbatch)
+            if(i+1 < nthreads)
                 c = &chunks[b][i+1];
             else
                 c = &chunks[a][ 0 ]; //RAF: it will be the next one
@@ -661,7 +672,7 @@ out_of_loop:
     if(!list) goto skip_table;
 #if _USE_MMAP
     unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
-    for (int i = 1; i < tot_nseg; i++) {
+    for (int i = 1; i < tot_chunks_num; i++) {
         unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
         size_t c_len = list[i + 2];
 
@@ -675,7 +686,7 @@ out_of_loop:
 #else
     /* Loop through all compressed chunk lengths stored in list[]  */
     off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
-    for (int i = 1; i < tot_nseg; i++) {
+    for (int i = 1; i < tot_chunks_num; i++) {
         off_t read_pos = (off_t)i * chunk_size;
         size_t write_size = list[i + 2];
 
@@ -741,7 +752,7 @@ write_table:
 do_verbose:
     if(opt_verbose) {
         fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
-            " zlvl: %d\n", libz_name, nbatch, tot_nseg, chunk_size, read_filesize,
+            " zlvl: %d\n", libz_name, nthreads, tot_chunks_num, chunk_size, read_filesize,
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
