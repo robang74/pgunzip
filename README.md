@@ -47,7 +47,7 @@ The major change, since v0.2, is decoupling the use of mmap() from being directl
 
 High contention on CPU isn't a problem but a good-to-have feature but the current _USE_MMAP=1 has relevant shortcomings because it writes on disk (potentially, for sure triggering I/O kernel subsystem) while do deflate() and this strongly impair performance: make test-crash shows that increasing the contention of CPU + I/O threads degrades throughput.
 
-The semaphored (`_THR_WAIT=0`) way has been selected as the new default configuration because increases contention but separates the CPU and I/O workloads. It peaks well but stays more steady.
+The semaphored (`_THR_WAIT=0`) way has been selected as the new default configuration because it increases contention but separates the CPU and I/O workloads. It peaks well but stays more steady.
 
 Meaning of `_THR_WAIT` compiling flag:
 
@@ -57,6 +57,13 @@ Meaning of `_THR_WAIT` compiling flag:
 The CRASH_FLAGS are the opposite of the new default
 
 - `-D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=1`
+
+Reference processor in energy saving mode:
+
+```
+$ grep "model name" /proc/cpuinfo | head -n1
+model name	: Intel(R) Core(TM) i5-8365U CPU @ 1.60GHz
+```
 
 make test-basic speed (`_THR_WAIT=0`):
 
