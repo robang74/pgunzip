@@ -41,27 +41,31 @@ Last but not least, during the development of this project the support for gzip 
 
 ---
 
-### Since v0.2
+### Updates v0.3
 
 The throughput peak moved from 64 MB/s to 91 MB/s (1.4x) maintaining the advantage over `pigz -p6` (fair comparison by same threads number spawning) unchanged compared with the `pigz -p8` which is the standard run on an 8 threads CPU like i5-8365U (2019) also for `ptgzip`. Whether using the '`-c`' option or not, file writing was the v0.2 major weakness in terms of throughput speed compared with `pigz`.
 
-| Comm and                                  | Time             | Ratio | Cause  |       
-|:------------------------------------------|:-----------------|------:|:------:|
-| `time ./ptgzip   -c qemu.elf >/dev/null`  | `real  0m0.049s` |       |        |
-| `time /bin/pigz  -c qemu.elf >/dev/null`  | `real  0m0.070s` | 1.4x  | **pt** |
-| `time /bin/gzip  -c qemu.elf >/dev/null`  | `real  0m0.307s` | 6.3x  |        |
+| Command `f=qemu.elf`           | Time             | Ratio  | Cause      |
+|:-------------------------------|:-----------------|-------:|:----------:|
+| `./ptgzip   -c $f >/dev/null`  | `real  0m0.049s` | { 1× } | +2.60%     |
+| `/bin/pigz  -c $f >/dev/null`  | `real  0m0.070s` | 1.43×  | ( **pt** ) |
+| `/bin/gzip  -c $f >/dev/null`  | `real  0m0.307s` | 6.27×  | +0.59%     |
 |||||
-| `time ./ptgzip   -9c qemu.elf >/dev/null` | `real  0m0.077s` |       |        |
-| `time /bin/pigz  -9c qemu.elf >/dev/null` | `real  0m0.167s` | 2.2x  | **ng** |
-| `time /bin/gzip  -9c qemu.elf >/dev/null` | `real  0m0.946s` | 19.3x |        |
+| `./ptgzip   -9c $f >/dev/null` | `real  0m0.077s` | 1.57×  | { 1× }     |
+| `/bin/pigz  -9c $f >/dev/null` | `real  0m0.167s` | 2.17×  | ( **ng** ) |
+| `/bin/gzip  -9c $f >/dev/null` | `real  0m0.946s` | 19.3×  | +0.03%     |
 |||||
-| `time /bin/zstd  -9c qemu.elf >/dev/null` | `real  0m0.211s` | 2.74x | -4.4%  |
-| `time /bin/xz   -19c qemu.elf >/dev/null` | `real  0m2.377s` | 30.9x | -20.4% |
-| `time /bin/pigz -11c qemu.elf >/dev/null` | `real 0m15.343s` | 199x  | -3.8%  |
+| `/bin/zstd  -9c $f >/dev/null` | `real  0m0.211s` | 2.74×  | −4.41%     |
+| `/bin/xz   -19c $f >/dev/null` | `real  0m2.377s` | 30.9×  | −20.4%     |
+| `/bin/pigz -11c $f >/dev/null` | `real 0m15.343s` | 199 ×  | −3.80%     |
+
+The last three lines show how much the gzip format is *ancient* but also that it can stay relevant because it is the best compromise that still works everywhere. And `ptgzip` moves that compromise further toward "fast" (especially expected in parallel [inflating](#inflating)) without breaking the "works everywhere" part.
+
+### Technical
 
 The major change, since v0.2, is decoupling the use of mmap() from being directly used during compression thus decoupling the CPU and I/O workloads, while the choice between wait for each thread joining rather than polling is based on the fact that polling doesn't increases the throughput and it is also implemented in a under-optimised manner because it doesn't use the pthread semaphoring at all (unsynced).
 
-High contention on CPU isn't a problem but a good-to-have feature but the current _USE_MMAP=1 has relevant shortcomings because it writes on disk (potentially, for sure triggering I/O kernel subsystem) while do deflate() and this strongly impair performance: make test-crash shows that increasing the contention of CPU + I/O threads degrades throughput.
+High contention on CPU isn't a problem but a good-to-have feature but the current `_USE_MMAP=1` has relevant shortcomings because it writes on disk (potentially, for sure triggering I/O kernel subsystem) while do deflate() and this strongly impair performance: make test-crash shows that increasing the contention of CPU + I/O threads degrades throughput.
 
 The semaphored (`_THR_WAIT=0`) way has been selected as the new default configuration because it increases contention but separates the CPU and I/O workloads. It peaks well but stays more steady.
 
@@ -105,7 +109,7 @@ There is not a sensitive difference in STDOUT nor in file writings by the introd
 
 <br>
 
-## Deflating v0.2
+## Deflating
 
 About compressed output suitable for the new format, and 100% back-compatible versus the standard gzip output.
 
@@ -295,7 +299,7 @@ sys   0m0.089s
 
 <br>
 
-## Inflating (test)
+## Inflating
 
 Clearly a shell script isn't the correct tool for inflating a parallel streams into a single file. Despite the shortcomings of the scripting, the evarage hot cached run is nearly 2x faster than standard `gzip` and faster than `pigz`, also.
 
