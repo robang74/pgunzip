@@ -288,23 +288,36 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
     return size - len;
 }
 
+/*
+ * RAF: currently the .out_cap exists but always set to ZBUF_MAX_SIZE, which
+ *      makes the .out_cap redundant while out_mmap_base would be likely a
+ *      more usful member of the chunk_t structure. A revision is needed
+ *      after the development is completed to get rid off of global variables
+ *      in favor of a data structure that can refers also to its own thread_t.
+ */
 static ALWAYS_INLINE
 chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 {
     size_t len;
     off_t offset;
 
+    c->out_cap = ZBUF_MAX_SIZE;
+#if _USE_MMAP
+    offset = (off_t)idx * c->out_cap;
+#else
     offset = (off_t)idx * chunk_size;
+#endif
     len    = (idx == tot_chunks_num - 1)
            ? (size_t)(read_filesize - offset)
            : chunk_size;
     c->in  = read_mmap_base + offset;
-    c->out_cap = ZBUF_MAX_SIZE;
+    c->offset = offset;
+    c->idx = idx;
     c->map = 0;
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
     if (out_mmap_base) {
-        c->out = out_mmap_base + ((off_t)idx * c->out_cap);
+        c->out = out_mmap_base + offset;
         c->map = 1;
     }
     else
@@ -320,11 +333,9 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
         free(c->out);
         c->out = NULL;
     }
-    c->offset = offset;
     c->len = len;
     c->state = 1;
     c->error = 0;
-    c->idx = idx;
     c->ofd = ofd;
 
     return c;
@@ -436,7 +447,7 @@ int main(int argc, char **argv)
     /* collect remaining arguments as filenames */
     names = &argv[optind];
     nfiles += argc;
-#else
+#else // RAF: this branch was kept for testing _USE_OPT=1 performance impact
     names = &argv[1];
     nfiles = (names != NULL);
     opt_help = (argc < 2);
@@ -688,10 +699,8 @@ out_of_loop:
     for (int i = 1; i < tot_chunks_num; i++) {
         unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
         size_t c_len = list[i + 2];
-
-        if (read_ptr != write_ptr) {
-            __builtin_memmove(write_ptr, read_ptr, c_len);
-        }
+        if (!c_len) continue; //RAF: it should never happens, by design
+        __builtin_memmove(write_ptr, read_ptr, c_len);
         write_ptr += c_len;
     }
     outlen += write_ptr - out_mmap_base;
