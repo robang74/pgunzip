@@ -39,6 +39,47 @@ The 100% back-compatibility always grants that the archive can be processed what
 
 Last but not least, during the development of this project the support for gzip RFC-1952 has been added to the [miniz](https://github.com/robang74/miniz/tree/rfc1952) library which is a size reduced version of the zlib. A difference in footprint that can be better appreciated when compiling an application as a musl-static binary.
 
+---
+
+### Since v0.2
+
+The major change, since v0.2, is decoupling the use of mmap() from being directly used during compression thus decoupling the CPU and I/O workloads, while the choice between wait for each thread joining rather than polling is based on the fact that polling doesn't increases the throughput and it is also implemented in a under-optimised manner because it doesn't use the pthread semaphoring at all (unsynced).
+
+High contention on CPU isn't a problem but a good-to-have feature but the current _USE_MMAP=1 has relevant shortcomings because it writes on disk (potentially, for sure triggering I/O kernel subsystem) while do deflate() and this strongly impair performance: make test-crash shows that increasing the contention of CPU + I/O threads degrades throughput.
+
+The semaphored (`_THR_WAIT=0`) way has been selected as the new default configuration because increases contention but separates the CPU and I/O workloads. It peaks well but stays more steady.
+
+Meaning of `_THR_WAIT` compiling flag:
+
+- 0: wake up when a thread is ready (any)
+- 1: wait for a specific thread (ordered)
+
+The CRASH_FLAGS are the opposite of the new default
+
+- `-D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=1`
+
+make test-basic speed (`_THR_WAIT=0`):
+
+```
+86436210 bytes (86 MB, 82 MiB) copied, 0.955342 s, 90.5 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 0.993770 s, 87.0 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 0.975924 s, 88.6 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 1.022160 s, 84.6 MB/s
+```
+- file writing time, `real: 0m1.099s, 0m1.100s, 0m1.108s, 0m1.131s`
+
+make test-crash speed (`_THR_WAIT=1`):
+
+```
+86436210 bytes (86 MB, 82 MiB) copied, 0.968867 s, 89.2 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 1.018130 s, 84.9 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 0.977499 s, 88.4 MB/s
+86436210 bytes (86 MB, 82 MiB) copied, 1.011840 s, 85.4 MB/s
+```
+- file writing time, `real: 0m1.091s, 0m1.111s, 0m1.117s, 0m1.129s`
+
+There is not a sensitive difference in STDOUT nor in file writings by the introduction of the semaphored wait. The numerous changes and varying approaches made the codebase optimised enough to not let any branch clearly over-performs over the others configurations.
+
 <br>
 
 ## Deflating
