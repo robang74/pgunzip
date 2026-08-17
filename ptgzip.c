@@ -52,32 +52,37 @@ typedef struct {
 /* Thread worker: compress one chunk directly to its output buffer    */
 /* ------------------------------------------------------------------ */
 #ifndef _GZ_WRITE
-#define _GZ_WRITE 1
-#define _USE_MMAP 0
+#define _GZ_WRITE 1 // deflate() + write() decouple CPU and I/O workloads
 #endif
+#if     _GZ_WRITE
+#else
+#define _USE_MMAP 1 // the forced alternative to write() is using mmap()
+#endif
+
 #ifndef _THR_WAIT
-#define _THR_WAIT 1
+#define _THR_WAIT 1 // wait for a specific thread, otherwise do polling
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP 1
-#define _USE_FREE 0
+#define _USE_MMAP 1 // mmap() is performed by default, but it can fail
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE 0
+#define _USE_FREE 0 // free() isn't strictly necessary, but do testing
 #endif
+
 #ifndef _USE_OPT
-#define _USE_OPT 1
+#define _USE_OPT 1 //RAF: no difference in gz speed
 #endif
 #ifndef _ONE_ZDF
 #define _ONE_ZDF 1 //RAF: no difference in .gz size
 #endif
 #ifndef _USE_ZNG
-#define _USE_ZNG 0
+#define _USE_ZNG 0 //RAF: just API, same speed/size
 #else
 #define libz_name "zlib-ng"
 #endif
+
 #ifndef _USE_MNZ
-#define _USE_MNZ 0
+#define _USE_MNZ 0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
 
 #if   _USE_ZNG
@@ -149,7 +154,8 @@ static void *thread_compress(void *arg)
     ret = _deflate_init2(&strm, compression_level, Z_DEFLATED,
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
-        c->error = 1;
+        perror("deflate_init2");
+        c->error = -3;
         goto endfnc;
     }
 
@@ -171,7 +177,7 @@ static void *thread_compress(void *arg)
         c->out = malloc(c->out_cap);
         if (!c->out) {
             perror("malloc cbuf");
-            c->error = -1;
+            c->error = -2;
             return NULL;
         }
     }
@@ -201,8 +207,8 @@ static void *thread_compress(void *arg)
 #endif
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
-reterr:
-        c->error = ret|1; //RAF: rarely it returns Z_OK = 0
+        perror("deflate");
+        c->error = ret | (1<<9); //RAF: rarely it returns Z_OK = 0
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -211,10 +217,10 @@ reterr:
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-#if _USE_MMAP
-#else
-    if(c->ofd != STDOUT_FILENO && c->out)
+#if _GZ_WRITE
+    if(c->ofd != STDOUT_FILENO && c->out) {
         c->error |= chunk_write(c);
+    }
 #endif
 #if _USE_FREE
     if (is_chunk_freeable(c)) {
@@ -229,25 +235,29 @@ endfnc:
 static ALWAYS_INLINE
 int chunk_write(chunk_t *c)
 {
-    int ofd = c->ofd;
-    off_t off = c->offset;
-    size_t len = c->out_len;
-    unsigned char *p = c->out;
+    if(out_mmap_base) {
+        unsigned char *dst_ptr = out_mmap_base + c->offset;
+        return !__builtin_memmove(dst_ptr, c->out, c->out_len);
+    } else {
+        int ofd = c->ofd;
+        off_t off = c->offset;
+        size_t len = c->out_len;
+        unsigned char *p = c->out;
 
-    while (len > 0) {
-        ssize_t w = pwrite(ofd, p, len, off);
-        if (w < 0) {
-            if (errno == EINTR) continue;
-            perror("p/write");
-            break;
+        while (len > 0) {
+            ssize_t w = pwrite(ofd, p, len, off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                perror("p/write");
+                break;
+            }
+            p   += w;
+            off += w;
+            len -= w;
         }
-        p   += w;
-        off += w;
-        len -= w;
+        c->len = c->out_len - len;
+        return !!len;
     }
-    c->len = c->out_len - len;
-
-    return !!len;
 }
 
 static ALWAYS_INLINE
@@ -302,10 +312,10 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
     off_t offset;
 
     c->out_cap = ZBUF_MAX_SIZE;
-#if _USE_MMAP
-    offset = (off_t)idx * c->out_cap;
-#else
+#if _GZ_WRITE
     offset = (off_t)idx * chunk_size;
+#else
+    offset = (off_t)idx * c->out_cap;
 #endif
     len    = (idx == tot_chunks_num - 1)
            ? (size_t)(read_filesize - offset)
@@ -314,7 +324,8 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
     c->offset = offset;
     c->idx = idx;
     c->map = 0;
-#if _USE_MMAP
+#if _GZ_WRITE
+#else
     /* Assign output pointer inside mapped output file space */
     if (out_mmap_base) {
         c->out = out_mmap_base + offset;
@@ -560,10 +571,20 @@ int main(int argc, char **argv)
             perror("open");
             return 1;
         }
-        free(str);
-#if _USE_MMAP
-        max_out_size = ((size_t)tot_chunks_num * ZBUF_MAX_SIZE) + TABLE_BSIZE;
+#if _USE_FREE
+        free(str); //RAF: this can be left at the exit() as well
+#endif
 
+#if _USE_MMAP
+#else
+      goto not_use_mmap;
+#endif
+
+#if _GZ_WRITE
+        max_out_size = ((size_t)tot_chunks_num * chunk_size);
+#else
+        max_out_size = ((size_t)tot_chunks_num * ZBUF_MAX_SIZE);
+#endif
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
             perror("ftruncate");
@@ -577,7 +598,6 @@ int main(int argc, char **argv)
             perror("mmap out");
             goto not_use_mmap;
         }
-#endif
     }
 
 not_use_mmap:
@@ -694,43 +714,47 @@ out_of_loop:
      * In-place File Reorganization using Kernel-Level Zero-Copy
      */
     if(!list) goto skip_table;
-#if _USE_MMAP
-    unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
-    for (int i = 1; i < tot_chunks_num; i++) {
-        unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
-        size_t c_len = list[i + 2];
-        if (!c_len) continue; //RAF: it should never happens, by design
-        __builtin_memmove(write_ptr, read_ptr, c_len);
-        write_ptr += c_len;
-    }
-    outlen += write_ptr - out_mmap_base;
+    if(out_mmap_base) {
+        unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
+        for (int i = 1; i < tot_chunks_num; i++) {
+#if _GZ_WRITE
+            unsigned char *read_ptr = out_mmap_base + ((off_t)i * chunk_size);
 #else
-    /* Loop through all compressed chunk lengths stored in list[]  */
-    off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
-    for (int i = 1; i < tot_chunks_num; i++) {
-        off_t read_pos = (off_t)i * chunk_size;
-        size_t write_size = list[i + 2];
-
-        if (read_pos != write_pos) {
-            off_t off_in  = read_pos;
-            off_t off_out = write_pos;
-            size_t bytes  = write_size;
-
-            while (bytes > 0) {
-                ssize_t ret = copy_file_range(ofd,
-                    &off_in, ofd, &off_out, bytes, 0);
-                if (ret < 0) {
-                    if (errno == EINTR) continue;
-                    perror("copy_file_range");
-                    return 1;
-                }
-                bytes -= ret;
-            }
-        }
-        write_pos += write_size;
-    }
-    outlen = write_pos;
+            unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
 #endif
+            size_t c_len = list[i + 2];
+            if (!c_len) continue; //RAF: it should never happens, by design
+            __builtin_memmove(write_ptr, read_ptr, c_len);
+            write_ptr += c_len;
+        }
+        outlen += write_ptr - out_mmap_base;
+    } else {
+        /* Loop through all compressed chunk lengths stored in list[]  */
+        off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
+        for (int i = 1; i < tot_chunks_num; i++) {
+            off_t read_pos = (off_t)i * chunk_size;
+            size_t write_size = list[i + 2];
+
+            if (read_pos != write_pos) {
+                off_t off_in  = read_pos;
+                off_t off_out = write_pos;
+                size_t bytes  = write_size;
+
+                while (bytes > 0) {
+                    ssize_t ret = copy_file_range(ofd,
+                        &off_in, ofd, &off_out, bytes, 0);
+                    if (ret < 0) {
+                        if (errno == EINTR) continue;
+                        perror("copy_file_range");
+                        return 1;
+                    }
+                    bytes -= ret;
+                }
+            }
+            write_pos += write_size;
+        }
+        outlen = write_pos;
+    }
 
 skip_table:
     /* Update outlen and truncate remaining sparse tail */
@@ -777,7 +801,7 @@ do_verbose:
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
-#if 0 // RAF: the Linux kernel does it for us at exit(), redundant
+#if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     if(read_mmap_base)
         munmap(read_mmap_base, read_filesize);
     if(out_mmap_base) {

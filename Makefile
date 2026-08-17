@@ -106,6 +106,8 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 .PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
 
+CRASH_FLAGS ?= -D_THR_WAIT=0 -D_GZ_WRITE=0 -D_USE_MMAP=1
+
 NPROC ?= 4
 CMD2T ?= ptgzip
 CMDVF  =
@@ -217,7 +219,7 @@ test-pigzc: _test-pigzc blkline
 
 _test-crash:
 	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
-	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="-D_THR_WAIT=0 -D_GZ_WRITE=0"
+	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"
 	make _test-basic _test-speed _test-speef blkline # NP=-p$(NPROC)
 # make _test-basic _test-speed _test-pigzc _test-speef _test-pigzf blkline
 	@sync
