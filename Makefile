@@ -99,7 +99,7 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-.PHONY: tests blkline speed stress
+.PHONY: tests blkline speed stress speed-stress speed-stress
 .PHONY:  test-clean  test-basic  test-speed  test-pigzc
 .PHONY: _test-clean _test-basic _test-speed _test-pigzc
 .PHONY:  test-speef  test-gzipc  test-crash  test-pigzf
@@ -130,12 +130,22 @@ speed:
 	@make _test-speed _test-speef CMD2T=$(CMD2T) blkline
 	@echo
 
+speed-stress: libz.tar $(CMD2T)
+	@printf "\n=== $(CMD2T) '-c' speed test /bin/ ===\n\n"
+	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC); done' \
+    && sync && echo "$$cmd" && nl=/dev/null \
+    && list="$(shell find /bin/ -type f | sort)" \
+    && time eval "$$cmd" | dd bs=1M of=$$nl
+	@echo
+
+stress-speed: speed-stress
+
 stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test /bin/ ===\n\n"
 	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
-    && eval "$$cmd" | dd bs=1M of=$$nl
+    && time eval "$$cmd" >$$nl
 	@echo
 
 /bin/pigz:

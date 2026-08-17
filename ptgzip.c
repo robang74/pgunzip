@@ -241,8 +241,13 @@ static void *thread_compress(void *arg)
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
+    if (c->sem_ptr && c->out
+    && (c->ofd == STDOUT_FILENO || _GZ_WRITE)
+    ){
+        sem_post(c->sem_ptr);
+        c->sem_ptr = NULL;
+    }
 #if _GZ_WRITE
-    if(c->sem_ptr) sem_post(c->sem_ptr);
     if(c->ofd != STDOUT_FILENO && c->out) {
         c->error |= chunk_write(c);
     }
@@ -252,12 +257,12 @@ endfnc:
         c->out = NULL;
     }
     #endif
-    c->state = 3;
-#else
-    c->state = 3;
-    if(c->sem_ptr) sem_post(c->sem_ptr);
 #endif
-
+    c->state = 3;
+    if (c->sem_ptr) {
+        sem_post(c->sem_ptr);
+        c->sem_ptr = NULL;
+    }
     return NULL;
 }
 
@@ -633,7 +638,7 @@ not_use_mmap:
     int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
-    sem_init(&sem, 0, MAX_THREADS);
+    sem_init(&sem, 0, nthreads);
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++) {
@@ -688,6 +693,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                     &chunks[b][i], current++, ofd, &sem))
                     return 1;
             }
+            _cpu_relax();
 
             /* ordered writing on STDOUT, only */
             if (ofd == STDOUT_FILENO) {
@@ -834,6 +840,7 @@ do_verbose:
     }
 
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
+    sem_destroy(&sem);
     if(read_mmap_base)
         munmap(read_mmap_base, read_filesize);
     if(out_mmap_base) {
