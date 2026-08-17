@@ -45,6 +45,17 @@ Last but not least, during the development of this project the support for gzip 
 
 The throughput peak moved from 64 MB/s to 91 MB/s (1.4x) maintaining the advantage over `pigz -p6` (fair comparison by same threads number spawning) unchanged compared with the `pigz -p8` which is the standard run on an 8 threads CPU like i5-8365U (2019) also for `ptgzip`. Whether using the '`-c`' option or not, file writing was the v0.2 major weakness in terms of throughput speed compared with `pigz`.
 
+| Command                                  | Time             | Ratio | Cause  |       
+|:-----------------------------------------|:-----------------|------:|:------:|
+| `time ./ptgzip  -c qemu.elf >/dev/null`  | `real  0m0.049s` |       |        |
+| `time /bin/pigz -c qemu.elf >/dev/null`  | `real  0m0.070s` | 1.4x  | **pt** |
+| `time /bin/gzip -c qemu.elf >/dev/null`  | `real  0m0.307s` | 6.3x  |        |
+|||||
+| `time ./ptgzip  -9c qemu.elf >/dev/null` | `real  0m0.077s` |       |        |
+| `time /bin/pigz -9c qemu.elf >/dev/null` | `real  0m0.167s` | 2.2x  | **ng** |
+| `time /bin/gzip -9c qemu.elf >/dev/null` | `real  0m0.946s` | 19.3x |        |
+
+
 The major change, since v0.2, is decoupling the use of mmap() from being directly used during compression thus decoupling the CPU and I/O workloads, while the choice between wait for each thread joining rather than polling is based on the fact that polling doesn't increases the throughput and it is also implemented in a under-optimised manner because it doesn't use the pthread semaphoring at all (unsynced).
 
 High contention on CPU isn't a problem but a good-to-have feature but the current _USE_MMAP=1 has relevant shortcomings because it writes on disk (potentially, for sure triggering I/O kernel subsystem) while do deflate() and this strongly impair performance: make test-crash shows that increasing the contention of CPU + I/O threads degrades throughput.
