@@ -106,7 +106,7 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 .PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
 
-CRASH_FLAGS ?= -D_THR_WAIT=0 -D_GZ_WRITE=0 -D_USE_MMAP=1
+CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=1
 
 NPROC ?= 4
 CMD2T ?= ptgzip

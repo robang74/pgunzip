@@ -19,9 +19,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <semaphore.h>
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sched.h>
@@ -37,6 +39,7 @@
 typedef struct {
     size_t   len;
     off_t    offset;
+    sem_t    *sem_ptr;
     unsigned char *in;      /* pointer into mmap */
     unsigned char *out;
     size_t   out_cap;
@@ -60,7 +63,7 @@ typedef struct {
 #endif
 
 #ifndef _THR_WAIT
-#define _THR_WAIT 1 // wait for a specific thread, otherwise do polling
+#define _THR_WAIT 0 // 1: wait for a specific thread, 0: anyone ready
 #endif
 #ifndef _USE_MMAP
 #define _USE_MMAP 1 // mmap() is performed by default, but it can fail
@@ -70,19 +73,19 @@ typedef struct {
 #endif
 
 #ifndef _USE_OPT
-#define _USE_OPT 1 //RAF: no difference in gz speed
+#define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
 #ifndef _ONE_ZDF
-#define _ONE_ZDF 1 //RAF: no difference in .gz size
+#define _ONE_ZDF  1 //RAF: no difference in .gz size
 #endif
 #ifndef _USE_ZNG
-#define _USE_ZNG 0 //RAF: just API, same speed/size
+#define _USE_ZNG  0 //RAF: just API, same speed/size
 #else
 #define libz_name "zlib-ng"
 #endif
 
 #ifndef _USE_MNZ
-#define _USE_MNZ 0 //RAF: libz/-ng by linker, miniz by compiler also
+#define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
 
 #if   _USE_ZNG
@@ -131,6 +134,10 @@ typedef struct {
 
 #define is_chunk_freeable(_c) (_c->out && !_c->map)
 
+#define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
+#define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
+#define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
+
 static unsigned char *read_mmap_base = NULL;
 static unsigned char *out_mmap_base = NULL;
 static off_t read_filesize = 0;
@@ -141,11 +148,28 @@ static int tot_chunks_num  = 0;
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 
+static void sem_wait_or_exit(sem_t *sem_ptr)
+{
+    if(!sem_ptr) return;
+
+    int ret = sem_wait(sem_ptr);
+    while(ret == EINTR || ret == EAGAIN) {
+        _cpu_relax();
+        ret = sem_wait(sem_ptr);
+    }
+    if(ret) {
+        perror("sem_wait");
+        exit(ret);
+    }
+}
+
 static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
     _stream_t strm = {0};
     int ret;
+
+    sem_wait_or_exit(c->sem_ptr);
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
@@ -218,17 +242,22 @@ endfnc:
     _deflate_end(&strm);
     c->state = 2;
 #if _GZ_WRITE
+    if(c->sem_ptr) sem_post(c->sem_ptr);
     if(c->ofd != STDOUT_FILENO && c->out) {
         c->error |= chunk_write(c);
     }
-#endif
-#if _USE_FREE
+    #if _USE_FREE
     if (is_chunk_freeable(c)) {
         free(c->out);
         c->out = NULL;
     }
-#endif
+    #endif
     c->state = 3;
+#else
+    c->state = 3;
+    if(c->sem_ptr) sem_post(c->sem_ptr);
+#endif
+
     return NULL;
 }
 
@@ -306,11 +335,13 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static ALWAYS_INLINE
-chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
+chunk_t *chunk_init(chunk_t *c, int idx,
+        int ofd, sem_t *sem_ptr)
 {
     size_t len;
     off_t offset;
 
+    c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
     c->out_cap = ZBUF_MAX_SIZE;
 #if _GZ_WRITE
     offset = (off_t)idx * chunk_size;
@@ -334,12 +365,12 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
     else
 #endif
     if (is_chunk_freeable(c)
-#if _USE_FREE
-#else /* RAF: free() here is a corner case that "should" never happen by
-       *      design but if it would happen, it is better deal than oops
-       */
+    #if _USE_FREE
+    #else /* RAF: free() here is a corner case that "should" never happen by
+           *      design but if it would happen, it is better deal than oops
+           */
     &&  c->len && len > c->len
-#endif
+    #endif
     ){
         free(c->out);
         c->out = NULL;
@@ -353,9 +384,11 @@ chunk_t *chunk_init(chunk_t *c, int idx, int ofd)
 }
 
 static ALWAYS_INLINE
-int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
+int chunk_work_start(pthread_t *p, chunk_t *c,
+        int idx, int ofd, sem_t *sem_ptr)
 {
-    if (pthread_create(p, NULL, thread_compress, chunk_init(c, idx, ofd)))
+    if (pthread_create(p, NULL, thread_compress,
+        chunk_init(c, idx, ofd, sem_ptr)))
     {
         perror("pthread_create");
         return 1;
@@ -368,11 +401,6 @@ int chunk_work_start(pthread_t *p, chunk_t *c, int idx, int ofd)
 /* ========================================================================== */
 /* Main                                                                       */
 /* ========================================================================== */
-#include <getopt.h>
-
-#define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
-#define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
-#define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
 
 static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help      = 0;    /* -h, --help */
@@ -400,6 +428,7 @@ int main(int argc, char **argv)
     uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
     int nthreads;
+    sem_t sem;
 
 #if _USE_OPT
     static struct option longopts[] = {
@@ -571,9 +600,9 @@ int main(int argc, char **argv)
             perror("open");
             return 1;
         }
-#if _USE_FREE
+        #if _USE_FREE
         free(str); //RAF: this can be left at the exit() as well
-#endif
+        #endif
 
 #if _USE_MMAP
 #else
@@ -604,11 +633,12 @@ not_use_mmap:
     int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
+    sem_init(&sem, 0, MAX_THREADS);
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++) {
         if (chunk_work_start(&threads[a][i],
-            &chunks[a][i], current++, ofd))
+            &chunks[a][i], current++, ofd, &sem))
             return 1;
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
@@ -629,6 +659,8 @@ not_use_mmap:
             pthread_join(threads[a][i], NULL);
 #else
             _cpu_relax();
+            sem_wait_or_exit(&sem); //RAF: one thread completed, at least
+            sem_post(&sem);
 #endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
@@ -653,7 +685,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             && current < tot_chunks_num
             ){
                 if (chunk_work_start(&threads[b][i],
-                    &chunks[b][i], current++, ofd))
+                    &chunks[b][i], current++, ofd, &sem))
                     return 1;
             }
 
@@ -688,9 +720,9 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 
             if(out_mmap_base)
                 continue;
-  #if _USE_FREE
+            #if _USE_FREE
             free(buf);
-  #else
+            #else
             if(i+1 < nthreads)
                 c = &chunks[b][i+1];
             else
@@ -701,7 +733,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 c->out_cap = cap;
                 c->out = buf;
             }
-  #endif
+            #endif
         }
         a = !a;
     }
@@ -801,7 +833,7 @@ do_verbose:
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
-#if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
+    #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     if(read_mmap_base)
         munmap(read_mmap_base, read_filesize);
     if(out_mmap_base) {
@@ -810,6 +842,7 @@ do_verbose:
     }
     close(ofd);
     free(list);
-#endif
+    #endif
+
     return 0;
 }
