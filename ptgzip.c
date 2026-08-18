@@ -52,9 +52,10 @@ typedef struct {
     char     error;
 } chunk_t __attribute((aligned(4)));
 
-/* ------------------------------------------------------------------ */
-/* Thread worker: compress one chunk directly to its output buffer    */
-/* ------------------------------------------------------------------ */
+#ifndef _DEBUG
+#define _DEBUG    0
+#endif
+
 #ifndef _GZ_WRITE
 #define _GZ_WRITE 1 // deflate() + write() decouple CPU and I/O workloads
 #endif
@@ -144,7 +145,7 @@ static unsigned char *out_mmap_base = NULL;
 static off_t read_filesize = 0;
 static size_t max_out_size = 0;
 static size_t chunk_size   = 0;
-static int tot_chunks_num  = 0;
+static int tot_chunks      = 0;
 
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
@@ -156,6 +157,7 @@ size_t full_read(int fd, const void *buf, size_t len)
 
     while (len > 0) {
         ssize_t w = read(fd, p, len);
+        if (!w) break;
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("read");
@@ -185,6 +187,10 @@ void sem_wait_or_exit(sem_t *sem_ptr)
     exit(ret);
 }
 
+/* ------------------------------------------------------------------ */
+/* Thread worker: compress one chunk directly to its output buffer    */
+/* ------------------------------------------------------------------ */
+
 static void *thread_compress(void *arg)
 {
     chunk_t *c = arg;
@@ -195,18 +201,23 @@ static void *thread_compress(void *arg)
 
     if(c->infd == STDIN_FILENO)
     {
-        c->in  = malloc(c->len);
+        if(!c->in)
+            c->in  = malloc(c->len);
         if(!c->in) {
             perror("malloc in buf");
             c->error = -4;
             return NULL;
         }
         c->len = full_read(c->infd, c->in, c->len);
-        if(c->len == 0)
+if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->len);
+
+        if(c->len == 0) {
+if(_DEBUG) fprintf(stderr, "thr(%04d): end of stdin\n", c->idx);
             goto eofile;
+        }
         if(c->len  < 0) {
             c->error = -3;
-            return NULL;
+            goto eofile;
         }
     }
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
@@ -261,7 +272,7 @@ static void *thread_compress(void *arg)
     if (ret != Z_STREAM_END)
 #endif
     ret = _deflate(&strm, Z_FINISH);
-#if 0
+#if 0//_DEBUG
     if(strm.total_out >= ZBUF_MAX_SIZE) {
         fprintf(stderr, "tot: %ld, max: %ld\n",
             strm.total_out, ZBUF_MAX_SIZE);
@@ -339,7 +350,7 @@ size_t full_write(int fd, const void *buf, size_t len)
     unsigned char *p = (unsigned char *)buf;
 
     while (len > 0) {
-        ssize_t w = write(fd, p, len);
+        ssize_t w = write(fd, p, len); 
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("write");
@@ -391,10 +402,13 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 #else
     offset = (off_t)idx * c->out_cap;
 #endif
-    len    = (idx == tot_chunks_num - 1)
+    len    = (idx == tot_chunks - 1)
            ? (size_t)(read_filesize - offset)
-           : chunk_size;
-    c->in  = read_mmap_base + offset;
+           : chunk_size
+           ;
+    c->in  = NULL;
+    if(read_mmap_base)
+        c->in = read_mmap_base + offset;
     c->offset = offset;
     c->infd = infd;
     c->idx = idx;
@@ -452,7 +466,7 @@ static int opt_verbose   = 0;    /* -v, --verbose */
 static int   nfiles = 0;
 static char **names = NULL;
 
-#define TABLE_ITEMS ((uint32_t)tot_chunks_num + 4)
+#define TABLE_ITEMS ((uint32_t)tot_chunks + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 #define PGZ_MAGIC_1 0x6274
 #define PGZ_MAGIC_2 0x7a70
@@ -589,14 +603,13 @@ int main(int argc, char **argv)
             }
         }
     }
-#if 0
-    fprintf(stderr, "reading from fd=%d: '%s'\n",
-        infd, names[0]?:"(NULL)");
+#if _DEBUG
+fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
 #endif
 
     // decide chunk size and total number of chunks
     size_t outlen = 0;
-    tot_chunks_num = 0;
+    tot_chunks = 0;
 
     if (read_filesize < 1) {
         chunk_size = MAX_CHUNK_SIZE >> 1;
@@ -604,7 +617,7 @@ int main(int argc, char **argv)
     else
     if (read_filesize <= MIN_CHUNK_SIZE) {
         nthreads = 1;
-        tot_chunks_num = 1;
+        tot_chunks = 1;
         chunk_size = read_filesize;
     } else {
         /* Target: split evenly across all CPUs */
@@ -619,11 +632,11 @@ int main(int argc, char **argv)
 
         /* Page-align for I/O efficiency */
         chunk_size = ((chunk_size + 4095) >> 12) << 12;
-        tot_chunks_num = _int_div(read_filesize, chunk_size);
+        tot_chunks = _int_div(read_filesize, chunk_size);
 
         /* Never keep more threads than chunks */
-        if (nthreads > tot_chunks_num)
-            nthreads = tot_chunks_num;
+        if (nthreads > tot_chunks)
+            nthreads = tot_chunks;
     }
 
     chunk_t chunks[2][MAX_THREADS];
@@ -660,9 +673,9 @@ int main(int argc, char **argv)
             goto not_use_mmap;
 
 #if _GZ_WRITE
-        max_out_size = ((size_t)tot_chunks_num * chunk_size);
+        max_out_size = ((size_t)tot_chunks * chunk_size);
 #else
-        max_out_size = ((size_t)tot_chunks_num * ZBUF_MAX_SIZE);
+        max_out_size = ((size_t)tot_chunks * ZBUF_MAX_SIZE);
 #endif
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
@@ -722,10 +735,10 @@ not_use_mmap:
             if (c->state < 2)
                 continue;
 
-#if 0
+#if _DEBUG
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, tot_chunks_num, c->idx, next_idx, ofd,
+    current, tot_chunks, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
 #endif
             if (threads[a][i] && !chunks[a][i].len)
@@ -736,7 +749,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             }
 
             /* create another thread to do work */
-            if (current < tot_chunks_num
+            if ((!tot_chunks ?: (current < tot_chunks))
             && !chunks[b][i].state
             && threads[a][i]
             ){
@@ -754,9 +767,9 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             if (c->state != 3)
                 continue;
 
-#if 0
+#if 0//_DEBUG
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    threads[a][i], ofd, next_idx, tot_chunks_num);
+    threads[a][i], ofd, next_idx, tot_chunks);
 #endif
 
             /* disposing the thread */
@@ -764,6 +777,8 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 
             /* granting the correct order */
             next_idx++;
+            if(infd == STDIN_FILENO)
+                read_filesize += c->len;
             if(ofd == STDOUT_FILENO)
                 full_write(ofd, c->out, c->out_len);
             outlen += c->out_len;
@@ -797,6 +812,8 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 out_of_loop:
     if (ofd == STDOUT_FILENO)
         goto write_table;
+    if (infd == STDIN_FILENO)
+        next_idx++;
 
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
@@ -805,7 +822,7 @@ out_of_loop:
         goto skip_table;
     if(out_mmap_base) {
         unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
-        for (int i = 1; i < tot_chunks_num; i++) {
+        for (int i = 1; i < next_idx; i++) {
 #if _GZ_WRITE
             unsigned char *read_ptr = out_mmap_base + ((off_t)i * chunk_size);
 #else
@@ -820,7 +837,7 @@ out_of_loop:
     } else {
         /* Loop through all compressed chunk lengths stored in list[]  */
         off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
-        for (int i = 1; i < tot_chunks_num; i++) {
+        for (int i = 1; i < next_idx; i++) {
             off_t read_pos = (off_t)i * chunk_size;
             size_t write_size = list[i + 2];
 
@@ -886,7 +903,7 @@ write_table:
 do_verbose:
     if(opt_verbose) {
         fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
-            " zlvl: %d\n", libz_name, nthreads, current, chunk_size, read_filesize,
+            " zlvl: %d\n", libz_name, nthreads, next_idx, chunk_size, read_filesize,
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
