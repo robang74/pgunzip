@@ -148,7 +148,8 @@ static int tot_chunks_num  = 0;
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 
-static void sem_wait_or_exit(sem_t *sem_ptr)
+static ALWAYS_INLINE
+void sem_wait_or_exit(sem_t *sem_ptr)
 {
     if(!sem_ptr) return;
 
@@ -157,10 +158,11 @@ static void sem_wait_or_exit(sem_t *sem_ptr)
         _cpu_relax();
         ret = sem_wait(sem_ptr);
     }
-    if(ret) {
-        perror("sem_wait");
-        exit(ret);
-    }
+
+    if(!ret) return;
+
+    perror("sem_wait");
+    exit(ret);
 }
 
 static void *thread_compress(void *arg)
@@ -340,8 +342,7 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static ALWAYS_INLINE
-chunk_t *chunk_init(chunk_t *c, int idx,
-        int ofd, sem_t *sem_ptr)
+void chunk_init(chunk_t *c, int idx, int ofd, sem_t *sem_ptr)
 {
     size_t len;
     off_t offset;
@@ -384,23 +385,16 @@ chunk_t *chunk_init(chunk_t *c, int idx,
     c->state = 1;
     c->error = 0;
     c->ofd = ofd;
-
-    return c;
 }
 
 static ALWAYS_INLINE
-int chunk_work_start(pthread_t *p, chunk_t *c,
-        int idx, int ofd, sem_t *sem_ptr)
+void chunk_work_start(pthread_t *p, chunk_t *c_ptr)
 {
-    if (pthread_create(p, NULL, thread_compress,
-        chunk_init(c, idx, ofd, sem_ptr)))
-    {
-        perror("pthread_create");
-        return 1;
-    }
-//  idx = pthread_tryjoin_np(*p, NULL);
-//  return (!idx || idx == EBUSY);
-    return 0;
+    if (!pthread_create(p, NULL, thread_compress, c_ptr))
+        return;
+
+    perror("pthread_create");
+    exit(1);
 }
 
 /* ========================================================================== */
@@ -642,9 +636,8 @@ not_use_mmap:
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++) {
-        if (chunk_work_start(&threads[a][i],
-            &chunks[a][i], current++, ofd, &sem))
-            return 1;
+        chunk_init(&chunks[a][i], current++, ofd, &sem);
+        chunk_work_start(&threads[a][i], &chunks[a][i]);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
@@ -689,9 +682,8 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             && !threads[b][i]
             && current < tot_chunks_num
             ){
-                if (chunk_work_start(&threads[b][i],
-                    &chunks[b][i], current++, ofd, &sem))
-                    return 1;
+                chunk_init(&chunks[b][i], current++, ofd, &sem);
+                chunk_work_start(&threads[b][i], &chunks[b][i]);
             }
             _cpu_relax();
 
