@@ -173,6 +173,10 @@ _test-basic: _test-clean libz.tar $(CMD2T)
 	./$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
+#	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
+#	cat libz.tar | ./$(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
+#	diff test.dz libz.tar && echo ">>> Result: OK"
+#	@rm -f test.dz
 
 test-basic: _test-basic blkline
 

@@ -44,6 +44,7 @@ typedef struct {
     unsigned char *out;
     size_t   out_cap;
     size_t   out_len;
+    int      infd;
     int      idx;
     int      ofd;
     char     map;
@@ -149,6 +150,25 @@ static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 
 static ALWAYS_INLINE
+size_t full_read(int fd, const void *buf, size_t len)
+{
+    unsigned char *p = (unsigned char *)buf;
+
+    while (len > 0) {
+        ssize_t w = read(fd, p, len);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            perror("read");
+            return -1;
+        }
+        p   += w;
+        len -= w;
+    }
+
+    return p - (unsigned char *)buf;
+}
+
+static ALWAYS_INLINE
 void sem_wait_or_exit(sem_t *sem_ptr)
 {
     if(!sem_ptr) return;
@@ -173,6 +193,22 @@ static void *thread_compress(void *arg)
 
     sem_wait_or_exit(c->sem_ptr);
 
+    if(c->infd == STDIN_FILENO)
+    {
+        c->in  = malloc(c->len);
+        if(!c->in) {
+            perror("malloc in buf");
+            c->error = -4;
+            return NULL;
+        }
+        c->len = full_read(c->infd, c->in, c->len);
+        if(c->len == 0)
+            goto eofile;
+        if(c->len  < 0) {
+            c->error = -3;
+            return NULL;
+        }
+    }
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
      *    Without +16 the output cannot be concatenated into a valid .gz file.
@@ -202,7 +238,7 @@ static void *thread_compress(void *arg)
         if (cap > c->out_cap) c->out_cap = cap;
         c->out = malloc(c->out_cap);
         if (!c->out) {
-            perror("malloc cbuf");
+            perror("malloc out buf");
             c->error = -2;
             return NULL;
         }
@@ -260,6 +296,7 @@ endfnc:
     }
     #endif
 #endif
+eofile:
     c->state = 3;
     if (c->sem_ptr) {
         sem_post(c->sem_ptr);
@@ -342,7 +379,7 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static ALWAYS_INLINE
-void chunk_init(chunk_t *c, int idx, int ofd, sem_t *sem_ptr)
+void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
     size_t len;
     off_t offset;
@@ -359,6 +396,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, sem_t *sem_ptr)
            : chunk_size;
     c->in  = read_mmap_base + offset;
     c->offset = offset;
+    c->infd = infd;
     c->idx = idx;
     c->map = 0;
 #if _GZ_WRITE
@@ -426,6 +464,7 @@ int main(int argc, char **argv)
 {
     uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
+    int infd = STDIN_FILENO;
     int nthreads;
     sem_t sem;
 
@@ -512,41 +551,57 @@ int main(int argc, char **argv)
 
     signal(SIGPIPE, SIG_IGN);
 
-    int infd = open(names[0], O_RDONLY);
-    if (infd < 0) {
-        perror("open");
-        return 1;
-    }
+    if(names[0] && (names[0][0] != '-' || names[0][1]))
+    {
+        infd = open(names[0], O_RDONLY);
+        if (infd < 0) {
+            perror("open");
+            return 1;
+        }
 
-    struct stat st;
-    if (fstat(infd, &st) < 0) {
-        perror("fstat");
-        return 1;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        _print2("error: not a regular file\n");
-        return 1;
-    }
+        struct stat st;
+        if (fstat(infd, &st) < 0) {
+            perror("fstat");
+            return 1;
+        }
+        if (!S_ISREG(st.st_mode)) {
+            _print2("error: not a regular file\n");
+            return 1;
+        }
 
-    if(!st.st_size || st.st_size < 0) {
-        _print2("warning: zero lenght file\n");
-        return 0;
-    }
-    read_filesize = st.st_size;
+        if(!st.st_size || st.st_size < 0) {
+            _print2("warning: zero lenght file\n");
+            return 0;
+        }
+        read_filesize = st.st_size;
 
-    /* ---- mmap entire file (zero-copy input for all threads) ---- */
-    //RAF, TODO: we take mmap() for granted but code should work also without it
-    read_mmap_base = mmap(NULL, read_filesize, PROT_READ, MAP_PRIVATE, infd, 0);
-    if (read_mmap_base == MAP_FAILED) {
-        perror("mmap infd");
-        return 1;
+        if(_USE_MMAP) {
+            // mmap entire file (zero-copy input for all threads)
+            read_mmap_base = mmap(NULL, read_filesize,
+                PROT_READ, MAP_PRIVATE, infd, 0);
+            if (read_mmap_base == MAP_FAILED) {
+                read_mmap_base = NULL;
+                perror("mmap infd");
+            } else {
+                // kernel keeps the mapping via vnode reference
+                close(infd);
+                infd = -1;
+            }
+        }
     }
-    close(infd);   /* kernel keeps the mapping via vnode reference */
+#if 0
+    fprintf(stderr, "reading from fd=%d: '%s'\n",
+        infd, names[0]?:"(NULL)");
+#endif
 
-    /* ---- decide chunk size and total number of chunks ---- */
+    // decide chunk size and total number of chunks
     size_t outlen = 0;
     tot_chunks_num = 0;
 
+    if (read_filesize < 1) {
+        chunk_size = MAX_CHUNK_SIZE >> 1;
+    }
+    else
     if (read_filesize <= MIN_CHUNK_SIZE) {
         nthreads = 1;
         tot_chunks_num = 1;
@@ -574,16 +629,14 @@ int main(int argc, char **argv)
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    if(tot_chunks_num > 1) {
-        list = malloc(TABLE_ITEMS << 2);
-        if(!list) {
-            perror("malloc list");
-            return 1;
-        } else { //RAF: possible fallback without list
-            list[0] =  0;
-            list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
-        }
+    list = malloc(TABLE_ITEMS << 2);
+    if(!list) {
+        perror("malloc list");
+    } else { //RAF: possible fallback without list
+        list[0] =  0;
+        list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
     }
+
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     if(!opt_stdout) {
         size_t len = strlen(names[0]) + 4;
@@ -603,10 +656,8 @@ int main(int argc, char **argv)
         free(str); //RAF: this can be left at the exit() as well
         #endif
 
-#if _USE_MMAP
-#else
-      goto not_use_mmap;
-#endif
+        if(!_USE_MMAP || !max_out_size)
+            goto not_use_mmap;
 
 #if _GZ_WRITE
         max_out_size = ((size_t)tot_chunks_num * chunk_size);
@@ -623,6 +674,7 @@ int main(int argc, char **argv)
         out_mmap_base = mmap(NULL, max_out_size,
             PROT_READ | PROT_WRITE, MAP_SHARED, ofd, 0);
         if (out_mmap_base == MAP_FAILED) {
+            out_mmap_base = NULL;
             perror("mmap out");
             goto not_use_mmap;
         }
@@ -636,7 +688,7 @@ not_use_mmap:
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++) {
-        chunk_init(&chunks[a][i], current++, ofd, &sem);
+        chunk_init(&chunks[a][i], current++, ofd, infd, &sem);
         chunk_work_start(&threads[a][i], &chunks[a][i]);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
@@ -649,7 +701,7 @@ not_use_mmap:
     }
 
     /* write compressed chunks to stdout in strict segment order */
-    while(next_idx < tot_chunks_num)
+    while (next_idx < current)
     {
         for (int i = 0, b = !a; i < nthreads; i++)
         {
@@ -676,13 +728,19 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, tot_chunks_num, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
 #endif
+            if (threads[a][i] && !chunks[a][i].len)
+            {
+                threads[a][i] = 0;
+                current--;
+                continue;
+            }
 
             /* create another thread to do work */
-            if (!chunks[b][i].state
-            && !threads[b][i]
-            && current < tot_chunks_num
+            if (current < tot_chunks_num
+            && !chunks[b][i].state
+            && threads[a][i]
             ){
-                chunk_init(&chunks[b][i], current++, ofd, &sem);
+                chunk_init(&chunks[b][i], current++, ofd, infd, &sem);
                 chunk_work_start(&threads[b][i], &chunks[b][i]);
             }
             _cpu_relax();
@@ -743,7 +801,8 @@ out_of_loop:
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
      */
-    if(!list) goto skip_table;
+    if(next_idx < 2)
+        goto skip_table;
     if(out_mmap_base) {
         unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
         for (int i = 1; i < tot_chunks_num; i++) {
@@ -827,7 +886,7 @@ write_table:
 do_verbose:
     if(opt_verbose) {
         fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
-            " zlvl: %d\n", libz_name, nthreads, tot_chunks_num, chunk_size, read_filesize,
+            " zlvl: %d\n", libz_name, nthreads, current, chunk_size, read_filesize,
                 outlen, (float)outlen*100/read_filesize, compression_level);
     }
 
