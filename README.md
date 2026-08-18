@@ -45,19 +45,20 @@ Last but not least, during the development of this project the support for gzip 
 
 The throughput peak moved from 64 MB/s to 91 MB/s (1.4x) maintaining the advantage over `pigz -p6` (fair comparison by same threads number spawning) unchanged compared with the `pigz -p8` which is the standard run on an 8 threads CPU like i5-8365U (2019) also for `ptgzip`. Whether using the '`-c`' option or not, file writing was the v0.2 major weakness in terms of throughput speed compared with `pigz`.
 
-| Command `f=qemu.elf`           | Time             | Ratio  | Cause      |
-|:-------------------------------|:-----------------|-------:|:----------:|
-| `./ptgzip   -c $f >/dev/null`  | `real  0m0.049s` | { 1× } | +2.60%     |
-| `/bin/pigz  -c $f >/dev/null`  | `real  0m0.070s` | 1.43×  | ( **pt** ) |
-| `/bin/gzip  -c $f >/dev/null`  | `real  0m0.307s` | 6.27×  | +0.59%     |
-|||||
-| `./ptgzip   -9c $f >/dev/null` | `real  0m0.077s` | 1.57×  | { 1× }     |
-| `/bin/pigz  -9c $f >/dev/null` | `real  0m0.167s` | 2.17×  | ( **ng** ) |
-| `/bin/gzip  -9c $f >/dev/null` | `real  0m0.946s` | 19.3×  | +0.03%     |
-|||||
-| `/bin/zstd  -9c $f >/dev/null` | `real  0m0.211s` | 2.74×  | −4.41%     |
-| `/bin/xz   -19c $f >/dev/null` | `real  0m2.377s` | 30.9×  | −20.4%     |
-| `/bin/pigz -11c $f >/dev/null` | `real 0m15.343s` | 199 ×  | −3.80%     |
+| Cmd `f=libz.tar >/dev/null` | Avg (T/30)     | Ratio  | Cold   | elf    | tar    |
+|:----------------------------|---------------:|-------:|-------:|:------:|:------:|
+| `./ptgzip   -c $f`          |  32.33 ms      | { 1× } | { 1× } | +2.60% | +0.45% |
+| `/bin/pigz  -c $f`          |  43.73 ms      | 1.35×  |  1.4×  | +0.47% | +0.35% |
+| `/bin/gzip  -c $f`          | 214.50 ms      | 6.63×  |  6.3×  | +0.59% | +0.68% |
+|||||||
+| `./ptgzip   -9c $f`         |  54.73 ms      | 1.69×  |  1.6×  | { 1× } | { 1× } |
+| `/bin/pigz  -9c $f`         | 113.47 ms      | 3.51×  |  3.4×  | -0.07% | −0.67% |
+| `/bin/gzip  -9c $f`         | 607.24 ms      | 18.8×  | 19.3×  | +0.03% | −0.40% |
+|||||||
+| `/bin/zstd  -9c $f`         | 114.70 ms      | 3.55×  |  2.7×  | −4.41% | −20.1% |
+| `/bin/xz   -19c $f`         | 1644.6 ms      | 50.9×  | 50.0×  | −20.4% | −25.9% |
+| `/bin/pigz -11c $f`         | 31049. ms      | 960 ×  | 320 ×  | −3.80% | −4.38% |
+- Time (T/30) is the average hot cache execution time, cold cache by `f=qemu.elf`
 
 The last three lines show how much the gzip format is *ancient* but also that it can stay relevant because it is the best compromise that still works everywhere. And `ptgzip` moves that compromise further toward "fast" (especially expected in parallel [inflating](#inflating)) without breaking the "works everywhere" part.
 
