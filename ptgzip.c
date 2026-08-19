@@ -64,6 +64,9 @@ enum {
 #ifndef _DEBUG
 #define _DEBUG    0
 #endif
+#ifndef _USE_OPT
+#define _USE_OPT  1 //RAF: no difference in gz speed
+#endif
 
 #ifndef _GZ_WRITE
 #define _GZ_WRITE 1 // deflate() + write() decouple CPU and I/O workloads
@@ -82,23 +85,18 @@ enum {
 #ifndef _USE_FREE
 #define _USE_FREE 0 // free() isn't strictly necessary, but do testing
 #endif
-
-#ifndef _USE_OPT
-#define _USE_OPT  1 //RAF: no difference in gz speed
-#endif
 #ifndef _ONE_ZDF
 #define _ONE_ZDF  1 //RAF: no difference in .gz size
 #endif
+
 #ifndef _USE_ZNG
 #define _USE_ZNG  0 //RAF: just API, same speed/size
 #else
 #define libz_name "zlib-ng"
 #endif
-
 #ifndef _USE_MNZ
 #define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
-
 #if   _USE_ZNG
   #include "zlib-ng.h"
   #define _deflate_init2 zng_deflateInit2
@@ -135,7 +133,6 @@ enum {
   #define _deflate           deflate
   #define _stream_t        z_stream
 #endif
-
 #ifndef libz_name
 #define libz_name          "none"
 #endif
@@ -391,14 +388,13 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
     c->out_cap = zbuf_max_size(chunk_size);
     offset = WBUF_NTH_SIZE(idx);
-#if 1 //RAF, TODO: this is mandatory but it shouldn't in theory
-    c->in_len = (idx == tot_chunks - 1)
-              ? (size_t)(read_filesize - offset)
-              : chunk_size
-              ;
-#else
-    c->in_len = chunk_size;
-#endif
+    if(infd != STDIN_FILENO) {
+        c->in_len = (idx == tot_chunks - 1)
+                  ? (size_t)(read_filesize - offset)
+                  : chunk_size;
+    } else {
+        c->in_len = chunk_size;
+    }
     c->offset = offset;
     c->infd = infd;
     c->ofd = ofd;
@@ -549,8 +545,8 @@ int main(int argc, char **argv)
     if (opt_help || !nfiles) {
         opt_quiet = 0;
         _print2("\n    Usage: %s [opts] <file>"
-               "\n     opts: -#, -v, -q, -c, -h\n\n",
-               basename(argv[0]));
+                "\n     opts: -#, -v, -q, -c, -h\n\n",
+                    basename(argv[0]));
         return 0;
     }
 
@@ -615,8 +611,9 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
     size_t outlen = 0;
     tot_chunks = 0;
 
-    if (read_filesize < 1) {
-        chunk_size = MAX_CHUNK_SIZE;// >> 1;
+    if (!read_filesize) {
+        // RAF, TODO: other values are failing
+        chunk_size = MAX_CHUNK_SIZE;
     }
     else
     if (read_filesize <= MIN_CHUNK_SIZE) {
@@ -833,6 +830,7 @@ dispose:
        *            the current chuck which will be reused only by large
        *            files while the smaller wouldn't.
        */
+            memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
             chunk_t *cb; //RAF: it will be the next one, if any
             if (i+1 < nthreads)
                 cb = &chunks[b][i+1];
