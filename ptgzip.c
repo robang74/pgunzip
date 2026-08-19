@@ -40,7 +40,6 @@ typedef struct {
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
-    size_t   in_cap;
     size_t   out_cap;
     int      infd;
     int      ofd;
@@ -49,7 +48,7 @@ typedef struct {
     int      idx;                                //
     uint8_t  state;                              //
     char     error;                              //
-    size_t   len;                                //
+    size_t   in_len;                             //
     size_t   out_len;                            //
     off_t    offset;                             //
 //RAF: part that requires to be completely reset //
@@ -223,9 +222,9 @@ static void *thread_compress(void *arg)
         goto endfnc;
     }
 
-    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->len.
+    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
      *    Incompressible data EXPANDS by ~0.1 % + headers.
-     *    c->len alone guarantees a buffer overrun on random bytes.
+     *    c->in_len alone guarantees a buffer overrun on random bytes.
      */
     if (!c->out) {
         /*
@@ -236,7 +235,7 @@ static void *thread_compress(void *arg)
         *      corrupt data and thus creating a corrupted gzip archive or when
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
-        c->out_cap = _deflate_bound(&strm, c->len);
+        c->out_cap = _deflate_bound(&strm, c->in_len);
         c->out = malloc(c->out_cap);
         if (!c->out) {
             perror("malloc out buf");
@@ -245,7 +244,7 @@ static void *thread_compress(void *arg)
         }
     }
     strm.next_in   = c->in;
-    strm.avail_in  = c->len;
+    strm.avail_in  = c->in_len;
     strm.next_out  = c->out;
     strm.avail_out = c->out_cap;
 
@@ -329,7 +328,8 @@ int chunk_write(chunk_t *c)
             off += w;
             len -= w;
         }
-        c->len = c->out_len - len;
+        c->in_len = c->out_len - len;
+
         return !!len;
     }
 }
@@ -382,20 +382,23 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 static ALWAYS_INLINE
 void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
-    size_t len;
     off_t offset;
 
+    c->map = 0;
+    c->idx = idx;
+    c->error = 0;
+    c->state = 1;
     c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
     c->out_cap = zbuf_max_size(chunk_size);
     offset = WBUF_NTH_SIZE(idx);
-    len    = (idx == tot_chunks - 1)
-           ? (size_t)(read_filesize - offset)
-           : chunk_size
-           ;
+    c->in_len = (idx == tot_chunks - 1)
+              ? (size_t)(read_filesize - offset)
+              : chunk_size
+              ;
     c->offset = offset;
     c->infd = infd;
-    c->idx = idx;
-    c->map = 0;
+    c->ofd = ofd;
+
 #if _GZ_WRITE
 #else
     /* Assign output pointer inside mapped output file space */
@@ -405,46 +408,31 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
     else
 #endif
-    if (is_outbuf_freeable(c)
-    #if _USE_FREE
-    #else /* RAF: free() here is a corner case that "should" never happen by
-           *      design but if it would happen, it is better deal than oops
-           */
-    &&  c->len && len > c->len
-    #endif
-    ){
-        free(c->out);
-        c->out = NULL;
+    if(!c->out)
+        c->out = malloc(c->out_cap);
+    if(!c->out) {
+        perror("malloc in buf");
+        exit(-1);
     }
-    c->len = len;
-    c->state = 1;
-    c->error = 0;
-    c->ofd = ofd;
 
     if(read_mmap_base) {
         c->in = read_mmap_base + offset;
         c->map |= b_mmap_in;
     } else {
         if(!c->in)
-            c->in = malloc(len);
+            c->in = malloc(c->in_len);
         if(!c->in) {
             perror("malloc in buf");
             exit(-1);
         }
-        c->len = full_read(infd, c->in, len);
+        c->in_len = full_read(infd, c->in, c->in_len);
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->len);
+fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
-
-        if(c->len == 0) {
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, ">>> thr(%04d): end of stdin\n", idx);
-#endif // ----------------------------------------------------------------------
-            c->state = 3;
-        }
-        if(c->len  < 0) {
+        if(c->in_len  < 0)
             exit(-1);
-        }
+        if(c->in_len == 0)
+            c->state = 3;
     }
 }
 
@@ -763,7 +751,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
 
             if (threads[a][i])
             {
-                if (!c->len && c->state)
+                if (!c->in_len && c->state)
                 {
                     threads[a][i] = 0;
                     current--;
@@ -783,7 +771,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                         memset(cb, 0, sizeof(chunk_t));
                         #else
                         cb->state = 0;
-                        cb->len = 0;
+                        cb->in_len = 0;
                         #endif
                         current--;
                     } else {
@@ -814,7 +802,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             /* granting the correct order */
             next_idx++;
             if(infd == STDIN_FILENO)
-                read_filesize += c->len;
+                read_filesize += c->in_len;
             if(ofd == STDOUT_FILENO)
                 full_write(ofd, c->out, c->out_len);
             outlen += c->out_len;
