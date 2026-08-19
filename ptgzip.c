@@ -138,7 +138,8 @@ enum {
 #endif
 
 #define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
-#define ZBUF_MAX_SIZE zbuf_max_size(chunk_size)
+#define WBUF_MAX_SIZE (_GZ_WRITE ? chunk_size : zbuf_max_size(chunk_size))
+#define WBUF_NTH_SIZE(_n) ((size_t)(_n) * WBUF_MAX_SIZE)
 
 #define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
 #define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
@@ -147,8 +148,8 @@ enum {
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
 #define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
 
-static unsigned char *read_mmap_base = NULL;
-static unsigned char *out_mmap_base = NULL;
+static uint8_t *read_mmap_base = NULL;
+static uint8_t *out_mmap_base = NULL;
 static off_t read_filesize = 0;
 static size_t max_out_size = 0;
 static size_t chunk_size   = 0;
@@ -160,7 +161,7 @@ static int chunk_write(chunk_t *c);
 static ALWAYS_INLINE
 size_t full_read(int fd, const void *buf, size_t len)
 {
-    unsigned char *p = (unsigned char *)buf;
+    uint8_t *p = (uint8_t *)buf;
 
     while (len > 0) {
         ssize_t w = read(fd, p, len);
@@ -174,7 +175,7 @@ size_t full_read(int fd, const void *buf, size_t len)
         len -= w;
     }
 
-    return p - (unsigned char *)buf;
+    return p - (uint8_t *)buf;
 }
 
 static ALWAYS_INLINE
@@ -224,7 +225,7 @@ static void *thread_compress(void *arg)
      */
     if (!c->out) {
         /*
-        * RAF: potentially the bound could be larger than the ZBUF_MAX_SIZE
+        * RAF: potentially the bound could be larger than the WBUF_MAX_SIZE
         *      in case the library differs from the current ones tested and
         *      in such a case there is a good canche that USE_MMAP would fail
         *      silently, in some corner cases when writing out of bond will
@@ -260,8 +261,8 @@ static void *thread_compress(void *arg)
     ret = _deflate(&strm, Z_FINISH);
 
 #if _DEBUG // ------------------------------------------------------------------
-if(strm.total_out >= ZBUF_MAX_SIZE)
-    fprintf(stderr, "tot: %ld, max: %ld\n", strm.total_out, ZBUF_MAX_SIZE);
+if(strm.total_out >= WBUF_MAX_SIZE)
+    fprintf(stderr, "tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
@@ -306,13 +307,13 @@ static ALWAYS_INLINE
 int chunk_write(chunk_t *c)
 {
     if(out_mmap_base) {
-        unsigned char *dst_ptr = out_mmap_base + c->offset;
+        uint8_t *dst_ptr = out_mmap_base + c->offset;
         return !__builtin_memmove(dst_ptr, c->out, c->out_len);
     } else {
         int ofd = c->ofd;
         off_t off = c->offset;
         size_t len = c->out_len;
-        unsigned char *p = c->out;
+        uint8_t *p = c->out;
 
         while (len > 0) {
             ssize_t w = pwrite(ofd, p, len, off);
@@ -333,7 +334,7 @@ int chunk_write(chunk_t *c)
 static ALWAYS_INLINE
 size_t full_write(int fd, const void *buf, size_t len)
 {
-    unsigned char *p = (unsigned char *)buf;
+    uint8_t *p = (uint8_t *)buf;
 
     while (len > 0) {
         ssize_t w = write(fd, p, len);
@@ -346,7 +347,7 @@ size_t full_write(int fd, const void *buf, size_t len)
         len -= w;
     }
 
-    return p - (unsigned char *)buf;
+    return p - (uint8_t *)buf;
 }
 
 static ALWAYS_INLINE
@@ -369,7 +370,7 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 }
 
 /*
- * RAF: currently the .out_cap exists but always set to ZBUF_MAX_SIZE, which
+ * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
  *      makes the .out_cap redundant while out_mmap_base would be likely a
  *      more usful member of the chunk_t structure. A revision is needed
  *      after the development is completed to get rid off of global variables
@@ -382,12 +383,8 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     off_t offset;
 
     c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
-    c->out_cap = ZBUF_MAX_SIZE;
-#if _GZ_WRITE
-    offset = (off_t)idx * chunk_size;
-#else
-    offset = (off_t)idx * c->out_cap;
-#endif
+    c->out_cap = zbuf_max_size(chunk_size);
+    offset = WBUF_NTH_SIZE(idx);
     len    = (idx == tot_chunks - 1)
            ? (size_t)(read_filesize - offset)
            : chunk_size
@@ -572,8 +569,6 @@ int main(int argc, char **argv)
     if (nthreads < 1)
         nthreads = 1;
 
-    signal(SIGPIPE, SIG_IGN);
-
     if(names[0] && (names[0][0] != '-' || names[0][1]))
     {
         infd = open(names[0], O_RDONLY);
@@ -612,6 +607,8 @@ int main(int argc, char **argv)
             }
         }
     }
+
+    signal(SIGPIPE, SIG_IGN);
 
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
@@ -663,7 +660,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
     }
 
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
-    if(!opt_stdout) {
+    while (!opt_stdout) {
         size_t len = strlen(names[0]) + 4;
         char *str = malloc(len);
         if(!str) {
@@ -683,17 +680,14 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         #endif
 
         if(!_USE_MMAP || !max_out_size)
-            goto not_use_mmap;
+            break;
 
-#if _GZ_WRITE
-        max_out_size = ((size_t)tot_chunks * chunk_size);
-#else
-        max_out_size = ((size_t)tot_chunks * ZBUF_MAX_SIZE);
-#endif
+        max_out_size = WBUF_NTH_SIZE(tot_chunks);
+
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
             perror("ftruncate");
-            goto not_use_mmap;
+            break;
         }
 
         /* 2. Map output file into virtual memory */
@@ -702,13 +696,14 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         if (out_mmap_base == MAP_FAILED) {
             out_mmap_base = NULL;
             perror("mmap out");
-            goto not_use_mmap;
+            break;
         }
+
+        break;
     }
 
 /* ************************************************************************** */
 
-not_use_mmap:
     int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
@@ -858,19 +853,14 @@ out_of_loop:
     if(next_idx < 2)
         goto skip_table;
     if(out_mmap_base) {
-        unsigned char *write_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
+        uint8_t *dst_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
         for (int i = 1; i < next_idx; i++) {
-#if _GZ_WRITE
-            unsigned char *read_ptr = out_mmap_base + ((off_t)i * chunk_size);
-#else
-            unsigned char *read_ptr = out_mmap_base + ((off_t)i * ZBUF_MAX_SIZE);
-#endif
             size_t c_len = list[i + 2];
             if (!c_len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(write_ptr, read_ptr, c_len);
-            write_ptr += c_len;
+            __builtin_memmove(dst_ptr, out_mmap_base + WBUF_NTH_SIZE(i), c_len);
+            dst_ptr += c_len;
         }
-        outlen += write_ptr - out_mmap_base;
+        outlen += dst_ptr - out_mmap_base;
     } else {
         /* Loop through all compressed chunk lengths stored in list[]  */
         off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
@@ -926,8 +916,8 @@ write_table:
     left = TABLE_BSIZE;
     list[TABLE_ITEMS-2] = -sum; // sum checking code
 
-    unsigned char *p = (uint8_t *)list;
-    unsigned r = outlen & 3; // 32-bit align
+    uint8_t *p = (uint8_t *)list;
+    uint32_t r = outlen & 3; // 32-bit align
     left -= 4-r;
     p  = &p[4-r];
     if (out_mmap_base) {
