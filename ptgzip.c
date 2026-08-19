@@ -199,27 +199,6 @@ static void *thread_compress(void *arg)
 
     sem_wait_or_exit(c->sem_ptr);
 
-    if(c->infd == STDIN_FILENO)
-    {
-        if(!c->in)
-            c->in  = malloc(c->len);
-        if(!c->in) {
-            perror("malloc in buf");
-            c->error = -4;
-            return NULL;
-        }
-        c->len = full_read(c->infd, c->in, c->len);
-if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->len);
-
-        if(c->len == 0) {
-if(_DEBUG) fprintf(stderr, "thr(%04d): end of stdin\n", c->idx);
-            goto eofile;
-        }
-        if(c->len  < 0) {
-            c->error = -3;
-            goto eofile;
-        }
-    }
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
      *    Without +16 the output cannot be concatenated into a valid .gz file.
@@ -350,7 +329,7 @@ size_t full_write(int fd, const void *buf, size_t len)
     unsigned char *p = (unsigned char *)buf;
 
     while (len > 0) {
-        ssize_t w = write(fd, p, len); 
+        ssize_t w = write(fd, p, len);
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("write");
@@ -406,9 +385,6 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
            ? (size_t)(read_filesize - offset)
            : chunk_size
            ;
-    c->in  = NULL;
-    if(read_mmap_base)
-        c->in = read_mmap_base + offset;
     c->offset = offset;
     c->infd = infd;
     c->idx = idx;
@@ -437,6 +413,27 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->state = 1;
     c->error = 0;
     c->ofd = ofd;
+
+    if(read_mmap_base) {
+        c->in = read_mmap_base + offset;
+    } else {
+        if(!c->in)
+            c->in = malloc(c->len);
+        if(!c->in) {
+            perror("malloc in buf");
+            exit(-1);
+        }
+        len = full_read(infd, c->in, len);
+if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, len);
+
+        if(len == 0) {
+if(_DEBUG) fprintf(stderr, ">>> thr(%04d): end of stdin\n", idx);
+            c->state = 3;
+        }
+        if(len  < 0) {
+            exit(-1);
+        }
+    }
 }
 
 static ALWAYS_INLINE
@@ -667,6 +664,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         }
         #if _USE_FREE
         free(str); //RAF: this can be left at the exit() as well
+        str = NULL;
         #endif
 
         if(!_USE_MMAP || !max_out_size)
@@ -700,9 +698,15 @@ not_use_mmap:
     sem_init(&sem, 0, nthreads);
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
-    for (int i = 0; i < nthreads; i++) {
-        chunk_init(&chunks[a][i], current++, ofd, infd, &sem);
-        chunk_work_start(&threads[a][i], &chunks[a][i]);
+    for (int i = 0; i < nthreads; i++, current++) {
+        chunk_t *c = &chunks[a][i];
+        chunk_init(c, current, ofd, infd, &sem);
+        if(c->state == 3) {
+            c->state = 0;
+            nthreads = i;
+            break;
+        }
+        chunk_work_start(&threads[a][i], c);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
@@ -741,22 +745,35 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, tot_chunks, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
 #endif
-            if (threads[a][i] && !chunks[a][i].len)
+            if (threads[a][i] && !c->len && c->state)
             {
                 threads[a][i] = 0;
                 current--;
-                continue;
+                goto dispose;
             }
-
+            else
             /* create another thread to do work */
             if ((!tot_chunks ?: (current < tot_chunks))
             && !chunks[b][i].state
             && threads[a][i]
             ){
+                //chunk_t *cb = &chunks[b][i]
                 chunk_init(&chunks[b][i], current++, ofd, infd, &sem);
-                chunk_work_start(&threads[b][i], &chunks[b][i]);
+                if(chunks[b][i].state == 3) {
+                    #if _USE_FREE
+                    if(chunks[b][i].out) free(chunks[b][i].out);
+                    if(chunks[b][i].in) free(chunks[b][i].in);
+                    memset(&chunks[b][i], 0, sizeof(chunk_t));
+                    #else
+                    chunks[b][i].state = 0;
+                    chunks[b][i].len = 0;
+                    #endif
+                    current--;
+                } else {
+                    chunk_work_start(&threads[b][i], &chunks[b][i]);
+                    _cpu_relax();
+                }
             }
-            _cpu_relax();
 
             /* ordered writing on STDOUT, only */
             if (ofd == STDOUT_FILENO) {
@@ -785,6 +802,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             if(list) list[ 2+c->idx ] = c->out_len;
 
             /* disposing the chunk and its buffer */
+dispose:
             void  *buf = c->out;
             size_t cap = c->out_cap;
             memset(c, 0, sizeof(chunk_t));
@@ -793,6 +811,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 continue;
             #if _USE_FREE
             free(buf);
+            buf = NULL;
             #else
             if(i+1 < nthreads)
                 c = &chunks[b][i+1];
@@ -800,6 +819,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 c = &chunks[a][ 0 ]; //RAF: it will be the next one
             if(c->out) {
                 free(buf);
+                buf = NULL;
             } else {
                 c->out_cap = cap;
                 c->out = buf;
@@ -811,9 +831,9 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
 
 out_of_loop:
     if (ofd == STDOUT_FILENO)
-        goto write_table;
+        goto write_table;/*
     if (infd == STDIN_FILENO)
-        next_idx++;
+        next_idx++;*/
 
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
