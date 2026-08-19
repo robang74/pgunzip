@@ -41,14 +41,14 @@ source: $(LIBZ_A)
 
 $(TARBALL):
 	@echo ">>> Downloading $(TARBALL) ..."
-	@wget -q -O $@ $(URL) || curl -sL -o $@ $(URL) || \
-		{ echo "Error: install wget or curl"; exit 1; }
+	wget -O $@ $(URL) || curl -Lo $@ $(URL) || \
+		{ echo "Error: install wget or curl"; rm -f $(TARBALL); exit 1; }
 
 $(LIBZ_DIR): $(TARBALL)
 	@echo ">>> Extracting $(TARBALL) -> $(LIBZ_DIR)/"
-	@rm -rf zlib-ng-2.3.3
-	@tar xzf $(TARBALL)
-	@mv zlib-ng-2.3.3 $(LIBZ_DIR)
+	rm -rf zlib-ng-2.3.3 libz/
+	tar xzf $(TARBALL)
+	mv zlib-ng-2.3.3 $(LIBZ_DIR)
 	@touch $@
 
 $(LIBZ_A): $(LIBZ_DIR)
@@ -99,15 +99,16 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 # Tests
 # -----------------------------------------------------------------------------
 
-.PHONY: tests blkline speed stress speed-stress speed-stress
+.PHONY: tests blkline speed stress iocat crash devel
 .PHONY:  test-clean  test-basic  test-speed  test-pigzc
 .PHONY: _test-clean _test-basic _test-speed _test-pigzc
 .PHONY:  test-speef  test-gzipc  test-crash  test-pigzf
 .PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
-.PHONY: _test-inout  test-inout
+.PHONY: _test-inout  test-inout _speed-stress speed-stress
 
-CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=1
+CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=0
+IOWAY_FLAGS ?= -D_THR_WAIT=0 -D_GZ_WRITE=1 -D_USE_MMAP=0 -D_USE_FREE=1
 
 NPROC ?= 4
 CMD2T ?= ptgzip
@@ -127,12 +128,30 @@ blkline:
 tests: test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
 	@echo
 
+devel: $(LIBZ_A)
+	@printf "\n=========================="
+	@printf "\n=== test clean + basic ==="
+	@printf "\n==========================\n\n"
+	@make _test-clean || printf "\n>>> ERR=$$?\n"
+	@make  test-basic || printf "\n>>> ERR=$$?\n"
+	@printf "\n=========================="
+	@printf "\n=== test clean + iocat ==="
+	@printf "\n==========================\n\n"
+	@make iocat       || printf "\n>>> ERR=$$?\n"
+	@make test-basic  || printf "\n>>> ERR=$$?\n"
+	@printf "\n=========================="
+	@printf "\n=== test clean + crash ==="
+	@printf "\n==========================\n\n"
+	@make crash       || printf "\n>>> ERR=$$?\n"
+	@make test-basic  || printf "\n>>> ERR=$$?\n"
+	@echo
+
 speed:
 	@make _test-speed _test-speef CMD2T=$(CMD2T) blkline
 	@echo
 
 speed-stress: libz.tar $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' speed test /bin/ ===\n\n"
+	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
@@ -142,12 +161,32 @@ speed-stress: libz.tar $(CMD2T)
 stress-speed: speed-stress
 
 stress: libz.tar $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' stress test /bin/ ===\n\n"
+	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
 	@echo
+
+crash:
+	@printf "\n=== iocat build w/ CRASH_FLAGS ===\n\n"
+	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"
+
+iocat:
+	@printf "\n=== iocat build w/ IOWAY_FLAGS ===\n\n"
+	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(IOWAY_FLAGS)"
+
+_stress-iocat: libz.tar
+	@printf "\n=== iocat stress test on /bin/ ===\n\n"
+	@cmd='for i in $$list; do cat $$i | ./$(CMD2T) $(CMDVC) -1 | zcat; done' \
+    && sync && echo "$$cmd" && nl=/dev/null \
+    && list="$(shell find /bin/ -type f | sort)" \
+    && time eval "$$cmd" >$$nl
+	@echo
+
+stress-iocat: iocat _stress-iocat blkline
+
+iocat-stress: stress-iocat
 
 /bin/pigz:
 	@printf "\nERROR: $@ not installed, abort\n\n"
@@ -157,26 +196,26 @@ stress: libz.tar $(CMD2T)
 	@printf "\nERROR: $@ not installed, abort\n\n"
 	false
 
-_test-clean: $(CMD2T)
+_test-clean:
 	@printf "\n=== $(CMD2T) compilation test ===\n\n"
 	rm -f $(CMD2T) && make $(CMD2T)
 	@rm -f libz.tar libz.tar.gz
 
 test-clean: _test-clean blkline
 
-_test-basic: _test-clean libz.tar $(CMD2T)
-	@printf "\n=== $(CMD2T) file sanity check ===\n\n"
-	./$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
-	zcat libz.tar.gz | tee test.dz | wc -c
-	diff test.dz libz.tar && echo ">>> Result: OK"
-	@rm -f test.dz
+_test-basic: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
 	./$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
-	diff test.dz libz.tar && echo ">>> Result: OK"
+	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
 	cat libz.tar | ./$(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
-	diff test.dz libz.tar && echo ">>> Result: OK"
+	@diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f test.dz
+	@printf "\n=== $(CMD2T) file sanity check ===\n\n"
+	./$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
+	zcat libz.tar.gz | tee test.dz | wc -c
+	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 
 test-basic: _test-basic blkline
@@ -240,9 +279,8 @@ _test-pigzc: libz.tar /bin/pigz
 
 test-pigzc: _test-pigzc blkline
 
-_test-crash:
-	@printf "\n=== crash test _THR_WAIT=0 ===\n\n"
-	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"
+_test-crash: crash
+	@printf "\n=== alternative test w/ CRASH_FLAGS ===\n\n"
 	make _test-basic _test-speed _test-speef blkline # NP=-p$(NPROC)
 # make _test-basic _test-speed _test-pigzc _test-speef _test-pigzf blkline
 	@sync
