@@ -40,17 +40,23 @@ typedef struct {
     size_t   len;
     off_t    offset;
     sem_t    *sem_ptr;
-    unsigned char *in;      /* pointer into mmap */
-    unsigned char *out;
+    uint8_t  *in;      /* pointer into mmap */
+    uint8_t  *out;
     size_t   out_cap;
     size_t   out_len;
     int      infd;
     int      idx;
     int      ofd;
-    char     map;
-    char     state;
+    uint8_t  map;
+    uint8_t  state;
     char     error;
 } chunk_t __attribute((aligned(4)));
+
+enum {
+    b_mmap_none = 0,
+    b_mmap_out  = 1,
+    b_mmap_in   = 2,
+};
 
 #ifndef _DEBUG
 #define _DEBUG    0
@@ -134,7 +140,8 @@ typedef struct {
 #define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
 #define ZBUF_MAX_SIZE zbuf_max_size(chunk_size)
 
-#define is_chunk_freeable(_c) (_c->out && !_c->map)
+#define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
+#define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
 
 #define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
@@ -280,7 +287,7 @@ endfnc:
         c->error |= chunk_write(c);
     }
     #if _USE_FREE
-    if (is_chunk_freeable(c)) {
+    if (is_outbuf_freeable(c)) {
         free(c->out);
         c->out = NULL;
     }
@@ -394,11 +401,11 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     /* Assign output pointer inside mapped output file space */
     if (out_mmap_base) {
         c->out = out_mmap_base + offset;
-        c->map = 1;
+        c->map |= b_mmap_out;
     }
     else
 #endif
-    if (is_chunk_freeable(c)
+    if (is_outbuf_freeable(c)
     #if _USE_FREE
     #else /* RAF: free() here is a corner case that "should" never happen by
            *      design but if it would happen, it is better deal than oops
@@ -416,6 +423,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 
     if(read_mmap_base) {
         c->in = read_mmap_base + offset;
+        c->map |= b_mmap_in;
     } else {
         if(!c->in)
             c->in = malloc(len);
@@ -770,8 +778,8 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                 chunk_init(cb, current++, ofd, infd, &sem);
                 if(cb->state == 3) {
                     #if _USE_FREE
-                    if(cb->out) free(cb->out);
-                    if(cb->in) free(cb->in);
+                    if(is_outbuf_freeable(cb)) free(cb->out);
+                    if( is_inbuf_freeable(cb)) free(cb->in);
                     memset(cb, 0, sizeof(chunk_t));
                     #else
                     cb->state = 0;
