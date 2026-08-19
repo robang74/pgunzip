@@ -251,12 +251,12 @@ static void *thread_compress(void *arg)
     if (ret != Z_STREAM_END)
 #endif
     ret = _deflate(&strm, Z_FINISH);
-#if 0//_DEBUG
-    if(strm.total_out >= ZBUF_MAX_SIZE) {
-        fprintf(stderr, "tot: %ld, max: %ld\n",
-            strm.total_out, ZBUF_MAX_SIZE);
-    }
-#endif
+
+#if _DEBUG // ------------------------------------------------------------------
+if(strm.total_out >= ZBUF_MAX_SIZE)
+    fprintf(stderr, "tot: %ld, max: %ld\n", strm.total_out, ZBUF_MAX_SIZE);
+#endif // ----------------------------------------------------------------------
+
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END) {
         perror("deflate");
@@ -424,10 +424,14 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
             exit(-1);
         }
         c->len = full_read(infd, c->in, len);
-if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->len);
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->len);
+#endif  // ---------------------------------------------------------------------
 
         if(c->len == 0) {
-if(_DEBUG) fprintf(stderr, ">>> thr(%04d): end of stdin\n", idx);
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, ">>> thr(%04d): end of stdin\n", idx);
+#endif // ----------------------------------------------------------------------
             c->state = 3;
         }
         if(c->len  < 0) {
@@ -600,9 +604,12 @@ int main(int argc, char **argv)
             }
         }
     }
-#if _DEBUG
+
+#if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
-#endif
+#endif // ----------------------------------------------------------------------
+
+/* ************************************************************************** */
 
     // decide chunk size and total number of chunks
     size_t outlen = 0;
@@ -691,6 +698,8 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         }
     }
 
+/* ************************************************************************** */
+
 not_use_mmap:
     int a = 0, next_idx = 0, current = 0;
 
@@ -739,12 +748,12 @@ not_use_mmap:
             if (c->state < 2)
                 continue;
 
-#if _DEBUG
+#if _DEBUG // ------------------------------------------------------------------
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, tot_chunks, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
-#endif
+#endif // ----------------------------------------------------------------------
             if (threads[a][i] && !c->len && c->state)
             {
                 threads[a][i] = 0;
@@ -757,20 +766,20 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             && !chunks[b][i].state
             && threads[a][i]
             ){
-                //chunk_t *cb = &chunks[b][i]
-                chunk_init(&chunks[b][i], current++, ofd, infd, &sem);
-                if(chunks[b][i].state == 3) {
+                chunk_t *cb = &chunks[b][i];
+                chunk_init(cb, current++, ofd, infd, &sem);
+                if(cb->state == 3) {
                     #if _USE_FREE
-                    if(chunks[b][i].out) free(chunks[b][i].out);
-                    if(chunks[b][i].in) free(chunks[b][i].in);
-                    memset(&chunks[b][i], 0, sizeof(chunk_t));
+                    if(cb->out) free(cb->out);
+                    if(cb->in) free(cb->in);
+                    memset(cb, 0, sizeof(chunk_t));
                     #else
-                    chunks[b][i].state = 0;
-                    chunks[b][i].len = 0;
+                    cb->state = 0;
+                    cb->len = 0;
                     #endif
                     current--;
                 } else {
-                    chunk_work_start(&threads[b][i], &chunks[b][i]);
+                    chunk_work_start(&threads[b][i], cb);
                     _cpu_relax();
                 }
             }
@@ -784,10 +793,10 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             if (c->state != 3)
                 continue;
 
-#if _DEBUG
+#if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
     threads[a][i], ofd, next_idx, tot_chunks);
-#endif
+#endif // ----------------------------------------------------------------------
 
             /* disposing the thread */
             threads[a][i] = 0;
