@@ -181,8 +181,6 @@ size_t full_read(int fd, const void *buf, size_t len)
 static ALWAYS_INLINE
 void sem_wait_or_exit(sem_t *sem_ptr)
 {
-    if(!sem_ptr) return;
-
     int ret = sem_wait(sem_ptr);
     while(ret == EINTR || ret == EAGAIN) {
         _cpu_relax();
@@ -195,9 +193,9 @@ void sem_wait_or_exit(sem_t *sem_ptr)
     exit(ret);
 }
 
-/* ------------------------------------------------------------------ */
-/* Thread worker: compress one chunk directly to its output buffer    */
-/* ------------------------------------------------------------------ */
+// -----------------------------------------------------------------------------
+// Thread worker: compress one chunk directly to its output buffer
+// -----------------------------------------------------------------------------
 
 static void *thread_compress(void *arg)
 {
@@ -205,7 +203,11 @@ static void *thread_compress(void *arg)
     _stream_t strm = {0};
     int ret;
 
-    sem_wait_or_exit(c->sem_ptr);
+    if (c->sem_ptr)
+        sem_wait_or_exit(c->sem_ptr);
+
+    if(!c->in_len) // no data to compress
+        goto eofile;
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
@@ -276,7 +278,7 @@ if(strm.total_out >= WBUF_MAX_SIZE)
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-    if (c->sem_ptr && c->out
+    if (c->sem_ptr
     && (c->ofd == STDOUT_FILENO || _GZ_WRITE)
     ){
         sem_post(c->sem_ptr);
@@ -419,7 +421,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
             perror("malloc in buf");
             exit(-1);
         }
-        c->in_len = full_read(infd, c->in, c->in_len);
+        c->in_len = full_read(c->infd, c->in, c->in_len);
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
@@ -440,9 +442,9 @@ void chunk_work_start(pthread_t *p, chunk_t *c_ptr)
     exit(1);
 }
 
-/* ========================================================================== */
-/* Main                                                                       */
-/* ========================================================================== */
+// =============================================================================
+// Main
+// =============================================================================
 
 static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help      = 0;    /* -h, --help */
@@ -746,19 +748,18 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
 
             if (threads[a][i])
             {
-                if (!c->in_len && c->state)
+                if (!c->in_len && c->state > 1)
                 {
-                    threads[a][i] = 0;
                     current--;
                     goto dispose;
                 }
                 else
                 /* create another thread to do work */
-                if ((!tot_chunks ?: (current < tot_chunks))
-                && !chunks[b][i].state
+                if ((tot_chunks ? (current < tot_chunks) : 1)
+                &&  !chunks[b][i].state
                 ){
                     chunk_t *cb = &chunks[b][i];
-                    chunk_init(cb, current++, ofd, infd, &sem);
+                    chunk_init(cb, current, ofd, infd, &sem);
                     if(cb->state == 3) {
                         #if _USE_FREE
                         if(is_outbuf_freeable(cb)) free(cb->out);
@@ -768,10 +769,10 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                         cb->state = 0;
                         cb->in_len = 0;
                         #endif
-                        current--;
                     } else {
                         chunk_work_start(&threads[b][i], cb);
                         _cpu_relax();
+                        current++;
                     }
                 }
             }
@@ -791,9 +792,6 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
     threads[a][i], ofd, next_idx, tot_chunks);
 #endif // ----------------------------------------------------------------------
 
-            /* disposing the thread */
-            threads[a][i] = 0;
-
             /* granting the correct order */
             next_idx++;
             if(infd == STDIN_FILENO)
@@ -804,6 +802,9 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             if(list) list[ 2+c->idx ] = c->out_len;
 
 dispose:
+            /* disposing the thread */
+            threads[a][i] = 0;
+
             #if _USE_FREE
             /* disposing the chunk and its buffer */
             if (is_outbuf_freeable(c)) {
