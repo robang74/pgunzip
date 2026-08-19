@@ -286,12 +286,6 @@ endfnc:
     if(c->ofd != STDOUT_FILENO && c->out) {
         c->error |= chunk_write(c);
     }
-    #if _USE_FREE
-    if (is_outbuf_freeable(c)) {
-        free(c->out);
-        c->out = NULL;
-    }
-    #endif
 #endif
 eofile:
     c->state = 3;
