@@ -37,19 +37,23 @@
 #define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
 
 typedef struct {
-    size_t   len;
-    off_t    offset;
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
+    size_t   in_cap;
     size_t   out_cap;
-    size_t   out_len;
     int      infd;
-    int      idx;
     int      ofd;
     uint8_t  map;
-    uint8_t  state;
-    char     error;
+//RAF: part that requires to be completely reset //
+    int      idx;                                //
+    uint8_t  state;                              //
+    char     error;                              //
+    size_t   len;                                //
+    size_t   out_len;                            //
+    off_t    offset;                             //
+//RAF: part that requires to be completely reset //
+    uint8_t  end;
 } chunk_t __attribute((aligned(4)));
 
 enum {
@@ -232,8 +236,7 @@ static void *thread_compress(void *arg)
         *      corrupt data and thus creating a corrupted gzip archive or when
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
-        size_t cap = _deflate_bound(&strm, c->len);
-        if (cap > c->out_cap) c->out_cap = cap;
+        c->out_cap = _deflate_bound(&strm, c->len);
         c->out = malloc(c->out_cap);
         if (!c->out) {
             perror("malloc out buf");
@@ -757,40 +760,44 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, tot_chunks, c->idx, next_idx, ofd,
     threads[a][i], chunks[b][i].state);
 #endif // ----------------------------------------------------------------------
-            if (threads[a][i] && !c->len && c->state)
+
+            if (threads[a][i])
             {
-                threads[a][i] = 0;
-                current--;
-                goto dispose;
-            }
-            else
-            /* create another thread to do work */
-            if ((!tot_chunks ?: (current < tot_chunks))
-            && !chunks[b][i].state
-            && threads[a][i]
-            ){
-                chunk_t *cb = &chunks[b][i];
-                chunk_init(cb, current++, ofd, infd, &sem);
-                if(cb->state == 3) {
-                    #if _USE_FREE
-                    if(is_outbuf_freeable(cb)) free(cb->out);
-                    if( is_inbuf_freeable(cb)) free(cb->in);
-                    memset(cb, 0, sizeof(chunk_t));
-                    #else
-                    cb->state = 0;
-                    cb->len = 0;
-                    #endif
+                if (!c->len && c->state)
+                {
+                    threads[a][i] = 0;
                     current--;
-                } else {
-                    chunk_work_start(&threads[b][i], cb);
-                    _cpu_relax();
+                    goto dispose;
+                }
+                else
+                /* create another thread to do work */
+                if ((!tot_chunks ?: (current < tot_chunks))
+                && !chunks[b][i].state
+                ){
+                    chunk_t *cb = &chunks[b][i];
+                    chunk_init(cb, current++, ofd, infd, &sem);
+                    if(cb->state == 3) {
+                        #if _USE_FREE
+                        if(is_outbuf_freeable(cb)) free(cb->out);
+                        if( is_inbuf_freeable(cb)) free(cb->in);
+                        memset(cb, 0, sizeof(chunk_t));
+                        #else
+                        cb->state = 0;
+                        cb->len = 0;
+                        #endif
+                        current--;
+                    } else {
+                        chunk_work_start(&threads[b][i], cb);
+                        _cpu_relax();
+                    }
                 }
             }
 
             /* ordered writing on STDOUT, only */
-            if (ofd == STDOUT_FILENO) {
-                if (c->idx != next_idx)
-                    continue;
+            if (ofd == STDOUT_FILENO
+            &&  c->idx != next_idx
+            ){
+                continue;
             }
             /* thread write done or ready to */
             if (c->state != 3)
@@ -813,39 +820,35 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             outlen += c->out_len;
             if(list) list[ 2+c->idx ] = c->out_len;
 
-            /* disposing the chunk and its buffer */
 dispose:
-            void  *buf = c->out;
-            size_t cap = c->out_cap;
-            memset(c, 0, sizeof(chunk_t));
-
-            if(out_mmap_base)
-                continue;
             #if _USE_FREE
-            free(buf);
-            buf = NULL;
-            #else
-            if(i+1 < nthreads)
-                c = &chunks[b][i+1];
-            else
-                c = &chunks[a][ 0 ]; //RAF: it will be the next one
-            if(c->out) {
-                free(buf);
-                buf = NULL;
-            } else {
-                c->out_cap = cap;
-                c->out = buf;
+            /* disposing the chunk and its buffer */
+            if (is_outbuf_freeable(c)) {
+                free(c->out);
+                c->out = NULL;
             }
+            if (is_inbuf_freeable(c)) {
+                free(c->in);
+                c->in = NULL;
+            }
+            memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
             #endif
+#if 0
+            chunk_t *cb; //RAF: it will be the next one, if any
+            if (i+1 < nthreads)
+                cb = &chunks[b][i+1];
+            else
+                cb = &chunks[a][ 0 ];
+            if(!cb->state)
+                __builtin_memcpy(cb, c, sizeof(chunk_t));
+#endif
         }
         a = !a;
     }
 
 out_of_loop:
     if (ofd == STDOUT_FILENO)
-        goto write_table;/*
-    if (infd == STDIN_FILENO)
-        next_idx++;*/
+        goto write_table;
 
     /*
      * In-place File Reorganization using Kernel-Level Zero-Copy
