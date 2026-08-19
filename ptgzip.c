@@ -418,19 +418,19 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
         c->in = read_mmap_base + offset;
     } else {
         if(!c->in)
-            c->in = malloc(c->len);
+            c->in = malloc(len);
         if(!c->in) {
             perror("malloc in buf");
             exit(-1);
         }
-        len = full_read(infd, c->in, len);
-if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, len);
+        c->len = full_read(infd, c->in, len);
+if(_DEBUG) fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->len);
 
-        if(len == 0) {
+        if(c->len == 0) {
 if(_DEBUG) fprintf(stderr, ">>> thr(%04d): end of stdin\n", idx);
             c->state = 3;
         }
-        if(len  < 0) {
+        if(c->len  < 0) {
             exit(-1);
         }
     }
@@ -609,7 +609,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
     tot_chunks = 0;
 
     if (read_filesize < 1) {
-        chunk_size = MAX_CHUNK_SIZE >> 1;
+        chunk_size = MAX_CHUNK_SIZE;// >> 1;
     }
     else
     if (read_filesize <= MIN_CHUNK_SIZE) {
@@ -784,7 +784,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             if (c->state != 3)
                 continue;
 
-#if 0//_DEBUG
+#if _DEBUG
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
     threads[a][i], ofd, next_idx, tot_chunks);
 #endif

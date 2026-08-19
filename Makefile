@@ -105,6 +105,7 @@ pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 .PHONY:  test-speef  test-gzipc  test-crash  test-pigzf
 .PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
 .PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
+.PHONY: _test-inout  test-inout
 
 CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=1
 
@@ -173,12 +174,20 @@ _test-basic: _test-clean libz.tar $(CMD2T)
 	./$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
 	diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
-#	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
-#	cat libz.tar | ./$(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
-#	diff test.dz libz.tar && echo ">>> Result: OK"
-#	@rm -f test.dz
+	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
+	cat libz.tar | ./$(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
+	diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f test.dz
 
 test-basic: _test-basic blkline
+
+_test-inout: libz.tar $(CMD2T)
+	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="cat libz.tar | ./$(CMD2T) $(CMDVC)" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
+
+test-inout: _test-inout blkline
 
 _test-speed: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
