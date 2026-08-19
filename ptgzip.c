@@ -344,7 +344,7 @@ size_t full_write(int fd, const void *buf, size_t len)
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("write");
-            return -1;
+            exit(-1);
         }
         p   += w;
         len -= w;
@@ -391,10 +391,14 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
     c->out_cap = zbuf_max_size(chunk_size);
     offset = WBUF_NTH_SIZE(idx);
+#if 1 //RAF, TODO: this is mandatory but it shouldn't in theory
     c->in_len = (idx == tot_chunks - 1)
               ? (size_t)(read_filesize - offset)
               : chunk_size
               ;
+#else
+    c->in_len = chunk_size;
+#endif
     c->offset = offset;
     c->infd = infd;
     c->ofd = ofd;
@@ -820,8 +824,15 @@ dispose:
                 c->in = NULL;
             }
             memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
+            #else
+            c->state = 0;
             #endif
-#if 0
+
+#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
+       *            under this circumstances is better to keep them into
+       *            the current chuck which will be reused only by large
+       *            files while the smaller wouldn't.
+       */
             chunk_t *cb; //RAF: it will be the next one, if any
             if (i+1 < nthreads)
                 cb = &chunks[b][i+1];
