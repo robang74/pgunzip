@@ -696,8 +696,6 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
 #if _THR_WAIT
     sem_init(&sem, 0, 0);
 #endif
-    pthread_t threads[2][MAX_THREADS];
-    memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++, current++) {
         chunk_t *c = &chunks[a][i];
         chunk_init(c, current, ofd, infd, &sem);
@@ -706,8 +704,8 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
             nthreads = i;
             break;
         }
-        chunk_work_start(&threads[a][i], c);
-      //pthread_detach(   threads[a][i]);
+        chunk_work_start(&c->thr, c);
+//      pthread_detach(c->thr);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
@@ -738,12 +736,12 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
 
 #if _DEBUG // ------------------------------------------------------------------
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
-fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, tot_chunks, c->idx, next_idx, ofd,
-    threads[a][i], chunks[b][i].state);
+fprintf(stderr, ">>> cur: %2d / %2d (%2d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    current, tot_chunks, nthreads, c->idx, next_idx,
+    ofd, c->thr, chunks[b][i].state);
 #endif // ----------------------------------------------------------------------
 
-            if (threads[a][i])
+            if (c->thr)
             {
                 if (!c->in_len && c->state == 3)
                 {
@@ -752,8 +750,8 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                 }
                 else
                 /* create another thread to do work */
-                if ((tot_chunks ? (current < tot_chunks) : 1)
-                &&  !chunks[b][i].state && !threads[b][i]
+                if (!cb->thr && !cb->state
+                && (tot_chunks ? (current < tot_chunks) : 1)
                 ){
                     chunk_init(cb, current, ofd, infd, &sem);
                     if(cb->state == 3) {
@@ -765,11 +763,11 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                         cb->state = 0;
                         //cb->in_len = 0;
                         #endif
-                        threads[a][i] = 0;
+                        c->thr = 0;
                     } else {
                         current++;
-                        chunk_work_start(&threads[b][i], cb);
-                      //pthread_detach(   threads[b][i]);
+                        chunk_work_start(&cb->thr, cb);
+//                      pthread_detach(cb->thr);
                     }
                 }
             }
@@ -787,7 +785,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
 
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    threads[a][i], ofd, next_idx, tot_chunks);
+    c->thr, ofd, next_idx, tot_chunks);
 #endif // ----------------------------------------------------------------------
 
             /* granting the correct order */
@@ -838,7 +836,8 @@ dispose:
             && full_sem_wait(&sem)) // long as, at least, one thread exists.
                 return -1;
 #endif
-            threads[a][i] = 0;
+//          pthread_join(c->thr, NULL);
+            c->thr = 0;
         }
         a = !a;
     }
