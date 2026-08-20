@@ -51,7 +51,8 @@ typedef struct {
     char     error;                              //
     size_t   in_len;                             //
     size_t   out_len;                            //
-    off_t    offset;                             //
+    off_t    out_off;                            //
+    off_t    in_off;                             //
 //RAF: part that requires to be completely reset //
     uint8_t  end;
 } chunk_t __attribute((aligned(4)));
@@ -134,7 +135,6 @@ enum {
 
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
 #define WBUF_MAX_SIZE (_GZ_WRITE ? chunk_size : zbuf_max_size(chunk_size))
-#define WBUF_NTH_SIZE(_n) ((size_t)(_n) * WBUF_MAX_SIZE)
 
 #define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
 #define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
@@ -296,10 +296,10 @@ static ALWAYS_INLINE
 int chunk_write(chunk_t *c)
 {
     if(out_mmap_base) {
-        uint8_t *dst = out_mmap_base + c->offset;
+        uint8_t *dst = out_mmap_base + c->out_off;
         return !__builtin_memmove(dst, c->out, c->out_len);
     } else {
-        off_t off = c->offset;
+        off_t off = c->out_off;
         size_t len = c->out_len;
         uint8_t *p = c->out;
 
@@ -368,22 +368,20 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 static ALWAYS_INLINE
 void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
-    off_t offset;
-
     c->state = 1;
     c->idx = idx;
     c->error = 0;
     c->sem_ptr = _THR_WAIT ? sem_ptr : NULL;
     c->out_cap = zbuf_max_size(chunk_size);
-    offset = (out_mmap_base ? c->out_cap : chunk_size) * idx;
+    c->out_off = (out_mmap_base ? c->out_cap : chunk_size) * idx;
+    c->in_off  =                               chunk_size  * idx;
     if(infd != STDIN_FILENO) {
-        c->in_len = (idx == tot_chunks - 1)
-                  ? (size_t)(read_filesize - (chunk_size * idx))
+        c->in_len = (idx + 1 == tot_chunks)
+                  ? (size_t)(read_filesize - c->in_off)
                   : chunk_size;
     } else {
         c->in_len = chunk_size;
     }
-    c->offset = offset;
     c->infd = infd;
     c->ofd = ofd;
     c->map = 0;
@@ -392,7 +390,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 #else
     /* Assign output pointer inside mapped output file space */
     if (out_mmap_base) {
-        c->out = out_mmap_base + offset;
+        c->out = out_mmap_base + c->out_off;
         c->map |= b_mmap_out;
     }
     else
@@ -405,7 +403,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
 
     if(read_mmap_base) {
-        c->in = read_mmap_base + (chunk_size * idx);
+        c->in = read_mmap_base + c->in_off;
         c->map |= b_mmap_in;
     } else {
         if(!c->in)
@@ -663,7 +661,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         str = NULL;
         #endif
 
-        max_out_size = WBUF_NTH_SIZE(tot_chunks);
+        max_out_size = WBUF_MAX_SIZE * tot_chunks;
         if(!max_out_size)
             break;
 
