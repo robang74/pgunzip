@@ -69,14 +69,6 @@ enum {
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
 
-#ifndef _GZ_WRITE
-#define _GZ_WRITE 1 // deflate() + write() decouple CPU and I/O workloads
-#endif
-#if     _GZ_WRITE
-#else
-#define _USE_MMAP 1 // the forced alternative to write() is using mmap()
-#endif
-
 #ifndef _THR_WAIT
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
@@ -89,6 +81,8 @@ enum {
 #ifndef _ONE_ZDF
 #define _ONE_ZDF  1 //RAF: no difference in .gz size
 #endif
+
+#define _GZ_WRITE (!_USE_MMAP)
 
 #ifndef _USE_ZNG
 #define _USE_ZNG  0 //RAF: just API, same speed/size
@@ -302,16 +296,15 @@ static ALWAYS_INLINE
 int chunk_write(chunk_t *c)
 {
     if(out_mmap_base) {
-        uint8_t *dst_ptr = out_mmap_base + c->offset;
-        return !__builtin_memmove(dst_ptr, c->out, c->out_len);
+        uint8_t *dst = out_mmap_base + c->offset;
+        return !__builtin_memmove(dst, c->out, c->out_len);
     } else {
-        int ofd = c->ofd;
         off_t off = c->offset;
         size_t len = c->out_len;
         uint8_t *p = c->out;
 
         while (len > 0) {
-            ssize_t w = pwrite(ofd, p, len, off);
+            ssize_t w = pwrite(c->ofd, p, len, off);
             if (w < 0) {
                 if (errno == EINTR) continue;
                 perror("p/write");
@@ -382,10 +375,10 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->error = 0;
     c->sem_ptr = _THR_WAIT ? sem_ptr : NULL;
     c->out_cap = zbuf_max_size(chunk_size);
-    offset = WBUF_NTH_SIZE(idx);
+    offset = (out_mmap_base ? c->out_cap : chunk_size) * idx;
     if(infd != STDIN_FILENO) {
         c->in_len = (idx == tot_chunks - 1)
-                  ? (size_t)(read_filesize - offset)
+                  ? (size_t)(read_filesize - (chunk_size * idx))
                   : chunk_size;
     } else {
         c->in_len = chunk_size;
@@ -412,7 +405,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
 
     if(read_mmap_base) {
-        c->in = read_mmap_base + offset;
+        c->in = read_mmap_base + (chunk_size * idx);
         c->map |= b_mmap_in;
     } else {
         if(!c->in)
@@ -554,7 +547,7 @@ int main(int argc, char **argv)
     if (nthreads < 1)
         nthreads = 1;
 
-    if(names[0] && (names[0][0] != '-' || names[0][1]))
+    while (names[0] && (names[0][0] != '-' || names[0][1]))
     {
         infd = open(names[0], O_RDONLY);
         if (infd < 0) {
@@ -578,19 +571,22 @@ int main(int argc, char **argv)
         }
         read_filesize = st.st_size;
 
-        if(_USE_MMAP) {
-            // mmap entire file (zero-copy input for all threads)
-            read_mmap_base = mmap(NULL, read_filesize,
-                PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
-            if (read_mmap_base == MAP_FAILED) {
-                read_mmap_base = NULL;
-                perror("mmap infd");
-            } else {
-                // kernel keeps the mapping via vnode reference
-                close(infd);
-                infd = -1;
-            }
+        if(!_USE_MMAP)
+            break;
+
+        // mmap entire file (zero-copy input for all threads)
+        read_mmap_base = mmap(NULL, read_filesize,
+            PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
+        if (read_mmap_base == MAP_FAILED) {
+            read_mmap_base = NULL;
+            perror("mmap infd");
+        } else {
+            // kernel keeps the mapping via vnode reference
+            close(infd);
+            infd = -1;
         }
+
+        break;
     }
 
     signal(SIGPIPE, SIG_IGN);
@@ -667,10 +663,9 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         str = NULL;
         #endif
 
-        if(!_USE_MMAP || !max_out_size)
-            break;
-
         max_out_size = WBUF_NTH_SIZE(tot_chunks);
+        if(!max_out_size)
+            break;
 
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
@@ -678,10 +673,13 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
             break;
         }
 
+        if(!_USE_MMAP)
+            break;
+
         /* 2. Map output file into virtual memory */
         out_mmap_base = mmap(NULL, max_out_size,
             PROT_READ  | PROT_WRITE,
-            MAP_SHARED | MAP_NONBLOCK, ofd, 0); //RAF,TODO: check MAP_NONBLOCK
+            MAP_SHARED, ofd, 0); //RAF,TODO: check MAP_NONBLOCK
         if (out_mmap_base == MAP_FAILED) {
             out_mmap_base = NULL;
             perror("mmap out");
@@ -859,48 +857,46 @@ dispose:
     if (ofd == STDOUT_FILENO)
         goto write_table;
 
-    /*
-     * In-place File Reorganization using Kernel-Level Zero-Copy
-     */
     if(next_idx < 2)
         goto skip_table;
+
+    /*
+     * In-place File Reorganization using Kernel-Level Zero-Copy
+     * Loop through all compressed chunk lengths stored in list[]
+     */
     if(out_mmap_base) {
-        uint8_t *src_ptr = out_mmap_base;
-        uint8_t *dst_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
+        uint8_t *src = out_mmap_base;
+        uint8_t *dst = out_mmap_base + list[2]; /* Skip chunk 0 */
         for (int i = 1; i < next_idx; i++) {
-            size_t c_len = list[i + 2];
-            src_ptr += WBUF_MAX_SIZE;
-            if (!c_len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst_ptr, src_ptr, c_len);
-            dst_ptr += c_len;
+            size_t len = list[i + 2];
+            src += WBUF_MAX_SIZE;
+            if (!len) continue; //RAF: it should never happens, by design
+            __builtin_memmove(dst, src, len);
+            dst += len;
         }
-        outlen += dst_ptr - out_mmap_base;
+        outlen += dst - out_mmap_base;
     } else {
-        /* Loop through all compressed chunk lengths stored in list[]  */
-        off_t write_pos = list[2]; /* Start immediately after Chunk 0 */
+        off_t src = 0;
+        off_t dst = list[2]; /* Start immediately after Chunk 0 */
         for (int i = 1; i < next_idx; i++) {
-            off_t read_pos = (off_t)i * chunk_size;
-            size_t write_size = list[i + 2];
+            size_t len = list[i + 2];
+            src += chunk_size;
+            if (!len) continue; //RAF: it should never happens, by design
 
-            if (read_pos != write_pos) {
-                off_t off_in  = read_pos;
-                off_t off_out = write_pos;
-                size_t bytes  = write_size;
-
-                while (bytes > 0) {
-                    ssize_t ret = copy_file_range(ofd,
-                        &off_in, ofd, &off_out, bytes, 0);
-                    if (ret < 0) {
-                        if (errno == EINTR) continue;
-                        perror("copy_file_range");
-                        return 1;
-                    }
-                    bytes -= ret;
+            off_t off_in = src;
+            while (len > 0) {
+                ssize_t ret = copy_file_range(ofd,
+                    &off_in, ofd, &dst, len, 0);
+                if (!ret) break;
+                if (ret < 0) {
+                    if (errno == EINTR) continue;
+                    perror("copy_file_range");
+                    return 1;
                 }
+                len -= ret;
             }
-            write_pos += write_size;
         }
-        outlen = write_pos;
+        outlen = dst;
     }
 
 skip_table:
