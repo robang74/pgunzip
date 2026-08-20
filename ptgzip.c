@@ -81,7 +81,7 @@ enum {
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP 0 // mmap() is performed by default, but it can fail
+#define _USE_MMAP 1 // mmap() is performed by default, but it can fail
 #endif
 #ifndef _USE_FREE
 #define _USE_FREE 0 // free() isn't strictly necessary, but do testing
@@ -138,7 +138,7 @@ enum {
 #define libz_name          "none"
 #endif
 
-#define zbuf_max_size(_len) (_len + (_len >> 9) + 256)
+#define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
 #define WBUF_MAX_SIZE (_GZ_WRITE ? chunk_size : zbuf_max_size(chunk_size))
 #define WBUF_NTH_SIZE(_n) ((size_t)(_n) * WBUF_MAX_SIZE)
 
@@ -581,7 +581,7 @@ int main(int argc, char **argv)
         if(_USE_MMAP) {
             // mmap entire file (zero-copy input for all threads)
             read_mmap_base = mmap(NULL, read_filesize,
-                PROT_READ, MAP_PRIVATE, infd, 0);
+                PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
             if (read_mmap_base == MAP_FAILED) {
                 read_mmap_base = NULL;
                 perror("mmap infd");
@@ -680,7 +680,8 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
 
         /* 2. Map output file into virtual memory */
         out_mmap_base = mmap(NULL, max_out_size,
-            PROT_READ | PROT_WRITE, MAP_SHARED, ofd, 0);
+            PROT_READ  | PROT_WRITE,
+            MAP_SHARED | MAP_NONBLOCK, ofd, 0); //RAF,TODO: check MAP_NONBLOCK
         if (out_mmap_base == MAP_FAILED) {
             out_mmap_base = NULL;
             perror("mmap out");
@@ -864,11 +865,13 @@ dispose:
     if(next_idx < 2)
         goto skip_table;
     if(out_mmap_base) {
+        uint8_t *src_ptr = out_mmap_base;
         uint8_t *dst_ptr = out_mmap_base + list[2]; /* Skip chunk 0 */
         for (int i = 1; i < next_idx; i++) {
             size_t c_len = list[i + 2];
+            src_ptr += WBUF_MAX_SIZE;
             if (!c_len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst_ptr, out_mmap_base + WBUF_NTH_SIZE(i), c_len);
+            __builtin_memmove(dst_ptr, src_ptr, c_len);
             dst_ptr += c_len;
         }
         outlen += dst_ptr - out_mmap_base;
