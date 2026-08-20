@@ -37,6 +37,7 @@
 #define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
 
 typedef struct {
+    pthread_t thr;
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
@@ -77,7 +78,7 @@ enum {
 #endif
 
 #ifndef _THR_WAIT
-#define _THR_WAIT 0 // 1: wait for a specific thread, 0: anyone ready
+#define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
 #ifndef _USE_MMAP
 #define _USE_MMAP 1 // mmap() is performed by default, but it can fail
@@ -169,7 +170,7 @@ size_t full_read(int fd, const void *buf, size_t len)
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("read");
-            return -1;
+            exit(-1);
         }
         p   += w;
         len -= w;
@@ -179,18 +180,18 @@ size_t full_read(int fd, const void *buf, size_t len)
 }
 
 static ALWAYS_INLINE
-void sem_wait_or_exit(sem_t *sem_ptr)
+int full_sem_wait(sem_t *sem_ptr)
 {
-    int ret = sem_wait(sem_ptr);
-    while(ret == EINTR || ret == EAGAIN) {
+    int ret;
+
+    do {
         _cpu_relax();
         ret = sem_wait(sem_ptr);
-    }
-
-    if(!ret) return;
+        if(!ret) return 0;
+    } while(errno == EINTR || errno == EAGAIN); //EINVAL
 
     perror("sem_wait");
-    exit(ret);
+    return 1;
 }
 
 // -----------------------------------------------------------------------------
@@ -199,15 +200,14 @@ void sem_wait_or_exit(sem_t *sem_ptr)
 
 static void *thread_compress(void *arg)
 {
+    int ret;
     chunk_t *c = arg;
     _stream_t strm = {0};
-    int ret;
 
-    if (c->sem_ptr)
-        sem_wait_or_exit(c->sem_ptr);
-
-    if(!c->in_len) // no data to compress
-        goto eofile;
+    if(!c->in_len) {
+        c->state = 3; // no data, task completed as void
+        goto release;
+    }
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
@@ -262,8 +262,8 @@ static void *thread_compress(void *arg)
     ret = _deflate(&strm, Z_FINISH);
 
 #if _DEBUG // ------------------------------------------------------------------
-if(strm.total_out >= WBUF_MAX_SIZE)
-    fprintf(stderr, "tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
+if(strm.total_out)
+    fprintf(stderr, ">>> tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
@@ -289,11 +289,11 @@ endfnc:
         c->error |= chunk_write(c);
     }
 #endif
-eofile:
     c->state = 3;
+release:
     if (c->sem_ptr) {
         sem_post(c->sem_ptr);
-        c->sem_ptr = NULL;
+        //c->sem_ptr = NULL;
     }
     return NULL;
 }
@@ -377,11 +377,10 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
     off_t offset;
 
-    c->map = 0;
+    c->state = 1;
     c->idx = idx;
     c->error = 0;
-    c->state = 1;
-    c->sem_ptr = _THR_WAIT ? NULL : sem_ptr;
+    c->sem_ptr = _THR_WAIT ? sem_ptr : NULL;
     c->out_cap = zbuf_max_size(chunk_size);
     offset = WBUF_NTH_SIZE(idx);
     if(infd != STDIN_FILENO) {
@@ -394,6 +393,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->offset = offset;
     c->infd = infd;
     c->ofd = ofd;
+    c->map = 0;
 
 #if _GZ_WRITE
 #else
@@ -425,9 +425,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
-        if(c->in_len  < 0)
-            exit(-1);
-        if(c->in_len == 0)
+        if(!c->in_len)
             c->state = 3;
     }
 }
@@ -695,7 +693,9 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
     int a = 0, next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
-    sem_init(&sem, 0, nthreads);
+#if _THR_WAIT
+    sem_init(&sem, 0, 0);
+#endif
     pthread_t threads[2][MAX_THREADS];
     memset(threads, 0, sizeof(threads));
     for (int i = 0; i < nthreads; i++, current++) {
@@ -707,28 +707,23 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
             break;
         }
         chunk_work_start(&threads[a][i], c);
+        pthread_detach(threads[a][i]);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
-#if _THR_WAIT
         if(!i) _cpu_relax();
-#else
-        pthread_detach(threads[a][i]);
-#endif
     }
+
+#if _THR_WAIT
+    if(full_sem_wait(&sem)) //RAF: until one thread completes
+        return -1;
+#endif
 
     /* write compressed chunks to stdout in strict segment order */
     while (next_idx < current)
     {
         for (int i = 0, b = !a; i < nthreads; i++)
         {
-#if _THR_WAIT
-            pthread_join(threads[a][i], NULL);
-#else
-            _cpu_relax();
-            sem_wait_or_exit(&sem); //RAF: one thread completed, at least
-            sem_post(&sem);
-#endif
             chunk_t *c = &chunks[a][i];
             if (c->error) {
                 _print2("file: '%s'\n    compression failed on chunk %d,"
@@ -833,6 +828,11 @@ dispose:
                 cb = &chunks[a][ 0 ];
             if(!cb->state)
                 __builtin_memcpy(cb, c, sizeof(chunk_t));
+#endif
+#if _THR_WAIT
+            if(next_idx < current   //RAF: one thread completed, at least as
+            && full_sem_wait(&sem)) // long as, at least, one thread exists.
+                return -1;
 #endif
         }
         a = !a;
