@@ -81,7 +81,7 @@ enum {
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP 1 // mmap() is performed by default, but it can fail
+#define _USE_MMAP 0 // mmap() is performed by default, but it can fail
 #endif
 #ifndef _USE_FREE
 #define _USE_FREE 0 // free() isn't strictly necessary, but do testing
@@ -707,7 +707,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
             break;
         }
         chunk_work_start(&threads[a][i], c);
-        pthread_detach(threads[a][i]);
+      //pthread_detach(   threads[a][i]);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
         //     then the bottleneck is the first one, let it go!
@@ -725,11 +725,13 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         for (int i = 0, b = !a; i < nthreads; i++)
         {
             chunk_t *c = &chunks[a][i];
+            chunk_t *cb = &chunks[b][i];
+
             if (c->error) {
                 _print2("file: '%s'\n    compression failed on chunk %d,"
                     " size: %lu, err: %d\n", names[0], current + i,
                         c->out_len, c->error);
-                return 1;
+                return c->error;
             }
             if (c->state < 2)
                 continue;
@@ -743,7 +745,7 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
 
             if (threads[a][i])
             {
-                if (!c->in_len && c->state > 1)
+                if (!c->in_len && c->state == 3)
                 {
                     current--;
                     goto dispose;
@@ -751,9 +753,8 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                 else
                 /* create another thread to do work */
                 if ((tot_chunks ? (current < tot_chunks) : 1)
-                &&  !chunks[b][i].state
+                &&  !chunks[b][i].state && !threads[b][i]
                 ){
-                    chunk_t *cb = &chunks[b][i];
                     chunk_init(cb, current, ofd, infd, &sem);
                     if(cb->state == 3) {
                         #if _USE_FREE
@@ -762,15 +763,20 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
                         memset(cb, 0, sizeof(chunk_t));
                         #else
                         cb->state = 0;
-                        cb->in_len = 0;
+                        //cb->in_len = 0;
                         #endif
+                        threads[a][i] = 0;
                     } else {
-                        chunk_work_start(&threads[b][i], cb);
-                        _cpu_relax();
                         current++;
+                        chunk_work_start(&threads[b][i], cb);
+                      //pthread_detach(   threads[b][i]);
                     }
                 }
             }
+
+            /* thread write done or ready to */
+            if (c->state != 3)
+                continue;
 
             /* ordered writing on STDOUT, only */
             if (ofd == STDOUT_FILENO
@@ -778,9 +784,6 @@ fprintf(stderr, ">>> cur: %2d / %2d, idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
             ){
                 continue;
             }
-            /* thread write done or ready to */
-            if (c->state != 3)
-                continue;
 
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
@@ -791,15 +794,13 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
             next_idx++;
             if(infd == STDIN_FILENO)
                 read_filesize += c->in_len;
-            if(ofd == STDOUT_FILENO)
-                full_write(ofd, c->out, c->out_len);
-            outlen += c->out_len;
+            outlen += (ofd == STDOUT_FILENO)
+                    ? full_write(ofd, c->out, c->out_len)
+                    : c->out_len
+                    ;
             if(list) list[ 2+c->idx ] = c->out_len;
 
 dispose:
-            /* disposing the thread */
-            threads[a][i] = 0;
-
             #if _USE_FREE
             /* disposing the chunk and its buffer */
             if (is_outbuf_freeable(c)) {
@@ -813,6 +814,7 @@ dispose:
             memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
             #else
             c->state = 0;
+            //c->in_len = 0;
             #endif
 
 #if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
@@ -829,11 +831,14 @@ dispose:
             if(!cb->state)
                 __builtin_memcpy(cb, c, sizeof(chunk_t));
 #endif
+
+            /* disposing the thread */
 #if _THR_WAIT
             if(next_idx < current   //RAF: one thread completed, at least as
             && full_sem_wait(&sem)) // long as, at least, one thread exists.
                 return -1;
 #endif
+            threads[a][i] = 0;
         }
         a = !a;
     }
