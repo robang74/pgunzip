@@ -111,10 +111,10 @@ CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=0
 IOWAY_FLAGS ?= -D_THR_WAIT=0 -D_GZ_WRITE=1 -D_USE_MMAP=0 -D_USE_FREE=1
 
 NPROC ?= 4
-CMD2T ?= ptgzip
+CMD2T ?= ./ptgzip
 CMDVF  =
 CMDVC  = -c
-ifeq ($(CMD2T),pxgzip)
+ifeq ($(CMD2T),./pxgzip)
 CMDVF  = > libz.tar.gz
 CMDVC  =
 endif
@@ -152,7 +152,7 @@ speed:
 
 speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC); done' \
+	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" | dd bs=1M of=$$nl
@@ -162,7 +162,7 @@ stress-speed: speed-stress
 
 stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do ./$(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
@@ -178,7 +178,7 @@ iocat:
 
 _stress-iocat: libz.tar
 	@printf "\n=== iocat stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do cat $$i | ./$(CMD2T) $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do cat $$i | $(CMD2T) $(CMDVC) -1 | zcat; done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
@@ -198,22 +198,22 @@ iocat-stress: stress-iocat
 
 _test-clean:
 	@printf "\n=== $(CMD2T) compilation test ===\n\n"
-	rm -f $(CMD2T) && make $(CMD2T)
+	rm -f $(CMD2T) && make $$(basename $(CMD2T))
 	@rm -f libz.tar libz.tar.gz
 
 test-clean: _test-clean blkline
 
 _test-basic: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
-	./$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
+	$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
-	cat libz.tar | ./$(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
+	cat libz.tar | $(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) file sanity check ===\n\n"
-	./$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
+	$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
 	zcat libz.tar.gz | tee test.dz | wc -c
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
@@ -222,7 +222,7 @@ test-basic: _test-basic blkline
 
 _test-inout: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="cat libz.tar | ./$(CMD2T) $(CMDVC)" && sync && \
+	nl=/dev/null && cmd="cat libz.tar | $(CMD2T) $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
@@ -230,7 +230,7 @@ test-inout: _test-inout blkline
 
 _test-speed: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVC)" && sync && \
+	nl=/dev/null && cmd="$(CMD2T) libz.tar $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
@@ -238,7 +238,7 @@ test-speed: _test-speed blkline
 
 _test-speef: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="./$(CMD2T) libz.tar $(CMDVF) $(NP)" && sync && \
+	nl=/dev/null && cmd="$(CMD2T) libz.tar $(CMDVF) $(NP)" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 	@sync
