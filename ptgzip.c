@@ -210,11 +210,12 @@ static void *thread_compress(void *arg)
     CPU_ZERO(&cpuset);
     CPU_SET(c->idx % cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-
+#if 0
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
         goto release;
     }
+#endif
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
@@ -426,11 +427,11 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
             exit(-1);
         }
         c->in_len = full_read(c->infd, c->in, c->in_len);
+        if (!c->in_len) c->state = 3;
+
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
-        if (!c->in_len)
-            c->state = 3;
     }
 }
 
