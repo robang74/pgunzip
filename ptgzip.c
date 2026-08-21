@@ -94,6 +94,9 @@ enum {
 
 #define _GZ_WRITE (!out_mmap_base)
 
+#ifndef _ZLIB_MEM
+#define _ZLIB_MEM 0 //RAF: =1 for zlib full agnosticy
+#endif
 #ifndef _USE_ZNG
 #define _USE_ZNG  0 //RAF: just API, same speed/size
 #else
@@ -228,7 +231,7 @@ static void *thread_compress(void *arg)
         c->error = -3;
         goto endfnc;
     }
-
+#if _ZLIB_MEM
     /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
      *    Incompressible data EXPANDS by ~0.1 % + headers.
      *    c->in_len alone guarantees a buffer overrun on random bytes.
@@ -243,7 +246,7 @@ static void *thread_compress(void *arg)
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
         c->out_cap = _deflate_bound(&strm, c->in_len);
-        if (posix_memalign((void **)&c->out, 8, c->out_cap))
+        if (posix_memalign((void **)&c->out, 64, c->out_cap))
             c->out = NULL;
         if (!c->out) {
             perror("malloc out buf");
@@ -251,6 +254,7 @@ static void *thread_compress(void *arg)
             return NULL;
         }
     }
+#endif
     strm.next_in   = c->in;
     strm.avail_in  = c->in_len;
     strm.next_out  = c->out;
@@ -407,20 +411,24 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
     else
 #endif
+#if _ZLIB_MEM
+    c->out = NULL;
+#else
     if (!c->out)
-         if (posix_memalign((void **)&c->out, 8, c->out_cap))
+         if (posix_memalign((void **)&c->out, 64, c->out_cap))
               c->out = NULL;
     if (!c->out) {
         perror("malloc in buf");
         exit(-1);
     }
+#endif
 
     if (read_mmap_base) {
         c->in = read_mmap_base + c->in_off;
         c->map |= b_mmap_in;
     } else {
         if (!c->in)
-             if (posix_memalign((void **)&c->in, 8, c->in_len))
+             if (posix_memalign((void **)&c->in, 64, c->in_len))
                   c->in = NULL;
         if (!c->in) {
             perror("malloc in buf");
@@ -675,8 +683,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    if (posix_memalign((void **)&list, 8, TABLE_ITEMS << 2))
-          list = NULL;
+    list = malloc(TABLE_ITEMS << 2);
     if (!list) {
         perror("malloc list");
     } else { //RAF: possible fallback without list
