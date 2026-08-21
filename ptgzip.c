@@ -70,9 +70,12 @@ enum {
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
 #ifndef _DNT_MMAP
-#define _DNT_MMAP 0
+#define _DNT_MMAP 0 //RAF: =1 to test mmap() failure
 #endif
 
+#ifndef _DO_WRST
+#define _DO_WRST  2 // 0: last run can be shorter than 1/2 chunk_size
+#endif              // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
@@ -538,7 +541,8 @@ int main(int argc, char **argv)
     if(!opt_processes)
         opt_processes = MAX_THREADS;
 
-    nthreads = sysconf(_SC_NPROCESSORS_ONLN);
+    unsigned cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
+    nthreads = cpu_procs;
     if (nthreads > opt_processes)
         nthreads = opt_processes;
     else
@@ -589,10 +593,6 @@ int main(int argc, char **argv)
 
     signal(SIGPIPE, SIG_IGN);
 
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
-#endif // ----------------------------------------------------------------------
-
 // =============================================================================
 // Chunks
 // =============================================================================
@@ -611,6 +611,17 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         tot_chunks = 1;
         chunk_size = read_filesize;
     } else {
+        for(int i = nthreads; i > 1; i--) {
+            chunk_size = _int_div(read_filesize, i);
+            if (chunk_size >  MAX_CHUNK_SIZE) {
+                break; // multi rounds
+            }
+            if (chunk_size >= MIN_CHUNK_SIZE) {
+                nthreads = i;
+                break; // 1-round split
+            }
+        }
+
         /* Target: split evenly across all CPUs */
         chunk_size = _int_div(read_filesize, nthreads);
 
@@ -625,10 +636,29 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
         chunk_size = ((chunk_size + 4095) >> 12) << 12;
         tot_chunks = _int_div(read_filesize, chunk_size);
 
+#if _DO_WRST
+        if (_DO_WRST > 1
+        || (cpu_procs << 1) > tot_chunks) {
+            size_t wrst = read_filesize % chunk_size;
+            if(wrst > (tot_chunks << 1))
+                chunk_size -= (chunk_size - wrst) / tot_chunks;
+            // RAF: below 64-bit alignment isn't convenient
+            chunk_size = ((chunk_size + 7) >> 3) << 3;
+            tot_chunks = _int_div(read_filesize, chunk_size);
+        }
+#endif
+
         /* Never keep more threads than chunks */
         if (nthreads > tot_chunks)
             nthreads = tot_chunks;
     }
+
+#if _DEBUG // ------------------------------------------------------------------
+float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
+if(x && x < 50)
+fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
+    x, infd, names[0]?:"(NULL)");
+#endif // ----------------------------------------------------------------------
 
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
