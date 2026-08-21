@@ -148,7 +148,11 @@ The estimated theoretical ceiling for improvement which was initially claimed wa
 
 The sole parallelism ceiling in speed was benchmarked for being 4.3x in real-world plausible scenario, as we can see [here](https://github.com/robang74/uzpexec#gzip-benchmarks), looking at the notes on the [2nd](https://raw.githubusercontent.com/robang74/uzpexec/refs/heads/master/img/compression-thread-vs-time.png) graph.
 
-Fondamentally, the result is provided by the non-linear combination of three factors: **{1}** parallelism (`pigz` is also leveraging it, but not zlib-ng), **{2}** the use of zlib.ng (faster but a bit larger in output) and **{3}** the pthreads-based multi-chunks implementation of `ptgzip`.
+Fundamentally, the result is provided by the non-linear combination of three factors: **{1}** parallelism (`pigz` is also leveraging it, but not zlib-ng), **{2}** the use of zlib.ng (faster but a bit larger in output) and **{3}** the pthreads-based multi-chunks implementation of `ptgzip`.
+
+Someone might assume that compiling `pigz` against `zlib-ng` would be provided the same result. Instead, I *guess* that the `ptgzip` internals are **way** simpler that `pigz`, the threads model is lighter, in low-power systems simplicy doesn't trigger the thermal throttling-down and in facing a large variety of file sizes like in `/bin` the gap cannot be filled-up.
+
+In short, `ptgzip` architectural simplicity, due to 100% back-compatibility inflating format propaedeutic design, beats `pigz` in real-world general scenarios. Everyone can check by themselves and a confutation will be welcomed, especially because it will probably be an interesting niche of usage.
 
 <br>
 
