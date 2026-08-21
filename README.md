@@ -5,6 +5,7 @@ Simplicity is the ultimate sophistication (cit.)
 ### Index
 
 - [Rationale](#rationale) about un/gzip parallel format benefits
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Development](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -107,6 +108,47 @@ make test-crash speed (`_THR_WAIT=1`):
 - file writing time, `real: 0m1.091s, 0m1.111s, 0m1.117s, 0m1.129s`
 
 There is not a sensitive difference in STDOUT nor in file writings by the introduction of the semaphored wait. The numerous changes and varying approaches made the codebase optimised enough to not let any branch clearly over-performs over the others configurations.
+
+---
+
+### Updates v0.4
+
+Benchmarks are very useful but also extremely tricky: we might boast of a 1.4 or 4x improvement in lab tests, but reality it’s a completely another story. Because, it is a far cry from case studies. It’s much more variable, fortunately. Instead, `ptgzip` is faster in reality than benchmarked in testing conditions.
+
+The reference system is ThinkPad X390 running on a i5-8365, a chip from the 2019, kept in energy saving mode (15W TDP) and paired with DDR4 and Samsung EVO NVMe SSD as main storage unit.
+
+```
+$ make speed-stress
+
+  === ./ptgzip '-c' speed test on /bin/ ===
+
+  for i in $list; do ./ptgzip $i -c; done
+  492927748 bytes (493 MB, 470 MiB) copied, 12.157 s, 40.5 MB/s
+
+$ make speed-stress CMD2T=/bin/pigz # 1.88x slower
+
+  === /bin/pigz '-c' speed test on /bin/ ===
+
+  for i in $list; do /bin/pigz $i -c; done
+  481361687 bytes (481 MB, 459 MiB) copied, 22.8572 s, 21.1 MB/s
+
+$ make speed-stress CMD2T=/bin/gzip # 5.10x slower
+
+  === /bin/gzip '-c' speed test on /bin/ ===
+
+  for i in $list; do /bin/gzip $i -c; done
+  481835114 bytes (482 MB, 460 MiB) copied, 61.9868 s, 7.8 MB/s
+```
+
+In particular, that +2.4% in output size (compared with pgiz which is shorter than gzip in output) is the "price" related to the zlib-ng which contributes to make ptgzip faster than pgiz but a bit less capable of shrinking the data.
+
+For the sake of completeness, about +2% are due zlib-ng and the +0.3% or less is the because the parallel gunzip 100% back-compatible format that append a table at the end of the file and split the file in RFC-1952 compliant chunks increasing the overhead and decreasing the efficiency of the compression due to dictionary cold restart.
+
+The estimated theoretical ceiling for improvement which was initially claimed was 6x (raw and rounded number) and 5.1x is just an 85% of that ceil but made in a real-world scenario with a consumer low-power hardware.
+
+The sole parallelism ceiling in speed was benchmarked for being 4.3x in real-world plausible scenario, as we can see [here](https://github.com/robang74/uzpexec#gzip-benchmarks), looking at the notes on the [2nd](https://raw.githubusercontent.com/robang74/uzpexec/refs/heads/master/img/compression-thread-vs-time.png) graph.
+
+Fondamentally, the result is provided by the non-linear combination of three factors: **{1}** parallelism (`pigz` is also leveraging it, but not zlib-ng), **{2}** the use of zlib.ng (faster but a bit larger in output) and **{3}** the pthreads-based multi-chunks implementation of `ptgzip`.
 
 <br>
 
