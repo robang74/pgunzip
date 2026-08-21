@@ -42,7 +42,6 @@ static unsigned cpu_procs = 0;
 typedef struct {
     pthread_t thr;
     sem_t    *sem_ptr;
-    pthread_attr_t attr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
     size_t   out_cap;
@@ -206,6 +205,11 @@ static void *thread_compress(void *arg)
     int ret;
     chunk_t *c = arg;
     _stream_t strm = {0};
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(c->idx % cpu_procs, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
@@ -376,14 +380,6 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 static ALWAYS_INLINE
 void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
-    cpu_set_t cpuset;
-    pthread_attr_t attr;
-
-    CPU_ZERO(&cpuset);
-    CPU_SET(idx % cpu_procs, &cpuset);
-    pthread_attr_init(&c->attr);
-    pthread_attr_setaffinity_np(&c->attr, sizeof(cpu_set_t), &cpuset);
-
     c->state = 1;
     c->idx = idx;
     c->error = 0;
@@ -441,7 +437,7 @@ fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 static ALWAYS_INLINE
 void chunk_work_start(pthread_t *p, chunk_t *c)
 {
-    if (!pthread_create(p, &c->attr, thread_compress, c))
+    if (!pthread_create(p, NULL, thread_compress, c))
         return;
 
     perror("pthread_create");
