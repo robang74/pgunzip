@@ -69,6 +69,9 @@ enum {
 #ifndef _USE_OPT
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
+#ifndef _DNT_MMAP
+#define _DNT_MMAP 0
+#endif
 
 #ifndef _THR_WAIT
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
@@ -83,7 +86,7 @@ enum {
 #define _ONE_ZDF  1 //RAF: no difference in .gz size
 #endif
 
-#define _GZ_WRITE (!_USE_MMAP)
+#define _GZ_WRITE (!out_mmap_base)
 
 #ifndef _USE_ZNG
 #define _USE_ZNG  0 //RAF: just API, same speed/size
@@ -134,7 +137,7 @@ enum {
 #endif
 
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
-#define WBUF_MAX_SIZE (_GZ_WRITE ? chunk_size : zbuf_max_size(chunk_size))
+#define WBUF_MAX_SIZE zbuf_max_size(chunk_size)
 
 #define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
 #define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
@@ -146,7 +149,6 @@ enum {
 static uint8_t *read_mmap_base = NULL;
 static uint8_t *out_mmap_base = NULL;
 static off_t read_filesize = 0;
-static size_t max_out_size = 0;
 static size_t chunk_size   = 0;
 static int tot_chunks      = 0;
 
@@ -272,17 +274,15 @@ if(strm.total_out)
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-    if (c->sem_ptr
-    && (c->ofd == STDOUT_FILENO || _GZ_WRITE)
+    if (c->ofd != STDOUT_FILENO
+    && (!out_mmap_base || !_USE_MMAP)
     ){
-        sem_post(c->sem_ptr);
-        c->sem_ptr = NULL;
-    }
-#if _GZ_WRITE
-    if(c->ofd != STDOUT_FILENO && c->out) {
+        if (c->sem_ptr){
+            sem_post(c->sem_ptr);
+            c->sem_ptr = NULL;
+        }
         c->error |= chunk_write(c);
     }
-#endif
     c->state = 3;
 release:
     if (c->sem_ptr) {
@@ -373,8 +373,8 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->error = 0;
     c->sem_ptr = _THR_WAIT ? sem_ptr : NULL;
     c->out_cap = zbuf_max_size(chunk_size);
-    c->out_off = (out_mmap_base ? c->out_cap : chunk_size) * idx;
-    c->in_off  =                               chunk_size  * idx;
+    c->out_off = WBUF_MAX_SIZE * idx; //(_USE_MMAP ? c->out_cap : chunk_size) * idx;
+    c->in_off  =                           chunk_size  * idx;
     if(infd != STDIN_FILENO) {
         c->in_len = (idx + 1 == tot_chunks)
                   ? (size_t)(read_filesize - c->in_off)
@@ -386,8 +386,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->ofd = ofd;
     c->map = 0;
 
-#if _GZ_WRITE
-#else
+#if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
     if (out_mmap_base) {
         c->out = out_mmap_base + c->out_off;
@@ -461,6 +460,7 @@ int main(int argc, char **argv)
     uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
     int infd = STDIN_FILENO;
+    size_t max_out_size = 0;
     int nthreads;
     sem_t sem;
 
@@ -569,7 +569,7 @@ int main(int argc, char **argv)
         }
         read_filesize = st.st_size;
 
-        if(!_USE_MMAP)
+        if(_DNT_MMAP)
             break;
 
         // mmap entire file (zero-copy input for all threads)
@@ -671,7 +671,7 @@ fprintf(stderr, "reading from fd=%d: '%s'\n", infd, names[0]?:"(NULL)");
             break;
         }
 
-        if(!_USE_MMAP)
+        if(_DNT_MMAP)
             break;
 
         /* 2. Map output file into virtual memory */
@@ -878,7 +878,7 @@ dispose:
         off_t dst = list[2]; /* Start immediately after Chunk 0 */
         for (int i = 1; i < next_idx; i++) {
             size_t len = list[i + 2];
-            src += chunk_size;
+            src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
 
             off_t off_in = src;
