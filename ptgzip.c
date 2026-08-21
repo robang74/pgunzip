@@ -70,7 +70,7 @@ enum {
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
 #ifndef _DNT_MMAP
-#define _DNT_MMAP 0 //RAF: =1 to test mmap() failure
+#define _DNT_MMAP 1 //RAF: =1 to test mmap() failure, also file faster
 #endif
 
 #ifndef _DO_WRST
@@ -79,8 +79,8 @@ enum {
 #ifndef _THR_WAIT
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
 #endif
-#ifndef _USE_MMAP
-#define _USE_MMAP 1 // mmap() is performed by default, but it can fail
+#ifndef _USE_MMAP   // mmap() is performed by default, but it can fail
+#define _USE_MMAP !_DNT_MMAP
 #endif
 #ifndef _USE_FREE
 #define _USE_FREE 0 // free() isn't strictly necessary, but do testing
@@ -707,7 +707,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         /* 2. Map output file into virtual memory */
         out_mmap_base = mmap(NULL, max_out_size,
             PROT_READ  | PROT_WRITE,
-            MAP_SHARED, ofd, 0); //RAF,TODO: check MAP_NONBLOCK
+            MAP_SHARED | MAP_POPULATE, ofd, 0);
         if (out_mmap_base == MAP_FAILED) {
             out_mmap_base = NULL;
             perror("mmap out");
