@@ -4,11 +4,31 @@ Simplicity is the ultimate sophistication (cit.)
 
 ### Index
 
+- [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
     - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Development](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
+
+<br>
+
+## Quick Overview
+
+> [!NOTE]
+> 
+> A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible. Everything else is "just" coding.
+
+- `ptgzip` since v0.4 is 1.9x faster than `pigz` and 5.1x faster than `gzip`
+- it creates a 100% back-compatible RFC-1952 `gunzip` parallel-ready format
+- simplicity is the **strongest** point of new `.gz` format and `ptgzip` design
+- it is z-library agnostic, despite being compiled against `zlib-ng` by default
+
+Its relative performances tend to improve in the real-world scenarios:
+
+- it is faster in compressing `/bin` files on a low-power consumer hardware
+- higher throughput ratios with a mild desktop background activity: 1.8x and **5.8x**
+- against `/bin`, it matches 85-to-**96%** of theoretical throughput speed increase
 
 <br>
 
@@ -118,7 +138,7 @@ Benchmarks are very useful but also extremely tricky: we might boast of a 1.4 or
 The reference system is ThinkPad X390 running on a i5-8365, a chip from the 2019, kept in energy saving mode (15W TDP) and paired with DDR4 and Samsung EVO NVMe SSD as main storage unit.
 
 ```
-$ make speed-stress
+$ make _test-clean speed-stress
 
   === ./ptgzip '-c' speed test on /bin/ ===
 
