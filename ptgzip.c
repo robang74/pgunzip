@@ -31,14 +31,18 @@
 #include <pthread.h>
 
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
+#define ALIGNED4      __attribute__ ((aligned(4)))
 
 #define MAX_THREADS         16
 #define MAX_CHUNK_SIZE     (1UL << 18)     /* max target size per segment */
 #define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
 
+static unsigned cpu_procs = 0;
+
 typedef struct {
     pthread_t thr;
     sem_t    *sem_ptr;
+    pthread_attr_t attr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
     size_t   out_cap;
@@ -55,7 +59,7 @@ typedef struct {
     off_t    in_off;                             //
 //RAF: part that requires to be completely reset //
     uint8_t  end;
-} chunk_t __attribute((aligned(4)));
+} chunk_t ALIGNED4;
 
 enum {
     b_mmap_none = 0,
@@ -234,7 +238,8 @@ static void *thread_compress(void *arg)
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
         c->out_cap = _deflate_bound(&strm, c->in_len);
-        c->out = malloc(c->out_cap);
+        if (posix_memalign((void **)&c->out, 8, c->out_cap))
+            c->out = NULL;
         if (!c->out) {
             perror("malloc out buf");
             c->error = -2;
@@ -371,6 +376,14 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 static ALWAYS_INLINE
 void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
+    cpu_set_t cpuset;
+    pthread_attr_t attr;
+
+    CPU_ZERO(&cpuset);
+    CPU_SET(idx % cpu_procs, &cpuset);
+    pthread_attr_init(&c->attr);
+    pthread_attr_setaffinity_np(&c->attr, sizeof(cpu_set_t), &cpuset);
+
     c->state = 1;
     c->idx = idx;
     c->error = 0;
@@ -397,20 +410,22 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
     else
 #endif
-    if(!c->out)
-        c->out = malloc(c->out_cap);
-    if(!c->out) {
+    if (!c->out)
+         if (posix_memalign((void **)&c->out, 8, c->out_cap))
+              c->out = NULL;
+    if (!c->out) {
         perror("malloc in buf");
         exit(-1);
     }
 
-    if(read_mmap_base) {
+    if (read_mmap_base) {
         c->in = read_mmap_base + c->in_off;
         c->map |= b_mmap_in;
     } else {
-        if(!c->in)
-            c->in = malloc(c->in_len);
-        if(!c->in) {
+        if (!c->in)
+             if (posix_memalign((void **)&c->in, 8, c->in_len))
+                  c->in = NULL;
+        if (!c->in) {
             perror("malloc in buf");
             exit(-1);
         }
@@ -418,15 +433,15 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
-        if(!c->in_len)
+        if (!c->in_len)
             c->state = 3;
     }
 }
 
 static ALWAYS_INLINE
-void chunk_work_start(pthread_t *p, chunk_t *c_ptr)
+void chunk_work_start(pthread_t *p, chunk_t *c)
 {
-    if (!pthread_create(p, NULL, thread_compress, c_ptr))
+    if (!pthread_create(p, &c->attr, thread_compress, c))
         return;
 
     perror("pthread_create");
@@ -541,7 +556,7 @@ int main(int argc, char **argv)
     if(!opt_processes)
         opt_processes = MAX_THREADS;
 
-    unsigned cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
+    cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
     nthreads = cpu_procs;
     if (nthreads > opt_processes)
         nthreads = opt_processes;
@@ -663,8 +678,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    list = malloc(TABLE_ITEMS << 2);
-    if(!list) {
+    if (posix_memalign((void **)&list, 8, TABLE_ITEMS << 2))
+          list = NULL;
+    if (!list) {
         perror("malloc list");
     } else { //RAF: possible fallback without list
         list[0] =  0;
