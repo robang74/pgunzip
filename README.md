@@ -6,10 +6,10 @@ Simplicity is the ultimate sophistication (cit.)
 
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
-    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Development](#development)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
-- [Development](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
+- [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
 
 <br>
 
@@ -173,6 +173,40 @@ Fundamentally, the result is provided by the non-linear combination of three fac
 Someone might assume that compiling `pigz` against `zlib-ng` would be provided the same result. Instead, I *guess* that the `ptgzip` internals are **way** simpler that `pigz`, the threads model is lighter, in low-power systems simplicy doesn't trigger the thermal throttling-down and in facing a large variety of file sizes like in `/bin` the gap cannot be filled-up.
 
 In short, `ptgzip` architectural simplicity, due to 100% back-compatibility inflating format propaedeutic design, beats `pigz` in real-world general scenarios. Everyone can check by themselves and a confutation will be welcomed, especially because it will probably be an interesting niche of usage.
+
+---
+
+### Development
+
+New PTGZ format version to support the 64-bit input/output file range
+
+```
+roberto@x280[0]:~/robang74/pgunzip$ make _test-clean test-basic
+
+=== ./ptgzip file sanity check ===
+
+./ptgzip libz.tar -v  && du -b libz.tar*
+zlib-ng, nthr: 8, size: 36 x 258280 = 9297920, gz: 2890092 [160] (31.1%), zl: 6
+9297920	libz.tar
+2890092	libz.tar.gz
+zcat libz.tar.gz | tee test.dz | wc -c
+9297920
+>>> Result: OK
+
+roberto@x280[0]:~/robang74/pgunzip$ tail -c160 libz.tar.gz | hexdump -C
+
+00000000  46 28 01 00 be 53 01 00  29 ba 00 00 f8 bb 00 00  |F(...S..).......|
+00000010  f4 11 01 00 47 2d 01 00  19 b7 00 00 fd ae 00 00  |....G-..........|
+00000020  11 e4 00 00 36 c4 00 00  b9 eb 00 00 1d cd 02 00  |....6...........|
+00000030  8f a9 03 00 c9 ba 03 00  03 08 03 00 c3 b8 03 00  |................|
+00000040  22 fc 00 00 b8 42 00 00  71 5a 00 00 6b 4c 00 00  |"....B..qZ..kL..|
+00000050  a6 47 00 00 1d 4e 00 00  64 53 00 00 b3 4c 00 00  |.G...N..dS...L..|
+00000060  c6 4e 00 00 9b 49 00 00  54 53 00 00 b2 52 00 00  |.N...I..TS...R..|
+00000070  db bd 01 00 b1 f4 01 00  80 57 01 00 62 9e 02 00  |.........W..b...|
+00000080  05 2e 01 00 2c 6e 01 00  e2 7d 01 00 a2 de 00 00  |....,n...}......|
+00000090  b9 81 68 85 24 00 00 00  e8 f0 03 00 70 74 67 7a  |..h.$.......ptgz|
+000000a0
+```
 
 <br>
 
