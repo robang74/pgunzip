@@ -454,7 +454,7 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 }
 
 // =============================================================================
-// Main
+// Prep
 // =============================================================================
 
 static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
@@ -528,14 +528,17 @@ typedef struct ALIGNED4 {
 
 typedef struct ALIGNED4 {
     pgunz_link_t cur;  // pointer to the linked list
+    uint32_t  chksum;  // the sum of all the words table records should be zero
     uint32_t  nwords;  // number of the words the list contains: 0,1 not useful
     uint32_t  bufsze;  // the size of the read expressed 4KiB memory pages 2^12
     uint32_t  magicw;  // the magic word closing the format, but it can be 16_t
     uint32_t  align4;  // writes the list buffer at 32-bit aligned file address
+    /* list stats here */
 } __attribute__ ((packed)) pgunz_t;
 
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
+static ALWAYS_INLINE
 pgunz_t *create_pgunz_table(uint32_t nwords)
 {
     pgunz_t *p;
@@ -546,8 +549,10 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     n   = _mpceil(nwords << 2);
     len = sizeof(pgunz_t) + n;
     p   = malloc(len);
-    if(!p) return p;
-
+    if(!p) {
+        perror("malloc list");
+        return p;
+    }
     memset(p, 0, len);
     p->cur.size = nwords;
     u = (uint8_t *)p;
@@ -558,9 +563,36 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     return p;
 }
 
+static ALWAYS_INLINE
+uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
+{
+    int i;
+    uint32_t sum = 0;
+    uint32_t *p = &ptbl->chksum;
+    uint32_t *list = ptbl->cur.list;
+    uint32_t nwords = ptbl->nwords;
+    uint8_t *u = (uint8_t *)list;
+
+    for (i = 0; i < 4; i++)
+        list[nwords + i] = p[i];
+
+    i += nwords;
+    while(i--) sum += list[i];
+    *p = -sum; // checking sum code
+
+    *len = (4 - (*len & 3)) & 3;
+    u -= *len; // 32-bit align
+
+    *len += nwords << 2;
+    return u;
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
 int main(int argc, char **argv)
 {
-    uint32_t *list = NULL;
     int ofd = STDOUT_FILENO;
     int infd = STDIN_FILENO;
     size_t max_out_size = 0;
@@ -763,13 +795,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    list = malloc(TABLE_BSIZE);
-    if (!list) {
-        perror("malloc list");
-    } else { //RAF: possible fallback without list
-        list[0] =  0;
-        list[1] = (PGZ_MAGIC_1 << 16) | (chunk_size >> 12);
-    }
+    pgunz_t *ptbl = create_pgunz_table(tot_chunks);
+    uint32_t *list = ptbl->cur.list;
 
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     while (!opt_stdout) {
@@ -931,7 +958,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
                 ;
-        if(list) list[ 2+c->idx ] = c->out_len;
+        if(list) list[ c->idx ] = c->out_len;
 
 dispose:
         #if _USE_FREE
@@ -986,17 +1013,18 @@ dispose:
         goto write_table;
 
     if(next_idx < 2)
-        goto skip_table;
+        goto skip_reorgnz;
 
     /*
-     * In-place File Reorganization using Kernel-Level Zero-Copy
+     * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
      */
+    int i;
     if(out_mmap_base) {
         uint8_t *src = out_mmap_base;
-        uint8_t *dst = out_mmap_base + list[2]; /* Skip chunk 0 */
-        for (int i = 1; i < next_idx; i++) {
-            size_t len = list[i + 2];
+        uint8_t *dst = out_mmap_base + list[0]; /* Skip chunk 0 */
+        for (i = 1; i < next_idx; i++) {
+            size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
             __builtin_memmove(dst, src, len);
@@ -1004,10 +1032,11 @@ dispose:
         }
         outlen += dst - out_mmap_base;
     } else {
+        int i;
         off_t src = 0;
-        off_t dst = list[2]; /* Start immediately after Chunk 0 */
-        for (int i = 1; i < next_idx; i++) {
-            size_t len = list[i + 2];
+        off_t dst = list[0]; /* Start immediately after Chunk 0 */
+        for (i = 1; i < next_idx; i++) {
+            size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
 
@@ -1026,8 +1055,9 @@ dispose:
         }
         outlen = dst;
     }
+    ptbl->nwords = i;
 
-skip_table:
+skip_reorgnz:
     /* Update outlen and truncate remaining sparse tail */
     if (ftruncate(ofd, outlen) < 0) {
         perror("ftruncate");
@@ -1045,24 +1075,13 @@ write_table:
      */
     if(!list) goto do_verbose;
 
-    size_t sum = 0, left = TABLE_BSIZE;
-    list[TABLE_ITEMS-1]  = ((TABLE_ITEMS-4) << 16);
-    list[TABLE_ITEMS-1] |=   PGZ_MAGIC_2; // items + magic
-    for(uint32_t *u = &list[1]; left > 0; left-=4) {
-        sum += *u++;
-    };  sum += list[TABLE_ITEMS-1];
-    left = TABLE_BSIZE;
-    list[TABLE_ITEMS-2] = -sum; // sum checking code
-
-    uint8_t *p = (uint8_t *)list;
-    uint32_t r = outlen & 3; // 32-bit align
-    left -= 4-r;
-    p  = &p[4-r];
+    size_t len = outlen;
+    uint8_t *u = finalize_pgunz_table(ptbl, &len);
     if (out_mmap_base) {
-        __builtin_memmove(out_mmap_base + outlen, p, TABLE_BSIZE);
-        outlen += TABLE_BSIZE;
+        if(!__builtin_memmove(out_mmap_base + outlen, (const void *)u, len))
+            outlen += len;
     } else {
-        outlen += full_write(ofd, p, TABLE_BSIZE);
+        outlen += full_write(ofd, (const void *)u, len);
     }
 
 do_verbose:
@@ -1081,7 +1100,7 @@ do_verbose:
         munmap(out_mmap_base, max_out_size);
     }
     close(ofd);
-    free(list);
+    free(ptbl);
     #endif
 
     return 0;
