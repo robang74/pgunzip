@@ -532,7 +532,6 @@ typedef struct ALIGNED4 {
     uint32_t  nwords;  // number of the words the list contains: 0,1 not useful
     uint32_t  bufsze;  // the size of the read expressed 4KiB memory pages 2^12
     uint32_t  magicw;  // the magic word closing the format, but it can be 16_t
-    uint32_t  align4;  // writes the list buffer at 32-bit aligned file address
     /* list stats here */
 } __attribute__ ((packed)) pgunz_t;
 
@@ -576,14 +575,15 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     for (i = 0; i < 4; i++)
         list[nwords + i] = p[i];
 
-    i += nwords;
+    i += nwords + 4;
     while(i--) sum += list[i];
     *p = -sum; // checking sum code
+    list[nwords] = *p;
 
     *len = (4 - (*len & 3)) & 3;
     u -= *len; // 32-bit align
 
-    *len += nwords << 2;
+    *len += (nwords + 4) << 2;
     return u;
 }
 
@@ -1019,11 +1019,10 @@ dispose:
      * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
      */
-    int i;
     if(out_mmap_base) {
         uint8_t *src = out_mmap_base;
         uint8_t *dst = out_mmap_base + list[0]; /* Skip chunk 0 */
-        for (i = 1; i < next_idx; i++) {
+        for (int i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -1035,7 +1034,7 @@ dispose:
         int i;
         off_t src = 0;
         off_t dst = list[0]; /* Start immediately after Chunk 0 */
-        for (i = 1; i < next_idx; i++) {
+        for (int i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -1055,7 +1054,6 @@ dispose:
         }
         outlen = dst;
     }
-    ptbl->nwords = i;
 
 skip_reorgnz:
     /* Update outlen and truncate remaining sparse tail */
@@ -1076,6 +1074,8 @@ write_table:
     if(!list) goto do_verbose;
 
     size_t len = outlen;
+    ptbl->nwords = next_idx;
+    ptbl->bufsze = chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
     if (out_mmap_base) {
         if(!__builtin_memmove(out_mmap_base + outlen, (const void *)u, len))
@@ -1086,9 +1086,9 @@ write_table:
 
 do_verbose:
     if(opt_verbose) {
-        fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu (%0.1f%%),"
+        fprintf(stderr, "%s, nthr: %u, split: %d x %zu = %ld, size: %lu [%lu] (%0.1f%%),"
             " zlvl: %d\n", libz_name, nthreads, next_idx, chunk_size, read_filesize,
-                outlen, (float)outlen*100/read_filesize, compression_level);
+                outlen, len, (float)outlen*100/read_filesize, compression_level);
     }
 
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
