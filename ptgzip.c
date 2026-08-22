@@ -164,7 +164,7 @@ static int tot_chunks      = 0;
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 
-static ALWAYS_INLINE
+static
 size_t full_read(int fd, const void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
@@ -537,7 +537,9 @@ typedef struct ALIGNED4 {
 
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
-static ALWAYS_INLINE
+const uint8_t ptgz_magic_str[4] = { "ptgz" };
+
+static
 pgunz_t *create_pgunz_table(uint32_t nwords)
 {
     pgunz_t *p;
@@ -557,7 +559,8 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     u = (uint8_t *)p;
     p->cur.list = (uint32_t *)(u + sizeof(pgunz_t));
     u = (uint8_t *)&p->magicw;
-    *u++ = 'p'; *u++ = 't'; *u++ = 'g'; *u = 'z';
+    for (int i = 0; i < 4; i++)
+        u[i] = ptgz_magic_str[i];
 
     return p;
 }
@@ -572,19 +575,93 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     uint32_t nwords = ptbl->nwords;
     uint8_t *u = (uint8_t *)list;
 
-    for (i = 0; i < 4; i++)
+    for (i = 1; i < 4; i++)
         list[nwords + i] = p[i];
 
-    i += nwords + 4;
-    while(i--) sum += list[i];
-    *p = -sum; // checking sum code
-    list[nwords] = *p;
+    sum = 0;
+    list[0] = 0;
+    for(i = 0; i < nwords + 4; i++)
+        sum += list[i];
+    p[0] = -sum; // checking sum code
+    list[nwords] = p[0];
+
 #if 0 // ftrucate does it for us
     *len = (4 - (*len & 3)) & 3;
     u -= *len; // 32-bit align
-#endif
     *len += (nwords + 4) << 2;
+#else
+    *len = (nwords + 4) << 2;
+#endif
+
+#if _DEBUG // ------------------------------------------------------------------
+    sum = 0;
+    for(i = 0; i < nwords + 4; i++)
+        sum += list[i];
+fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n", *p, sum, *len);
+#endif // ----------------------------------------------------------------------
+
     return u;
+}
+
+static ALWAYS_INLINE
+pgunz_t *read_pgunz_table(int fd, int *err)
+{
+    int i;
+    uint8_t *u, buf[16];
+    uint32_t nwords, *list, sum = 0;
+    pgunz_t *ptbl;
+    size_t len;
+
+    *err = 0;
+
+    if(lseek(fd, -16, SEEK_END) < 0) {
+        *err = -16;
+        perror("lseek");
+        return NULL;
+    }
+
+    u = &buf[12];
+    full_read(fd, buf, 16); //RAF, TODO: better return -1 in case of error
+    for (i = 0; i < 4; i++)
+        if(u[i] != ptgz_magic_str[i])
+            break;
+    if(i != 4) {
+        *err = -4;
+        return NULL;
+    }
+
+    nwords = *(uint32_t *)&buf[4];
+
+    ptbl = create_pgunz_table(nwords);
+    if(!ptbl) {
+        *err = -2;
+        return NULL;
+    }
+    
+    len = ((nwords + 4) << 2);
+    if(lseek(fd, -len, SEEK_END) < 0) {
+        *err = -1;
+        perror("lseek");
+        return NULL;
+    }
+
+    list = &ptbl->chksum;
+    full_read(fd, list, len); //RAF, TODO: better return -1 in case of error
+
+    sum = 0;
+    for(i = 0; i < nwords + 4; i++)
+        sum += list[i];
+    if(sum) {
+        *err = 1;
+        free(ptbl);
+        return NULL;
+    }
+
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0], len);
+#endif // ----------------------------------------------------------------------
+
+    return ptbl;
 }
 
 // =============================================================================
@@ -1087,6 +1164,21 @@ write_table:
     } else {
         outlen += full_write(ofd, (const void *)u, len);
     }
+
+#if _DEBUG // ------------------------------------------------------------------
+    if(ofd != STDOUT_FILENO)
+    {
+        int err;
+        pgunz_t *pz = read_pgunz_table(ofd, &err);
+        if(!pz || err)
+            fprintf(stderr, ">>> ERR -- read_pgunz_table: %d\n", err);
+        else
+        if (memcmp(u, &pz->chksum, len)) {
+            fprintf(stderr, ">>> ERR -- table mismatch, len: %lu\n", len);
+        }
+        return err;
+    }
+#endif // ----------------------------------------------------------------------
 
 do_verbose:
     if(opt_verbose) {
