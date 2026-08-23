@@ -6,7 +6,7 @@ Simplicity is the ultimate sophistication (cit.)
 
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
-    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Development](#development)
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -176,9 +176,15 @@ In short, `ptgzip` architectural simplicity, due to 100% back-compatibility infl
 
 ---
 
-### Development
+### Updates v0.5
 
-New PTGZ format version to support the 64-bit input/output file range
+This release introduces the decompression as a feature and formalises the PTGZ format. Despite the decompression being provided by sequential inflating without leveraging the PTGZ format, these additions are undoubtedly a sort of milestone within this project development.
+
+Since the beginning of the project, less than two weeks ago, this release is the first that can deal with its own output without the support of external applications related to the `gzip` format. In short, it is capable of self-verifying its own output in both directions.
+
+Despite the existing shortcomings, the v0.5 is capable of competing and in many cases performs better than `pigz` which is an application born 20 years ago by the one of the developers that had a central role in the `zlib` and `zlib-ng` development.
+
+- New PTGZ format version to support the 64-bit input/output file range
 
 ```
 $ make _test-clean test-basic
