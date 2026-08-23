@@ -483,7 +483,9 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 /* RAF
  *******************************************************************************
 
-    CURRENT TOP-SPEED
+    $ make _test-clean _test-basic speed-gunzp
+
+    CURRENT TOP-SPEED (2710)
 
     Baseline sum-up 2479 on 4 speeds, top speed 2710 which is +9.3%:
 
@@ -492,63 +494,41 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
     278937600 bytes (279 MB, 266 MiB) copied, 0.411199 s, 678 MB/s
     278937600 bytes (279 MB, 266 MiB) copied, 0.410411 s, 680 MB/s
 
-    INPUT READ-AHEAD
+    INPUT READ-AHEAD  (2680)
 
-    Compared with the baseline the read-ahead adds only 7% < 8.5%.
-    Therefore it is not convenient, at least in this specific case.
-    In general, like the stress-speed test, at its best matches 1:1.
-
-    278937600 bytes (279 MB, 266 MiB) copied, 0.415944 s, 671 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.415334 s, 672 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.428207 s, 651 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.420798 s, 663 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.414614 s, 673 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.421616 s, 662 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.413728 s, 674 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.415963 s, 671 MB/s
 
     CHUCKS SPLITTING
 
-    The chuck splitting in this specific implementation provides
-    a kind of regression in throughput speed -2% vs +8.5% already
-    granted. Also in general case (stress-speed) doesn't shine.
+    #0 (2697)
+    278937600 bytes (279 MB, 266 MiB) copied, 0.414493 s, 673 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.412130 s, 677 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.413649 s, 674 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.414243 s, 673 MB/s
 
-    However, properly tuned with a read-ahead approach, it allows
-    to parallelise the chunk inflating when the .gz is made
-    by a sequence of chunks like ptgzip does.
+    #1 (2383)
+    278937600 bytes (279 MB, 266 MiB) copied, 0.466169 s, 598 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.463225 s, 602 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.463858 s, 601 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.478978 s, 582 MB/s
 
-    Under this perspective is possible to fully separate the I/O,
-    the inflating and the process orchestration in 4 threads: one
-    for reading, one for writing, one for inflating and one as the
-    supervisor for all of them.
+    #2 (2407)
+    278937600 bytes (279 MB, 266 MiB) copied, 0.468027 s, 596 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.460823 s, 605 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.463540 s, 602 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.461731 s, 604 MB/s
 
-    This paved the way for a full parallelisation of the whole
-    process when the source and/or the destination are seekable
-    files rather than STDIN/OUT pipes.
+    #3 (2485)
+    278937600 bytes (279 MB, 266 MiB) copied, 0.447942 s, 623 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.448146 s, 622 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.447137 s, 624 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.452564 s, 616 MB/s
 
-    278937600 bytes (279 MB, 266 MiB) copied, 0.461419 s, 605 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.457706 s, 609 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.468657 s, 595 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.455720 s, 612 MB/s
-
-    32-BIT REGISTER
-
-    The concept is the same, the implementation is faster. Compared
-    to the baseline is +2% faster while the previous implementation
-    was was -2% slower. However, it remains sensitively slower than
-    the state-of-art on this branch which achieves +9% faster.
-
-    278937600 bytes (279 MB, 266 MiB) copied, 0.436758 s, 639 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.438870 s, 636 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.437531 s, 638 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.435196 s, 641 MB/s
-
-    THE CHUNK SEEKER
-
-    Having created an always inline function chunk_seeker() for seeking
-    the next chunk allows the compiler to optimise the code specifically
-    for that routine which was the performance bottleneck but hits -3.8%.
-
-    278937600 bytes (279 MB, 266 MiB) copied, 0.464604 s, 600 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.467879 s, 596 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.478457 s, 583 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.460692 s, 605 MB/s
+    TODO:
+    - Stop seeking when a 2nd chunk isn't found in MAX_CHUNK_SIZE, isn't PTGZ
 
  *******************************************************************************
 */
@@ -579,7 +559,9 @@ static void *thread_chunk_write(void *arg)
 
 #define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
 #define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
-#define _READ_HEAD 0
+
+#define _SEEKER_FUNC  0
+#define _READ_AHEAD  (1 && !_SEEKER_FUNC)
 
 static int inflate_stream(int infd, int ofd, size_t len)
 {
@@ -604,7 +586,7 @@ static int inflate_stream(int infd, int ofd, size_t len)
 
     c.map = b_mmap_out | b_mmap_in;
     if(!len) c.map |= b_mmap_seek;
-#if _READ_HEAD
+#if _READ_AHEAD
     strm.next_in  = inbuf;
     strm.avail_in = 0;
 #endif
@@ -612,8 +594,8 @@ static int inflate_stream(int infd, int ofd, size_t len)
     c.ofd = ofd;
 
     while (1) {
-#if 1
-    #if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
+#if _SEEKER_FUNC == 0
+        #if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
         r = strm.avail_in;
         if (!eof && r < MIN_CHUNK_SIZE) { // feed the input buffer
             if (r) __builtin_memmove(inbuf, strm.next_in, r);
@@ -624,14 +606,14 @@ static int inflate_stream(int infd, int ofd, size_t len)
         }
         if (eof && !strm.avail_in)
             break;
-    #else
+        #else
         if (!strm.avail_in) { // feed the input buffer
             r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
             if (!r) break; // EOF
             strm.next_in = inbuf;
             strm.avail_in = r;
-         }
-    #endif
+        }
+        #endif
 #else // chunks splitting
         if (!strm.avail_in) { // feed the input buffer
             if (rmn) __builtin_memmove(inbuf, &inbuf[set], rmn);
@@ -640,7 +622,8 @@ static int inflate_stream(int infd, int ofd, size_t len)
 
             strm.next_in = inbuf;
 //fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
-            set = chunk_seeker(inbuf, r -3);
+            #if   _SEEKER_FUNC == 1
+            set = chunk_seeker(inbuf, r - 3);
             if (set) {
                 strm.avail_in = set;
                 rmn = r - set;
@@ -648,6 +631,42 @@ static int inflate_stream(int infd, int ofd, size_t len)
                 strm.avail_in = r;
                 rmn = 0;
             }
+            #elif _SEEKER_FUNC == 2
+            set = 0;
+            rmn = 0;
+            strm.avail_in = r;
+            register uint8_t *p = inbuf + 1;
+            r -= 3; // to avoid the buffer overflow
+            for (register uint32_t n = 1; n < r; n++, p++) {
+                #if __BYTE_ORDER == __BIG_ENDIAN
+                if ((*(uint32_t *)p & 0xFFFFFF00) == 0x1F8B0800)
+                #else
+                if ((*(uint32_t *)p & 0x00ffffff) == 0x00088b1f)
+                #endif
+                {
+                    strm.avail_in = n;
+                    rmn = r - n + 3;
+                    set = n;
+                    break;
+                }
+            }
+            #elif _SEEKER_FUNC == 3
+            set = 0;
+            rmn = 0;
+            strm.avail_in = r;
+            r -= 2; // to avoid the buffer overflow
+            for (size_t n = 1; n < r; n++) {
+                if (inbuf[n  ] == 0x1f
+                &&  inbuf[n+1] == 0x8b
+                &&  inbuf[n+2] == 0x08
+                ){
+                    strm.avail_in = n;
+                    rmn = r - n + 2;
+                    set = n;
+                    break;
+                }
+            }
+            #endif
         }
 #endif
         strm.next_out  = outbuf;
