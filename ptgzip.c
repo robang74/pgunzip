@@ -522,6 +522,18 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
     278937600 bytes (279 MB, 266 MiB) copied, 0.468657 s, 595 MB/s
     278937600 bytes (279 MB, 266 MiB) copied, 0.455720 s, 612 MB/s
 
+    32-BIT REGISTER
+
+    The concept is the same, the implementation is faster. Compared
+    to the baseline is +2% faster while the previous implementation
+    was was -2% slower. However, it remains sensitively slower than
+    the state-of-art on this branch which achieves +9% faster.
+
+    278937600 bytes (279 MB, 266 MiB) copied, 0.436758 s, 639 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.438870 s, 636 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.437531 s, 638 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.435196 s, 641 MB/s
+
  *******************************************************************************
 */
 
@@ -594,13 +606,13 @@ static int inflate_stream(int infd, int ofd, size_t len)
             strm.avail_in = r;
             strm.next_in = inbuf;
 
-            for (size_t n = 1; n < r - 2; n++) {
-                if (inbuf[n  ] == 0x1f
-                &&  inbuf[n+1] == 0x8b
-                &&  inbuf[n+2] == 0x08
-                ){
+            register uint8_t *p = inbuf + 1;
+            r -= 3; // to avoid the buffer overflow
+            for (register uint32_t n = 1; n < r; n++, p++) {
+                if (*(uint32_t *)p & 0xffffff00 == 0x1f8b0800)
+                {
                     strm.avail_in = n;
-                    rmn = r - n;
+                    rmn = r - n + 3;
                     set = n;
                     break;
                 }
