@@ -168,6 +168,17 @@ stress: libz.tar $(CMD2T)
     && time eval "$$cmd" >$$nl
 	@echo
 
+libz.tar.gz: libz.tar
+	/bin/gzip -nk libz.tar
+
+_speed-gunzp: libz.tar.gz $(CMD2T)
+	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -d $(CMDVC)" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
+
+speed-gunzp: _speed-gunzp blkline
+
 crash:
 	@printf "\n=== iocat build w/ CRASH_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"

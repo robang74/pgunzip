@@ -105,6 +105,7 @@ enum {
 #ifndef _USE_MNZ
 #define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
+
 #if   _USE_ZNG
   #include "zlib-ng.h"
   #define _deflate_init2 zng_deflateInit2
@@ -145,6 +146,20 @@ enum {
 #define libz_name          "none"
 #endif
 
+#if   _USE_ZNG
+  #define _inflate_init2 zng_inflateInit2
+  #define _inflate       zng_inflate
+  #define _inflate_end   zng_inflateEnd
+#elif _USE_MNZ
+  #define _inflate_init2 mz_inflateInit2
+  #define _inflate       mz_inflate
+  #define _inflate_end   mz_inflateEnd
+#else
+  #define _inflate_init2 inflateInit2
+  #define _inflate       inflate
+  #define _inflate_end   inflateEnd
+#endif
+
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
 #define WBUF_MAX_SIZE zbuf_max_size(chunk_size)
 
@@ -161,8 +176,10 @@ static off_t read_filesize = 0;
 static size_t chunk_size   = 0;
 static int tot_chunks      = 0;
 
+static int opt_decompress = 0;
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
+static int decompress_single(int infd, int ofd);
 
 static
 size_t full_read(int fd, const void *buf, size_t len)
@@ -454,6 +471,53 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 }
 
 // =============================================================================
+// gunzip
+// =============================================================================
+
+#define GUNZIP_CHUNK_SIZE (1 << 18)
+
+static int decompress_single(int infd, int ofd)
+{
+    int ret;
+    ssize_t r;
+    _stream_t strm = {0};
+    uint8_t  inbuf[GUNZIP_CHUNK_SIZE];
+    uint8_t outbuf[GUNZIP_CHUNK_SIZE];
+
+    ret = _inflate_init2(&strm, 15 + 16);
+    if (ret != Z_OK) {
+        perror("inflateInit2");
+        return -1;
+    }
+
+    do {
+        //RAF, TODO: in single thread read less than full could be faster
+        r = full_read(infd, inbuf, GUNZIP_CHUNK_SIZE);
+        strm.next_in  = inbuf;
+        strm.avail_in = r;
+        do {
+            strm.next_out  = outbuf;
+            strm.avail_out = sizeof(outbuf);
+            ret = _inflate(&strm, Z_NO_FLUSH);
+
+            if (ret == Z_STREAM_ERROR)
+                break;
+            if (ret != Z_OK
+            &&  ret != Z_STREAM_END
+            &&  ret != Z_BUF_ERROR)
+                break;
+
+            r = MIN_CHUNK_SIZE - strm.avail_out;
+            if (r) full_write(ofd, outbuf, r);
+        } while (!strm.avail_out);
+    } while (ret != Z_STREAM_END);
+
+endfunc:
+    _inflate_end(&strm);
+    return ret - Z_STREAM_END;
+}
+
+// =============================================================================
 // Prep
 // =============================================================================
 
@@ -637,7 +701,7 @@ pgunz_t *read_pgunz_table(int fd, int *err)
         *err = -2;
         return NULL;
     }
-    
+
     len = ((nwords + 4) << 2);
     if(lseek(fd, -len, SEEK_END) < 0) {
         *err = -1;
@@ -680,6 +744,7 @@ int main(int argc, char **argv)
     static struct option longopts[] = {
         {"stdout",      no_argument,       NULL, 'c'},
         {"to-stdout",   no_argument,       NULL, 'c'},
+        {"decompress",  no_argument,       NULL, 'd'},
         {"help",        no_argument,       NULL, 'h'},
         {"quiet",       no_argument,       NULL, 'q'},
         {"fast",        no_argument,       NULL, '1'},
@@ -693,11 +758,14 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int ch = getopt_long(argc, argv, "chvqk123456789m:p:", longopts, NULL);
+        int ch = getopt_long(argc, argv, "cdhvqk123456789m:p:", longopts, NULL);
         if(ch == -1) break; else nfiles--;
         switch (ch) {
         case 'c':
             opt_stdout = 1;
+            break;
+        case 'd':
+            opt_decompress = 1;
             break;
         case 'h':
         case '?':
@@ -742,7 +810,7 @@ int main(int argc, char **argv)
     if (opt_help || !nfiles) {
         opt_quiet = 0;
         _print2("\n    Usage: %s [opts] <file>"
-                "\n     opts: -#, -v, -q, -c, -h\n\n",
+                "\n     opts: -d, -#, -v, -q, -c, -h\n\n",
                     basename(argv[0]));
         return 0;
     }
@@ -847,6 +915,12 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
+
+    /* stdin fallback, but table can be available on shorts files */
+    if (opt_decompress && infd == STDIN_FILENO) {
+        int ret = decompress_single(infd, ofd);
+        return ret;
+    }
 
 // =============================================================================
 // Chunks
