@@ -480,8 +480,8 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 // gunzip
 // =============================================================================
 
-#define UNZIN_CHUNK_SIZE  MIN_CHUNK_SIZE
-#define UNOUT_CHUNK_SIZE  MAX_CHUNK_SIZE
+#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
+#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
 
 static void *thread_chunk_write(void *arg)
 {
