@@ -124,7 +124,7 @@ libz.tar: /bin/tar
 	@/bin/tar cf libz.tar libz
 
 libz.tar.gz: libz.tar
-	$(GZCMD) -nk libz.tar
+	$(GZCMD) -n -k libz.tar
 
 blkline:
 	@echo

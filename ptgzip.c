@@ -30,6 +30,9 @@
 #include <signal.h>
 #include <pthread.h>
 
+#define LICENSE \
+    "(c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2"
+
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 #define ALIGNED4      __attribute__ ((aligned(4)))
 
@@ -174,7 +177,6 @@ static off_t read_filesize = 0;
 static size_t chunk_size   = 0;
 static int tot_chunks      = 0;
 
-static int opt_decompress = 0;
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
 static int decompress_single(int infd, int ofd);
@@ -540,26 +542,10 @@ endfunc:
 // Prep
 // =============================================================================
 
-static int opt_stdout    = 0;    /* -c, --stdout, --to-stdout */
-static int opt_help      = 0;    /* -h, --help */
-static int opt_quiet     = 0;    /* -q, --quiet */
-       // compression_level ;    /* -#, --fast (=1), --best (=9) */
-static int opt_keep      = 0;    /* -k, --keep */
-static int opt_memory    = 0;    /* -m, --memory (KiB) */
-static int opt_processes = 0;    /* -p, --processes */
-static int opt_verbose   = 0;    /* -v, --verbose */
-
-/* --- file list --- */
-static int   nfiles = 0;
-static char **names = NULL;
+#define _mpceil(_x) (((_x) + 4095) >> 12)
 
 #define TABLE_ITEMS ((uint32_t)tot_chunks + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
-#define PGZ_MAGIC_1 0x6274
-#define PGZ_MAGIC_2 0x7a70
-
-#define LICENSE \
-    "(c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2"
 
 /* RAF
  *******************************************************************************
@@ -618,8 +604,6 @@ typedef struct ALIGNED4 {
     /* list stats here */
 } __attribute__ ((packed)) pgunz_t;
 
-#define _mpceil(_x) (((_x) + 4095) >> 12)
-
 const uint8_t ptgz_magic_str[4] = { "ptgz" };
 
 static
@@ -663,7 +647,7 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
         list[nwords + i] = p[i];
 
     sum = 0;
-    list[0] = 0;
+    list[nwords] = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
     p[0] = -sum; // checking sum code
@@ -751,6 +735,20 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 // =============================================================================
 // Main
 // =============================================================================
+
+static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
+static int opt_help       = 0;    /* -h, --help */
+static int opt_quiet      = 0;    /* -q, --quiet */
+        // compression_level ;    /* -#, --fast (=1), --best (=9) */
+static int opt_keep       = 0;    /* -k, --keep */
+static int opt_memory     = 0;    /* -m, --memory (KiB) */
+static int opt_processes  = 0;    /* -p, --processes */
+static int opt_verbose    = 0;    /* -v, --verbose */
+static int opt_decompress = 0;    /* -d, --decompress */
+
+/* --- file list --- */
+static int   nfiles = 0;
+static char **names = NULL;
 
 int main(int argc, char **argv)
 {
@@ -890,13 +888,22 @@ int main(int argc, char **argv)
 
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     while (!opt_stdout) {
-        size_t len = strlen(names[0]) + 4;
+        ssize_t len = strlen(names[0]) + (opt_decompress ? -3 : 4);
         char *str = malloc(len);
         if(!str) {
             perror("malloc strn");
             return 1;
         }
-        snprintf(str, len, "%s.gz", names[0]);
+        if(opt_decompress) {
+            if(len < 0 || !strstr(".gz", &names[0][len])) {
+                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n");
+                return 1;
+            }
+            strncpy(str, names[0], len);
+            str[len] = 0;
+        } else {
+            snprintf(str, len, "%s.gz", names[0]);
+        }
         //RAF, TODO: to check the original file permissions, if any than STDIN
         ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
         if (ofd < 0) {
@@ -1274,8 +1281,8 @@ write_table:
 
 do_verbose:
     if(opt_verbose) {
-        fprintf(stderr, "%s, nthr: %u, size: %d x %zu = %ld, gz: %lu [%lu] (%0.1f%%),"
-            " zl: %d\n", libz_name, nthreads, next_idx, chunk_size, read_filesize,
+        fprintf(stderr, "%s, nthr:%u, size: %d x %zu = %ld, gz: %lu [%lu] (%0.1f%%),"
+            " zl:%d\n", libz_name, nthreads, next_idx, chunk_size, read_filesize,
                 outlen, len, (float)outlen*100/read_filesize, compression_level);
     }
 
