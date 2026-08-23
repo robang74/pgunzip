@@ -484,6 +484,47 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 #define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
 #define _READ_HEAD 0
 
+/* RAF
+ *******************************************************************************
+
+    INPUT READ-AHEAD
+
+    Compared with the baseline the read-ahead adds only 7% < 8.5%.
+    Therefore it is not convenient, at least in this specific case.
+    In general, like the stress-speed test, at its best matches 1:1.
+
+    278937600 bytes (279 MB, 266 MiB) copied, 0.415944 s, 671 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.415334 s, 672 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.428207 s, 651 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.420798 s, 663 MB/s
+
+    CHUCKS SPLITTING
+
+    The chuck splitting in this specific implementation provides
+    a kind of regression in throughput speed -2% vs +8.5% already
+    granted. Also in general case (stress-speed) doesn't shine.
+
+    However, properly tuned with a read-ahead approach, it allows
+    to parallelise the chunk inflating when the .gz is made
+    by a sequence of chunks like ptgzip does.
+
+    Under this perspective is possible to fully separate the I/O,
+    the inflating and the process orchestration in 4 threads: one
+    for reading, one for writing, one for inflating and one as the
+    supervisor for all of them.
+
+    This paved the way for a full parallelisation of the whole
+    process when the source and/or the destination are seekable
+    files rather than STDIN/OUT pipes.
+
+    278937600 bytes (279 MB, 266 MiB) copied, 0.461419 s, 605 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.457706 s, 609 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.468657 s, 595 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.455720 s, 612 MB/s
+
+ *******************************************************************************
+*/
+
 static void *thread_chunk_write(void *arg)
 {
     chunk_t *c = arg;
@@ -493,7 +534,7 @@ static void *thread_chunk_write(void *arg)
 
 static int inflate_stream(int infd, int ofd, size_t len)
 {
-    size_t w, r;
+    size_t w, r, set = 0, rmn = 0;
     uint8_t *inbuf  = NULL;
     uint8_t *outbuf = NULL;
     int ret, eof = 0, nchunks = 0;
@@ -522,7 +563,8 @@ static int inflate_stream(int infd, int ofd, size_t len)
     c.ofd = ofd;
 
     while (1) {
-#if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
+#if 1
+    #if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
         r = strm.avail_in;
         if (!eof && r < MIN_CHUNK_SIZE) { // feed the input buffer
             if (r) __builtin_memmove(inbuf, strm.next_in, r);
@@ -533,13 +575,37 @@ static int inflate_stream(int infd, int ofd, size_t len)
         }
         if (eof && !strm.avail_in)
             break;
-#else
+    #else
         if (!strm.avail_in) { // feed the input buffer
             r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
             if (!r) break; // EOF
             strm.next_in = inbuf;
             strm.avail_in = r;
          }
+    #endif
+#else // chunks splitting
+        if (!strm.avail_in) { // feed the input buffer
+            if (rmn) __builtin_memmove(inbuf, &inbuf[set], rmn);
+            r = rmn + full_read(infd, inbuf + rmn, UNZIN_CHUNK_SIZE - rmn);
+            if (!r) break; // EOF
+
+            set = 0;
+            rmn = 0;
+            strm.avail_in = r;
+            strm.next_in = inbuf;
+
+            for (size_t n = 1; n < r - 2; n++) {
+                if (inbuf[n  ] == 0x1f
+                &&  inbuf[n+1] == 0x8b
+                &&  inbuf[n+2] == 0x08
+                ){
+                    strm.avail_in = n;
+                    rmn = r - n;
+                    set = n;
+                    break;
+                }
+            }
+        }
 #endif
         strm.next_out  = outbuf;
         strm.avail_out = UNOUT_CHUNK_SIZE;
