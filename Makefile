@@ -178,9 +178,9 @@ stress: libz.tar $(CMD2T)
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -d $(CMDVC)" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dk $(CMDVC)" && sync && \
+    eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd 2>&-"; done | dd bs=1M of=$$nl
 
 speed-gunzp: _speed-gunzp blkline
 
@@ -244,7 +244,7 @@ test-basic: _test-basic blkline
 
 _test-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) gunzp sanity check ===\n\n"
-	cat libz.tar.gz | $(CMD2T) -d -v $(CMDVC) | tee test.dz | wc -c
+	cat libz.tar.gz | $(CMD2T) -dkv $(CMDVC) | tee test.dz | wc -c
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 

@@ -483,12 +483,19 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 #define UNZIN_CHUNK_SIZE  MIN_CHUNK_SIZE
 #define UNOUT_CHUNK_SIZE  MAX_CHUNK_SIZE
 
-static int decompress_single(int infd, int ofd, size_t len)
+static void *thread_chunk_write(void *arg)
+{
+    chunk_t *c = arg;
+    c->error |= chunk_write(c);
+    return NULL;
+}
+
+static int inflate_stream(int infd, int ofd, size_t len)
 {
     ssize_t w, r;
     uint8_t *inbuf  = NULL;
     uint8_t *outbuf = NULL;
-    int err, ret, nchunks = 0;
+    int ret, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
 
@@ -530,13 +537,18 @@ static int decompress_single(int infd, int ofd, size_t len)
 
         w = UNOUT_CHUNK_SIZE - strm.avail_out;
         if(ofd == STDOUT_FILENO) {
-            err = (full_write(ofd, outbuf, w) < 0);
+            if (full_write(ofd, outbuf, w) < 0)
+                goto endfunc;
         } else {
+            if (c.thr) {
+                pthread_join(c.thr, NULL);
+                c.thr = 0;
+            }
             c.out_len = w;
-            err = chunk_write(&c);
+            chunk_work_start(&c.thr, &c);
             c.out_off += w;
+            c.idx++;
         }
-        if(err) goto endfunc;
 
         if (ret == Z_STREAM_END) {
             nchunks++;
@@ -549,6 +561,7 @@ static int decompress_single(int infd, int ofd, size_t len)
     }
 
 endfunc:
+    if (c.thr) pthread_join(c.thr, NULL);
     #if _USE_FREE
     _inflate_end(&strm);
     free(inbuf);
@@ -1025,8 +1038,15 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 // === sequential gunzip =======================================================
 
     /* stdin fallback, but table can be available on shorts files */
-    if (opt_decompress)
-        return decompress_single(infd, ofd, max_out_size);
+    if (opt_decompress) {
+        int ret = inflate_stream(infd, ofd, max_out_size);
+        if(!ret && !opt_keep)
+        {
+            if(unlink(filename))
+                perror("unlink");
+        }
+        return ret;
+    }
 
 // =============================================================================
 // Threads
