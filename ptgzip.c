@@ -482,52 +482,74 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 /* RAF
  *******************************************************************************
 
-    $ make _test-clean _test-basic speed-gunzp
+  $ make _test-clean _test-basic speed-gunzp
 
-    CURRENT TOP-SPEED (2710)
+  CURRENT TOP-SPEED (2710)
 
-    Baseline sum-up 2479 on 4 speeds, top speed 2710 which is +9.3%:
+  Baseline sum-up 2479 on 4 speeds, top speed 2710 which is +9.3%:
 
-    278937600 bytes (279 MB, 266 MiB) copied, 0.414000 s, 674 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.411370 s, 678 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.411199 s, 678 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.410411 s, 680 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.414000 s, 674 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.411370 s, 678 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.411199 s, 678 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.410411 s, 680 MB/s
 
-    INPUT READ-AHEAD  (2680)
+  INPUT READ-AHEAD  (2680)
 
-    278937600 bytes (279 MB, 266 MiB) copied, 0.414614 s, 673 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.421616 s, 662 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.413728 s, 674 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.415963 s, 671 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.414614 s, 673 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.421616 s, 662 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.413728 s, 674 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.415963 s, 671 MB/s
 
-    CHUCKS SPLITTING
+  CHUCKS SPLITTING
 
-    #0 (2697)
-    278937600 bytes (279 MB, 266 MiB) copied, 0.414493 s, 673 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.412130 s, 677 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.413649 s, 674 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.414243 s, 673 MB/s
+  #0 (2697)
+  278937600 bytes (279 MB, 266 MiB) copied, 0.414493 s, 673 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.412130 s, 677 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.413649 s, 674 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.414243 s, 673 MB/s
 
-    #1 (2383)
-    278937600 bytes (279 MB, 266 MiB) copied, 0.466169 s, 598 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.463225 s, 602 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.463858 s, 601 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.478978 s, 582 MB/s
+  #1 (2383)
+  278937600 bytes (279 MB, 266 MiB) copied, 0.466169 s, 598 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.463225 s, 602 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.463858 s, 601 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.478978 s, 582 MB/s
 
-    #2 (2407)
-    278937600 bytes (279 MB, 266 MiB) copied, 0.468027 s, 596 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.460823 s, 605 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.463540 s, 602 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.461731 s, 604 MB/s
+  #2 (2407)
+  278937600 bytes (279 MB, 266 MiB) copied, 0.468027 s, 596 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.460823 s, 605 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.463540 s, 602 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.461731 s, 604 MB/s
 
-    #3 (2485)
-    278937600 bytes (279 MB, 266 MiB) copied, 0.447942 s, 623 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.448146 s, 622 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.447137 s, 624 MB/s
-    278937600 bytes (279 MB, 266 MiB) copied, 0.452564 s, 616 MB/s
+  #3 (2485)
+  278937600 bytes (279 MB, 266 MiB) copied, 0.447942 s, 623 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.448146 s, 622 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.447137 s, 624 MB/s
+  278937600 bytes (279 MB, 266 MiB) copied, 0.452564 s, 616 MB/s
 
-    TODO:
-    - Stop seeking when a 2nd chunk isn't found in MAX_CHUNK_SIZE, isn't PTGZ
+  NOTE:
+
+  A quick confrontation of ptgzip (zlib-ng), plgzip (zlib) and pigz shows
+  the current performance of the sequential inflate is almost totally due
+  the adoption of the zlib-ng. Unsurprisingly, since no extra-parallelism
+  has been introduced yet, apart from threading the writing.
+
+  $ make _test-clean _test-basic speed-gunzp CMD2T=/bin/pigz
+  $ make _test-clean _test-basic speed-gunzp CMD2T=./plgzip
+  $ make _test-clean _test-basic speed-gunzp
+
+  ptgzip -d is 1.7x faster than pigz, w/o PTGZ format support which will
+  enable ptgzip -d to concurrently write on the inflating file also leveraging
+  mmap() if enabled or available, while write on STDOUT will remain necessarily
+  sequentially but the pthread_jon() can be demanded to a supervisor thread.
+
+  While the inflate_stream() will continue to process chunksi in a sequential
+  manner which is compatible with a STDIN input stream of data. Otherwise, also
+  the chunks inflating could be parallelised as already compress() does.
+
+  Finally, ptgzip -d w/o PTGZ is 3.0x faster than gzip, on i5-8365.
+
+  TODO:
+  - Stop seeking when a 2nd chunk isn't found in MAX_CHUNK_SIZE, isn't PTGZ
 
  *******************************************************************************
 */

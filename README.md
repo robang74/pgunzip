@@ -181,7 +181,7 @@ In short, `ptgzip` architectural simplicity, due to 100% back-compatibility infl
 New PTGZ format version to support the 64-bit input/output file range
 
 ```
-roberto@x280[0]:~/robang74/pgunzip$ make _test-clean test-basic
+$ make _test-clean test-basic
 
 === ./ptgzip file sanity check ===
 
@@ -207,6 +207,20 @@ roberto@x280[0]:~/robang74/pgunzip$ tail -c160 libz.tar.gz | hexdump -C
 00000090  b9 81 68 85 24 00 00 00  e8 f0 03 00 70 74 67 7a  |..h.$.......ptgz|
 000000a0
 ```
+
+A quick confrontation of ptgzip (zlib-ng), plgzip (zlib) and pigz shows the current performance of the sequential inflate is almost totally due the adoption of the zlib-ng. Unsurprisingly, since no extra-parallelism has been introduced yet, apart from threading the writing.
+
+```
+$ make _test-clean _test-basic speed-gunzp CMD2T=/bin/pigz
+$ make _test-clean _test-basic speed-gunzp CMD2T=./plgzip
+$ make _test-clean _test-basic speed-gunzp
+```
+
+ptgzip -d is 1.7x faster than pigz, w/o PTGZ format support which will enable ptgzip -d to concurrently write on the inflating file also leveraging mmap() if enabled or available, while write on STDOUT will remain necessarily sequentially but the pthread_jon() can be demanded to a supervisor thread.
+
+While the inflate_stream() will continue to process chunksi in a sequential manner which is compatible with a STDIN input stream of data. Otherwise, also the chunks inflating could be parallelised as already compress() does.
+
+Finally, ptgzip -d w/o PTGZ is 3.0x faster than gzip, on i5-8365.
 
 <br>
 
