@@ -477,8 +477,8 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 
 static int decompress_single(int infd, int ofd)
 {
-    int ret;
-    ssize_t r;
+    int ret = Z_OK;
+    ssize_t w, r;
     _stream_t strm = {0};
     uint8_t  inbuf[UNZIN_CHUNK_SIZE];
     uint8_t outbuf[UNOUT_CHUNK_SIZE];
@@ -489,34 +489,38 @@ static int decompress_single(int infd, int ofd)
         return -1;
     }
 
-    do {
-        //RAF, TODO: in single thread read less than full could be faster
-        r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
-        if (!r) break;
-        strm.next_in  = inbuf;
-        strm.avail_in = r;
-        do {
-            strm.next_out  = outbuf;
-            strm.avail_out = UNOUT_CHUNK_SIZE;
-            ret = _inflate(&strm, Z_NO_FLUSH);
+    while (1) {
+        if (!strm.avail_in) { // feed the input buffer
+            r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
+            if (!r) break; // EOF
+            strm.next_in  = inbuf;
+            strm.avail_in = r;
+        }
 
-            if (ret < 0) {
-                perror("inflate");
+        strm.next_out  = outbuf;
+        strm.avail_out = UNOUT_CHUNK_SIZE;
+
+        ret = _inflate(&strm, Z_NO_FLUSH);
+        if (ret < 0 && ret == Z_DATA_ERROR && r < UNZIN_CHUNK_SIZE) {
+            _inflate_end(&strm);
+            return 0; // ignore the PTGZ table
+        }
+        if (ret < 0 && ret != Z_BUF_ERROR) {
+            fprintf(stderr, "inflate error: %d\n", ret);
+            break;
+        }
+
+        w = UNOUT_CHUNK_SIZE - strm.avail_out;
+        full_write(ofd, outbuf, w);
+
+        if (ret == Z_STREAM_END) {
+            _inflate_end(&strm); // anoher chunk?
+            if (_inflate_init2(&strm, 15 + 16) != Z_OK)
                 break;
-            }
-            if (ret != Z_OK
-            &&  ret != Z_STREAM_END
-            &&  ret != Z_BUF_ERROR)
-                break;
+        }
+    }
 
-            r = UNOUT_CHUNK_SIZE - strm.avail_out;
-            full_write(ofd, outbuf, r);
-        } while (!strm.avail_out);
-    } while (ret != Z_STREAM_END);
-
-endfunc:
-    _inflate_end(&strm);
-    return ret - Z_STREAM_END;
+    return !!(ret - Z_STREAM_END);
 }
 
 // =============================================================================
