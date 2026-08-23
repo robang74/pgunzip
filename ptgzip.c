@@ -230,12 +230,11 @@ static void *thread_compress(void *arg)
     CPU_ZERO(&cpuset);
     CPU_SET(c->idx % cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-#if 0
+
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
         goto release;
     }
-#endif
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory.
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
@@ -266,7 +265,7 @@ static void *thread_compress(void *arg)
         if (posix_memalign((void **)&c->out, 64, c->out_cap))
             c->out = NULL;
         if (!c->out) {
-            perror("malloc out buf");
+            perror("malloc");
             c->error = -2;
             return NULL;
         }
@@ -297,9 +296,9 @@ if(strm.total_out)
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END) {
+    if (ret != Z_STREAM_END /* && ret != Z_BUF_ERROR && ret != Z_OK */) {
         perror("deflate");
-        c->error = ret | (1<<9); //RAF: rarely it returns Z_OK = 0
+        c->error = ret; //RAF: rarely it returns Z_OK = 0
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -795,7 +794,7 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     len = sizeof(pgunz_t) + n;
     p   = malloc(len);
     if(!p) {
-        perror("malloc list");
+        perror("malloc");
         return p;
     }
 
@@ -918,6 +917,7 @@ static int opt_help       = 0;    /* -h, --help */
 static int opt_quiet      = 0;    /* -q, --quiet */
         // compression_level ;    /* -#, --fast (=1), --best (=9) */
 static int opt_keep       = 0;    /* -k, --keep */
+static int opt_force      = 0;    /* -f, --force */
 static int opt_memory     = 0;    /* -m, --memory (KiB) */
 static int opt_processes  = 0;    /* -p, --processes */
 static int opt_verbose    = 0;    /* -v, --verbose */
@@ -939,6 +939,7 @@ int main(int argc, char **argv)
         {"decompress",  no_argument,       NULL, 'd'},
         {"help",        no_argument,       NULL, 'h'},
         {"quiet",       no_argument,       NULL, 'q'},
+        {"force",       no_argument,       NULL, 'f'},
         {"fast",        no_argument,       NULL, '1'},
         {"best",        no_argument,       NULL, '9'},
         {"keep",        no_argument,       NULL, 'k'},
@@ -950,7 +951,7 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int ch = getopt_long(argc, argv, "cdhvqk123456789m:p:", longopts, NULL);
+        int ch = getopt_long(argc, argv, "cdfhvqk123456789m:p:", longopts, NULL);
         if(ch == -1) { filename = argv[optind]; break; }
         switch (ch) {
         case 'c':
@@ -958,6 +959,9 @@ int main(int argc, char **argv)
             break;
         case 'd':
             opt_decompress = 1;
+            break;
+        case 'f':
+            opt_force = 1;
             break;
         case '?':
         case 'h':
@@ -1049,7 +1053,7 @@ int main(int argc, char **argv)
             PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
         if (read_mmap_base == MAP_FAILED) {
             read_mmap_base = NULL;
-            perror("mmap infd");
+            perror("mmap");
         } else {
             // kernel keeps the mapping via vnode reference
             close(infd);
@@ -1130,7 +1134,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
         char *str = malloc(len);
         if(!str) {
-            perror("malloc strn");
+            perror("malloc");
             return 1;
         }
         if(opt_decompress) {
@@ -1173,7 +1177,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
             MAP_SHARED | MAP_POPULATE, ofd, 0);
         if (out_mmap_base == MAP_FAILED) {
             out_mmap_base = NULL;
-            perror("mmap out");
+            perror("mmap");
             break;
         }
 
