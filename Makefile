@@ -16,6 +16,7 @@ MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
 TARGETS   = $(TARGET) pxgzip plgzip pmgzip
+GZCMD     = $(shell command -v pigz gzip | head -n1)
 SRC       = ptgzip.c
 NTS      ?= 30
 
@@ -119,8 +120,11 @@ CMDVF  = > libz.tar.gz
 CMDVC  =
 endif
 
-libz.tar:
-	@tar cf libz.tar libz
+libz.tar: /bin/tar
+	@/bin/tar cf libz.tar libz
+
+libz.tar.gz: libz.tar
+	$(GZCMD) -nk libz.tar
 
 blkline:
 	@echo
@@ -134,6 +138,10 @@ devel: $(LIBZ_A)
 	@printf "\n==========================\n\n"
 	@make _test-clean || printf "\n>>> ERR=$$?\n"
 	@make  test-basic || printf "\n>>> ERR=$$?\n"
+	@printf "\n=========================="
+	@printf "\n=== test clean + gunzp ==="
+	@printf "\n==========================\n\n"
+	@make  test-gunzp || printf "\n>>> ERR=$$?\n"
 	@printf "\n=========================="
 	@printf "\n=== test clean + iocat ==="
 	@printf "\n==========================\n\n"
@@ -168,9 +176,6 @@ stress: libz.tar $(CMD2T)
     && time eval "$$cmd" >$$nl
 	@echo
 
-libz.tar.gz: libz.tar
-	/bin/gzip -nk libz.tar
-
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -d $(CMDVC)" && sync && \
@@ -198,6 +203,10 @@ _stress-iocat: libz.tar
 stress-iocat: iocat _stress-iocat blkline
 
 iocat-stress: stress-iocat
+
+/bin/tar:
+	@printf "\nERROR: $@ not installed, abort\n\n"
+	false
 
 /bin/pigz:
 	@printf "\nERROR: $@ not installed, abort\n\n"
@@ -230,6 +239,14 @@ _test-basic: libz.tar $(CMD2T)
 	@rm -f test.dz
 
 test-basic: _test-basic blkline
+
+_test-gunzp: libz.tar.gz $(CMD2T)
+	@printf "\n=== $(CMD2T) gunzp sanity check ===\n\n"
+	cat libz.tar.gz | $(CMD2T) -d -v $(CMDVC) | tee test.dz | wc -c
+	@diff test.dz libz.tar && echo ">>> Result: OK"
+	@rm -f test.dz
+
+test-gunzp: _test-gunzp blkline
 
 _test-inout: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"

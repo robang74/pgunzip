@@ -92,8 +92,6 @@ enum {
 #define _ONE_ZDF  1 //RAF: no difference in .gz size
 #endif
 
-#define _GZ_WRITE (!out_mmap_base)
-
 #ifndef _ZLIB_MEM
 #define _ZLIB_MEM 0 //RAF: =1 for zlib full agnosticy
 #endif
@@ -354,7 +352,7 @@ int chunk_write(chunk_t *c)
     }
 }
 
-static ALWAYS_INLINE
+static
 size_t full_write(int fd, const void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
@@ -474,15 +472,16 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 // gunzip
 // =============================================================================
 
-#define GUNZIP_CHUNK_SIZE (1 << 18)
+#define UNZIN_CHUNK_SIZE (1 << 18)
+#define UNOUT_CHUNK_SIZE zbuf_max_size(UNZIN_CHUNK_SIZE)
 
 static int decompress_single(int infd, int ofd)
 {
     int ret;
     ssize_t r;
     _stream_t strm = {0};
-    uint8_t  inbuf[GUNZIP_CHUNK_SIZE];
-    uint8_t outbuf[GUNZIP_CHUNK_SIZE];
+    uint8_t  inbuf[UNZIN_CHUNK_SIZE];
+    uint8_t outbuf[UNOUT_CHUNK_SIZE];
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
@@ -492,23 +491,26 @@ static int decompress_single(int infd, int ofd)
 
     do {
         //RAF, TODO: in single thread read less than full could be faster
-        r = full_read(infd, inbuf, GUNZIP_CHUNK_SIZE);
+        r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
+        if (!r) break;
         strm.next_in  = inbuf;
         strm.avail_in = r;
         do {
             strm.next_out  = outbuf;
-            strm.avail_out = sizeof(outbuf);
+            strm.avail_out = UNOUT_CHUNK_SIZE;
             ret = _inflate(&strm, Z_NO_FLUSH);
 
-            if (ret == Z_STREAM_ERROR)
+            if (ret < 0) {
+                perror("inflate");
                 break;
+            }
             if (ret != Z_OK
             &&  ret != Z_STREAM_END
             &&  ret != Z_BUF_ERROR)
                 break;
 
-            r = MIN_CHUNK_SIZE - strm.avail_out;
-            if (r) full_write(ofd, outbuf, r);
+            r = UNOUT_CHUNK_SIZE - strm.avail_out;
+            full_write(ofd, outbuf, r);
         } while (!strm.avail_out);
     } while (ret != Z_STREAM_END);
 
@@ -917,10 +919,8 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
 
     /* stdin fallback, but table can be available on shorts files */
-    if (opt_decompress && infd == STDIN_FILENO) {
-        int ret = decompress_single(infd, ofd);
-        return ret;
-    }
+    if (opt_decompress && infd == STDIN_FILENO)
+        return decompress_single(infd, ofd);
 
 // =============================================================================
 // Chunks
