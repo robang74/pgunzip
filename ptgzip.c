@@ -482,6 +482,7 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 
 #define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
 #define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
+#define _READ_HEAD 0
 
 static void *thread_chunk_write(void *arg)
 {
@@ -492,10 +493,10 @@ static void *thread_chunk_write(void *arg)
 
 static int inflate_stream(int infd, int ofd, size_t len)
 {
-    ssize_t w, r;
+    size_t w, r;
     uint8_t *inbuf  = NULL;
     uint8_t *outbuf = NULL;
-    int ret, nchunks = 0;
+    int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
 
@@ -513,17 +514,33 @@ static int inflate_stream(int infd, int ofd, size_t len)
 
     c.map = b_mmap_out | b_mmap_in;
     if(!len) c.map |= b_mmap_seek;
+#if _READ_HEAD
+    strm.next_in  = inbuf;
+    strm.avail_in = 0;
+#endif
     c.out = outbuf;
     c.ofd = ofd;
 
     while (1) {
+#if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
+        r = strm.avail_in;
+        if (!eof && r < MIN_CHUNK_SIZE) { // feed the input buffer
+            if (r) __builtin_memmove(inbuf, strm.next_in, r);
+            w = full_read(infd, inbuf + r, UNZIN_CHUNK_SIZE - r);
+            if (!w) eof = 1; // EOF
+            else strm.avail_in += w;
+            strm.next_in = inbuf;
+        }
+        if (eof && !strm.avail_in)
+            break;
+#else
         if (!strm.avail_in) { // feed the input buffer
             r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
             if (!r) break; // EOF
-            strm.next_in  = inbuf;
+            strm.next_in = inbuf;
             strm.avail_in = r;
-        }
-
+         }
+#endif
         strm.next_out  = outbuf;
         strm.avail_out = UNOUT_CHUNK_SIZE;
 
