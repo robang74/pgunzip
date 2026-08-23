@@ -800,6 +800,52 @@ int main(int argc, char **argv)
         break;
     }
 
+    /* ---- deal with the output file, when '-c' isn't among arguments ---- */
+    while (!opt_stdout) {
+        size_t len = strlen(names[0]) + 4;
+        char *str = malloc(len);
+        if(!str) {
+            perror("malloc strn");
+            return 1;
+        }
+        snprintf(str, len, "%s.gz", names[0]);
+        //RAF, TODO: to check the original file permissions, if any than STDIN
+        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
+        if (ofd < 0) {
+            perror("open");
+            return 1;
+        }
+        #if _USE_FREE
+        free(str); //RAF: this can be left at the exit() as well
+        str = NULL;
+        #endif
+
+        max_out_size = WBUF_MAX_SIZE * tot_chunks;
+        if(!max_out_size)
+            break;
+
+        /* 1. Pre-allocate max size for output mmap */
+        if (ftruncate(ofd, max_out_size) < 0) {
+            perror("ftruncate");
+            break;
+        }
+
+        if(_DNT_MMAP)
+            break;
+
+        /* 2. Map output file into virtual memory */
+        out_mmap_base = mmap(NULL, max_out_size,
+            PROT_READ  | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE, ofd, 0);
+        if (out_mmap_base == MAP_FAILED) {
+            out_mmap_base = NULL;
+            perror("mmap out");
+            break;
+        }
+
+        break;
+    }
+
     signal(SIGPIPE, SIG_IGN);
 
 // =============================================================================
@@ -869,63 +915,17 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, names[0]?:"(NULL)");
 #endif // ----------------------------------------------------------------------
 
-    chunk_t chunks[2][MAX_THREADS];
-    memset(chunks, 0, sizeof(chunks));
-
-    pgunz_t *ptbl = create_pgunz_table(tot_chunks);
-    uint32_t *list = ptbl->cur.list;
-
-    /* ---- deal with the output file, when '-c' isn't among arguments ---- */
-    while (!opt_stdout) {
-        size_t len = strlen(names[0]) + 4;
-        char *str = malloc(len);
-        if(!str) {
-            perror("malloc strn");
-            return 1;
-        }
-        snprintf(str, len, "%s.gz", names[0]);
-        //RAF, TODO: to check the original file permissions, if any than STDIN
-        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
-        if (ofd < 0) {
-            perror("open");
-            return 1;
-        }
-        #if _USE_FREE
-        free(str); //RAF: this can be left at the exit() as well
-        str = NULL;
-        #endif
-
-        max_out_size = WBUF_MAX_SIZE * tot_chunks;
-        if(!max_out_size)
-            break;
-
-        /* 1. Pre-allocate max size for output mmap */
-        if (ftruncate(ofd, max_out_size) < 0) {
-            perror("ftruncate");
-            break;
-        }
-
-        if(_DNT_MMAP)
-            break;
-
-        /* 2. Map output file into virtual memory */
-        out_mmap_base = mmap(NULL, max_out_size,
-            PROT_READ  | PROT_WRITE,
-            MAP_SHARED | MAP_POPULATE, ofd, 0);
-        if (out_mmap_base == MAP_FAILED) {
-            out_mmap_base = NULL;
-            perror("mmap out");
-            break;
-        }
-
-        break;
-    }
-
 // =============================================================================
 // Threads
 // =============================================================================
 
     int a = 0, next_idx = 0, current = 0;
+
+    chunk_t chunks[2][MAX_THREADS];
+    memset(chunks, 0, sizeof(chunks));
+
+    pgunz_t *ptbl = create_pgunz_table(tot_chunks);
+    uint32_t *list = ptbl->cur.list;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
 #if _THR_WAIT
