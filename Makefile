@@ -223,18 +223,20 @@ _test-clean:
 
 test-clean: _test-clean blkline
 
-_test-basic: libz.tar $(CMD2T)
+WZCAT := { ./ptgzip -kdc | tee test.dz | wc -c; }
+
+_test-basic: libz.tar $(CMD2T) ptgzip
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
-	$(CMD2T) libz.tar -v $(CMDVC) | zcat | tee test.dz | wc -c
+	$(CMD2T) libz.tar -v $(CMDVC) | $(WZCAT)
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) stdin sanity check ===\n\n"
-	cat libz.tar | $(CMD2T) -v $(CMDVC) | zcat | tee test.dz | wc -c
+	cat libz.tar | $(CMD2T) -v $(CMDVC) | $(WZCAT)
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 	@printf "\n=== $(CMD2T) file sanity check ===\n\n"
 	$(CMD2T) libz.tar -v $(CMDVF) && du -b libz.tar*
-	zcat libz.tar.gz | tee test.dz | wc -c
+	cat libz.tar.gz | $(WZCAT)
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz
 

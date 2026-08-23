@@ -747,11 +747,11 @@ static int opt_verbose    = 0;    /* -v, --verbose */
 static int opt_decompress = 0;    /* -d, --decompress */
 
 /* --- file list --- */
-static int   nfiles = 0;
-static char **names = NULL;
+
 
 int main(int argc, char **argv)
 {
+    char *filename = NULL;
     int ofd = STDOUT_FILENO;
     int infd = STDIN_FILENO;
     size_t max_out_size = 0;
@@ -777,7 +777,7 @@ int main(int argc, char **argv)
 
     while (1) {
         int ch = getopt_long(argc, argv, "cdhvqk123456789m:p:", longopts, NULL);
-        if(ch == -1) break; else nfiles--;
+        if(ch == -1) { filename = argv[optind]; break; }
         switch (ch) {
         case 'c':
             opt_stdout = 1;
@@ -785,8 +785,8 @@ int main(int argc, char **argv)
         case 'd':
             opt_decompress = 1;
             break;
-        case 'h':
         case '?':
+        case 'h':
             opt_help = 1;
             break;
         case 'L':
@@ -816,16 +816,11 @@ int main(int argc, char **argv)
         }
     }
 
-    /* collect remaining arguments as filenames */
-    names = &argv[optind];
-    nfiles += argc;
 #else // RAF: this branch was kept for testing _USE_OPT=1 performance impact
-    names = &argv[1];
-    nfiles = (names != NULL);
     opt_help = (argc < 2);
 #endif
 
-    if (opt_help || !nfiles) {
+    if (opt_help) {
         opt_quiet = 0;
         _print2("\n    Usage: %s [opts] <file>"
                 "\n     opts: -d, -#, -v, -q, -c, -h\n\n",
@@ -844,9 +839,9 @@ int main(int argc, char **argv)
     if (nthreads < 1)
         nthreads = 1;
 
-    while (names[0] && (names[0][0] != '-' || names[0][1]))
+    while (filename && (filename[0] != '-' || filename[1]))
     {
-        infd = open(names[0], O_RDONLY);
+        infd = open(filename, O_RDONLY);
         if (infd < 0) {
             perror("open");
             return 1;
@@ -888,21 +883,21 @@ int main(int argc, char **argv)
 
     /* ---- deal with the output file, when '-c' isn't among arguments ---- */
     while (!opt_stdout) {
-        ssize_t len = strlen(names[0]) + (opt_decompress ? -3 : 4);
+        ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
         char *str = malloc(len);
         if(!str) {
             perror("malloc strn");
             return 1;
         }
         if(opt_decompress) {
-            if(len < 0 || !strstr(".gz", &names[0][len])) {
+            if(len < 0 || !strstr(".gz", &filename[len])) {
                 fprintf(stderr, "Fatal: not a '.gz' terminated file name\n");
                 return 1;
             }
-            strncpy(str, names[0], len);
+            strncpy(str, filename, len);
             str[len] = 0;
         } else {
-            snprintf(str, len, "%s.gz", names[0]);
+            snprintf(str, len, "%s.gz", filename);
         }
         //RAF, TODO: to check the original file permissions, if any than STDIN
         ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
@@ -944,7 +939,7 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
 
     /* stdin fallback, but table can be available on shorts files */
-    if (opt_decompress && infd == STDIN_FILENO)
+    if (opt_decompress)
         return decompress_single(infd, ofd);
 
 // =============================================================================
@@ -1011,7 +1006,7 @@ int main(int argc, char **argv)
 float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
-    x, infd, names[0]?:"(NULL)");
+    x, infd, filename?:"(NULL)");
 #endif // ----------------------------------------------------------------------
 
 // =============================================================================
@@ -1065,7 +1060,7 @@ do_another_loop:
 
         if (c->error) {
             _print2("file: '%s'\n    compression failed on chunk %d,"
-                " size: %lu, err: %d\n", names[0], current + i,
+                " size: %lu, err: %d\n", filename, current + i,
                     c->out_len, c->error);
             return c->error;
         }
