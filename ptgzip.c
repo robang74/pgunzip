@@ -472,21 +472,27 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 // gunzip
 // =============================================================================
 
-#define UNZIN_CHUNK_SIZE (1 << 18)
-#define UNOUT_CHUNK_SIZE zbuf_max_size(UNZIN_CHUNK_SIZE)
+#define UNZIN_CHUNK_SIZE  MIN_CHUNK_SIZE
+#define UNOUT_CHUNK_SIZE  MAX_CHUNK_SIZE
 
 static int decompress_single(int infd, int ofd)
 {
-    int ret = Z_OK;
     ssize_t w, r;
     _stream_t strm = {0};
-    uint8_t  inbuf[UNZIN_CHUNK_SIZE];
-    uint8_t outbuf[UNOUT_CHUNK_SIZE];
+    uint8_t *inbuf  = NULL;
+    uint8_t *outbuf = NULL;
+    int ret, nchunks = 0;
+
+    if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE)
+    ||  posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
+        perror("malloc");
+        return -1;
+    }
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
         perror("inflateInit2");
-        return -1;
+        goto endfunc;
     }
 
     while (1) {
@@ -501,11 +507,9 @@ static int decompress_single(int infd, int ofd)
         strm.avail_out = UNOUT_CHUNK_SIZE;
 
         ret = _inflate(&strm, Z_NO_FLUSH);
-        if (ret < 0 && ret == Z_DATA_ERROR && r < UNZIN_CHUNK_SIZE) {
-            _inflate_end(&strm);
-            return 0; // ignore the PTGZ table
-        }
         if (ret < 0 && ret != Z_BUF_ERROR) {
+            if (ret == Z_DATA_ERROR && nchunks)
+                break; /* ignore trailing junk/ptgz table */
             fprintf(stderr, "inflate error: %d\n", ret);
             break;
         }
@@ -514,13 +518,22 @@ static int decompress_single(int infd, int ofd)
         full_write(ofd, outbuf, w);
 
         if (ret == Z_STREAM_END) {
-            _inflate_end(&strm); // anoher chunk?
-            if (_inflate_init2(&strm, 15 + 16) != Z_OK)
+            nchunks++;
+            _inflate_end(&strm);
+            if (_inflate_init2(&strm, 15 + 16) != Z_OK) {
+                ret = Z_STREAM_ERROR;
                 break;
+            }
         }
     }
 
-    return !!(ret - Z_STREAM_END);
+endfunc:
+    #if _USE_FREE
+    _inflate_end(&strm);
+    free(inbuf);
+    free(outbuf);
+    #endif
+    return !(ret == Z_STREAM_END || nchunks);
 }
 
 // =============================================================================
@@ -624,6 +637,7 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
         perror("malloc list");
         return p;
     }
+
     memset(p, 0, len);
     p->cur.size = nwords;
     u = (uint8_t *)p;

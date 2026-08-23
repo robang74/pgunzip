@@ -339,7 +339,7 @@ test-zsize: _test-zsize blkline
 # Cleanup
 # -----------------------------------------------------------------------------
 clean:
-	rm -f $(TARGETS)
+	rm -f $(TARGETS) libz.tar libz.tar.gz test.dz
 
 veryclean: clean
 	rm -rf libz minz/.sync
