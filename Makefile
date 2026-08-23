@@ -123,8 +123,9 @@ endif
 libz.tar: /bin/tar
 	@/bin/tar cf libz.tar libz
 
-libz.tar.gz: libz.tar
-	$(GZCMD) -n -k libz.tar
+libz.tar.gz: libz.tar ptgzip
+#	$(GZCMD) -nk libz.tar
+	./ptgzip -nk libz.tar
 
 blkline:
 	@echo

@@ -480,12 +480,17 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 // gunzip
 // =============================================================================
 
-#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
-#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
-#define _READ_HEAD 0
-
 /* RAF
  *******************************************************************************
+
+    CURRENT TOP-SPEED
+
+    Baseline sum-up 2479 on 4 speeds, top speed 2710 which is +9.3%:
+
+    278937600 bytes (279 MB, 266 MiB) copied, 0.414000 s, 674 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.411370 s, 678 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.411199 s, 678 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.410411 s, 680 MB/s
 
     INPUT READ-AHEAD
 
@@ -534,8 +539,36 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
     278937600 bytes (279 MB, 266 MiB) copied, 0.437531 s, 638 MB/s
     278937600 bytes (279 MB, 266 MiB) copied, 0.435196 s, 641 MB/s
 
+    THE CHUNK SEEKER
+
+    Having created an always inline function chunk_seeker() for seeking
+    the next chunk allows the compiler to optimise the code specifically
+    for that routine which was the performance bottleneck but hits -3.8%.
+
+    278937600 bytes (279 MB, 266 MiB) copied, 0.464604 s, 600 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.467879 s, 596 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.478457 s, 583 MB/s
+    278937600 bytes (279 MB, 266 MiB) copied, 0.460692 s, 605 MB/s
+
  *******************************************************************************
 */
+
+#include <endian.h>
+
+static ALWAYS_INLINE
+uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
+{
+    p++;
+    for (register uint32_t n = 1; n < r; n++, p++) {
+#if __BYTE_ORDER == __BIG_ENDIAN
+        if ((*(uint32_t *)p & 0xFFFFFF00) == 0x1F8B0800)
+#else
+        if ((*(uint32_t *)p & 0x00ffffff) == 0x00088b1f)
+#endif
+        return n;
+    }
+    return 0;
+}
 
 static void *thread_chunk_write(void *arg)
 {
@@ -543,6 +576,10 @@ static void *thread_chunk_write(void *arg)
     c->error |= chunk_write(c);
     return NULL;
 }
+
+#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
+#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
+#define _READ_HEAD 0
 
 static int inflate_stream(int infd, int ofd, size_t len)
 {
@@ -601,21 +638,15 @@ static int inflate_stream(int infd, int ofd, size_t len)
             r = rmn + full_read(infd, inbuf + rmn, UNZIN_CHUNK_SIZE - rmn);
             if (!r) break; // EOF
 
-            set = 0;
-            rmn = 0;
-            strm.avail_in = r;
             strm.next_in = inbuf;
-
-            register uint8_t *p = inbuf + 1;
-            r -= 3; // to avoid the buffer overflow
-            for (register uint32_t n = 1; n < r; n++, p++) {
-                if (*(uint32_t *)p & 0xffffff00 == 0x1f8b0800)
-                {
-                    strm.avail_in = n;
-                    rmn = r - n + 3;
-                    set = n;
-                    break;
-                }
+//fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
+            set = chunk_seeker(inbuf, r -3);
+            if (set) {
+                strm.avail_in = set;
+                rmn = r - set;
+            } else {
+                strm.avail_in = r;
+                rmn = 0;
             }
         }
 #endif
