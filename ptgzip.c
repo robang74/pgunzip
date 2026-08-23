@@ -67,6 +67,7 @@ enum {
     b_mmap_none = 0,
     b_mmap_out  = 1,
     b_mmap_in   = 2,
+    b_mmap_seek = 8,
 };
 
 #ifndef _DEBUG
@@ -179,7 +180,6 @@ static int tot_chunks      = 0;
 
 static int compression_level = 6;
 static int chunk_write(chunk_t *c);
-static int decompress_single(int infd, int ofd);
 
 static
 size_t full_read(int fd, const void *buf, size_t len)
@@ -291,7 +291,7 @@ static void *thread_compress(void *arg)
 #endif
     ret = _deflate(&strm, Z_FINISH);
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x01 // -----------------------------------------------------------
 if(strm.total_out)
     fprintf(stderr, ">>> tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
 #endif // ----------------------------------------------------------------------
@@ -326,9 +326,16 @@ release:
     return NULL;
 }
 
-static ALWAYS_INLINE
+static
 int chunk_write(chunk_t *c)
 {
+    if(c->map & b_mmap_seek) {
+        if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
+            perror("ftruncate");
+            return 1;
+        }
+    }
+
     if(out_mmap_base) {
         uint8_t *dst = out_mmap_base + c->out_off;
         return !__builtin_memmove(dst, c->out, c->out_len);
@@ -349,7 +356,6 @@ int chunk_write(chunk_t *c)
             len -= w;
         }
         c->in_len = c->out_len - len;
-
         return !!len;
     }
 }
@@ -454,7 +460,7 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
         c->in_len = full_read(c->infd, c->in, c->in_len);
         if (!c->in_len) c->state = 3;
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
     }
@@ -477,13 +483,14 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 #define UNZIN_CHUNK_SIZE  MIN_CHUNK_SIZE
 #define UNOUT_CHUNK_SIZE  MAX_CHUNK_SIZE
 
-static int decompress_single(int infd, int ofd)
+static int decompress_single(int infd, int ofd, size_t len)
 {
     ssize_t w, r;
-    _stream_t strm = {0};
     uint8_t *inbuf  = NULL;
     uint8_t *outbuf = NULL;
-    int ret, nchunks = 0;
+    int err, ret, nchunks = 0;
+    _stream_t strm = {0};
+    chunk_t c = {0};
 
     if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE)
     ||  posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
@@ -496,6 +503,11 @@ static int decompress_single(int infd, int ofd)
         perror("inflateInit2");
         goto endfunc;
     }
+
+    c.map = b_mmap_out | b_mmap_in;
+    if(!len) c.map |= b_mmap_seek;
+    c.out = outbuf;
+    c.ofd = ofd;
 
     while (1) {
         if (!strm.avail_in) { // feed the input buffer
@@ -517,7 +529,14 @@ static int decompress_single(int infd, int ofd)
         }
 
         w = UNOUT_CHUNK_SIZE - strm.avail_out;
-        full_write(ofd, outbuf, w);
+        if(ofd == STDOUT_FILENO) {
+            err = (full_write(ofd, outbuf, w) < 0);
+        } else {
+            c.out_len = w;
+            err = chunk_write(&c);
+            c.out_off += w;
+        }
+        if(err) goto endfunc;
 
         if (ret == Z_STREAM_END) {
             nchunks++;
@@ -661,7 +680,7 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     *len = (nwords + 4) << 2;
 #endif
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x04 // -----------------------------------------------------------
     sum = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
@@ -725,7 +744,7 @@ pgunz_t *read_pgunz_table(int fd, int *err)
         return NULL;
     }
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x08 // -----------------------------------------------------------
 fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0], len);
 #endif // ----------------------------------------------------------------------
 
@@ -745,9 +764,6 @@ static int opt_memory     = 0;    /* -m, --memory (KiB) */
 static int opt_processes  = 0;    /* -p, --processes */
 static int opt_verbose    = 0;    /* -v, --verbose */
 static int opt_decompress = 0;    /* -d, --decompress */
-
-/* --- file list --- */
-
 
 int main(int argc, char **argv)
 {
@@ -839,6 +855,10 @@ int main(int argc, char **argv)
     if (nthreads < 1)
         nthreads = 1;
 
+    signal(SIGPIPE, SIG_IGN);
+
+// === open input file =========================================================
+
     while (filename && (filename[0] != '-' || filename[1]))
     {
         infd = open(filename, O_RDONLY);
@@ -863,7 +883,7 @@ int main(int argc, char **argv)
         }
         read_filesize = st.st_size;
 
-        if(_DNT_MMAP)
+        if(_DNT_MMAP || !read_filesize)
             break;
 
         // mmap entire file (zero-copy input for all threads)
@@ -881,70 +901,7 @@ int main(int argc, char **argv)
         break;
     }
 
-    /* ---- deal with the output file, when '-c' isn't among arguments ---- */
-    while (!opt_stdout) {
-        ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
-        char *str = malloc(len);
-        if(!str) {
-            perror("malloc strn");
-            return 1;
-        }
-        if(opt_decompress) {
-            if(len < 0 || !strstr(".gz", &filename[len])) {
-                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n");
-                return 1;
-            }
-            strncpy(str, filename, len);
-            str[len] = 0;
-        } else {
-            snprintf(str, len, "%s.gz", filename);
-        }
-        //RAF, TODO: to check the original file permissions, if any than STDIN
-        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
-        if (ofd < 0) {
-            perror("open");
-            return 1;
-        }
-        #if _USE_FREE
-        free(str); //RAF: this can be left at the exit() as well
-        str = NULL;
-        #endif
-
-        max_out_size = WBUF_MAX_SIZE * tot_chunks;
-        if(!max_out_size)
-            break;
-
-        /* 1. Pre-allocate max size for output mmap */
-        if (ftruncate(ofd, max_out_size) < 0) {
-            perror("ftruncate");
-            break;
-        }
-
-        if(_DNT_MMAP)
-            break;
-
-        /* 2. Map output file into virtual memory */
-        out_mmap_base = mmap(NULL, max_out_size,
-            PROT_READ  | PROT_WRITE,
-            MAP_SHARED | MAP_POPULATE, ofd, 0);
-        if (out_mmap_base == MAP_FAILED) {
-            out_mmap_base = NULL;
-            perror("mmap out");
-            break;
-        }
-
-        break;
-    }
-
-    signal(SIGPIPE, SIG_IGN);
-
-    /* stdin fallback, but table can be available on shorts files */
-    if (opt_decompress)
-        return decompress_single(infd, ofd);
-
-// =============================================================================
-// Chunks
-// =============================================================================
+// === input chunks split ======================================================
 
     // decide chunk size and total number of chunks
     size_t outlen = 0;
@@ -1002,12 +959,74 @@ int main(int argc, char **argv)
             nthreads = tot_chunks;
     }
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x10 // -----------------------------------------------------------
 float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
 #endif // ----------------------------------------------------------------------
+
+// === open output file ========================================================
+
+    while (!opt_stdout) {
+        ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
+        char *str = malloc(len);
+        if(!str) {
+            perror("malloc strn");
+            return 1;
+        }
+        if(opt_decompress) {
+            if(len < 0 || !strstr(".gz", &filename[len])) {
+                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n");
+                return 1;
+            }
+            strncpy(str, filename, len);
+        } else {
+            snprintf(str, len, "%s.gz", filename);
+        }
+        str[len] = 0;
+
+        //RAF, TODO: to check the original file permissions, if any than STDIN
+        ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
+        if (ofd < 0) {
+            perror("open");
+            return 1;
+        }
+        #if _USE_FREE
+        free(str); //RAF: this can be left at the exit() as well
+        str = NULL;
+        #endif
+
+        // RAF, TODO: the PTGZ determines the output file size
+        max_out_size = (opt_decompress ? 0 : WBUF_MAX_SIZE) * tot_chunks;
+
+        /* 1. Pre-allocate max size for output mmap */
+        if (ftruncate(ofd, max_out_size) < 0) {
+            perror("ftruncate");
+            break;
+        }
+
+        if(_DNT_MMAP || !max_out_size)
+            break;
+
+        /* 2. Map output file into virtual memory */
+        out_mmap_base = mmap(NULL, max_out_size,
+            PROT_READ  | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE, ofd, 0);
+        if (out_mmap_base == MAP_FAILED) {
+            out_mmap_base = NULL;
+            perror("mmap out");
+            break;
+        }
+
+        break;
+    }
+
+// === sequential gunzip =======================================================
+
+    /* stdin fallback, but table can be available on shorts files */
+    if (opt_decompress)
+        return decompress_single(infd, ofd, max_out_size);
 
 // =============================================================================
 // Threads
@@ -1098,7 +1117,7 @@ do_another_loop:
             }
         }
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x20 // -----------------------------------------------------------
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, tot_chunks, nthreads, c->idx, next_idx,
@@ -1116,7 +1135,7 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             continue;
         }
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x40 // -----------------------------------------------------------
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
     c->thr, ofd, next_idx, tot_chunks);
 #endif // ----------------------------------------------------------------------
@@ -1259,7 +1278,7 @@ write_table:
         outlen += full_write(ofd, (const void *)u, len);
     }
 
-#if _DEBUG // ------------------------------------------------------------------
+#if _DEBUG & 0x80 // -----------------------------------------------------------
     if(ofd != STDOUT_FILENO)
     {
         int err;
@@ -1276,9 +1295,10 @@ write_table:
 
 do_verbose:
     if(opt_verbose) {
-        fprintf(stderr, "%s, nthr:%u, size: %d x %zu = %ld, gz: %lu [%lu] (%0.1f%%),"
-            " zl:%d\n", libz_name, nthreads, next_idx, chunk_size, read_filesize,
-                outlen, len, (float)outlen*100/read_filesize, compression_level);
+        fprintf(stderr, "%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
+            " (%0.1f%%), zl:%d\n", libz_name, nthreads, tot_chunks,
+            next_idx, chunk_size, read_filesize, outlen, len, (float)
+            outlen * 100 / read_filesize, compression_level);
     }
 
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
