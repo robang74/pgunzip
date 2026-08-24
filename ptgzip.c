@@ -965,6 +965,7 @@ int main(int argc, char **argv)
         {"fast",        no_argument,       NULL, '1'},
         {"best",        no_argument,       NULL, '9'},
         {"keep",        no_argument,       NULL, 'k'},
+        {"no-name",     no_argument,       NULL, 'n'},
         {"verbose",     no_argument,       NULL, 'v'},
         {"license",     no_argument,       NULL, 'L'},
         {"memory",      required_argument, NULL, 'm'},
@@ -973,7 +974,7 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int ch = getopt_long(argc, argv, "cdfhvqk123456789m:p:", longopts, NULL);
+        int ch = getopt_long(argc, argv, "cdfhnvqk123456789m:p:", longopts, NULL);
         if(ch == -1) { filename = argv[optind]; break; }
         switch (ch) {
         case 'c':
