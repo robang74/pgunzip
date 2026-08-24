@@ -21,7 +21,7 @@ SRC       = ptgzip.c
 NTS      ?= 30
 
 CC       ?= gcc
-CFLAGS   ?= -g0 -O2 -s -falign-functions=32 $(EXTRA_CFLAGS)
+CFLAGS   ?= -g0 -O2 -s -falign-functions=32 -flto $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
@@ -34,6 +34,7 @@ MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 all: $(TARGETS)
 	@echo
 	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
+	@du -k libzall.a && printf "\t%s\n\n" "$$(file libzall.a)"
 
 # -----------------------------------------------------------------------------
 # source target: download tarball, extract, rename to libz/, build static lib
@@ -73,15 +74,14 @@ $(LIBZ_A): $(LIBZ_DIR)
 	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
-
 # cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
 # cmake --build build
 
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
-$(TARGET): $(SRC) $(LIBZ_A)
-	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) $(LIBZ_A) \
+$(TARGET): $(SRC) libzall.a
+	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) libzall.a \
 	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
 
 pxgzip: pxgzip.c
@@ -92,19 +92,37 @@ plgzip: ptgzip.c
 
 minz/.sync:
 	git submodule update --init --recursive
-	touch minz/.sync
+	touch $@
+
+ungz/.sync:
+	git submodule update --init --recursive
+	touch $@
 
 $(MINZ_DIR)/miniz.c: minz/.sync
 	cd minz && sh amalgamate.sh
 
-pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
-	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
+$(MINZ_DIR)/miniz.c.o: $(MINZ_DIR)/miniz.c
+	$(CC) $(CFLAGS) -c $< -o $<.o
 
-ungz/libungz.a:
+minz/libminz.a: $(MINZ_DIR)/miniz.c.o
+	$(AR) rcs $@ $<
+
+ungz/libungz.a: ungz/.sync
 	make -C ungz libungz.a
 
-pugzip: ptgzip.c ungz/libungz.a $(LIBZ_A)
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread ungz/libungz.a $(LIBZ_A) -D_USE_UNGZ=1
+libmerge.mri: $(LIBZ_A) minz/libminz.a ungz/libungz.a
+	@echo "CREATE libzall.a" > $@
+	@for i in $^; do echo "ADDLIB $$i"; done >> $@
+	@printf "SAVE\nEND\n" >> $@
+
+libzall.a: libmerge.mri
+	@$(AR) -M < $^
+
+pmgzip: ptgzip.c libzall.a
+	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
+
+pugzip: ptgzip.c libzall.a
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread -D_USE_UNGZ=1
 
 # -----------------------------------------------------------------------------
 # Tests

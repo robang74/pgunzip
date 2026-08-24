@@ -120,7 +120,7 @@ enum {
   #define _deflate       zng_deflate
   #define _stream_t      zng_stream
 #elif _USE_MNZ
-  #include <miniz.h>
+  #include "miniz.h"
   #define libz_name       "miniz"
   #define _deflate_init2  mz_deflateInit2
   #define _deflate_bound  mz_deflateBound
