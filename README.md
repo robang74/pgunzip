@@ -2,6 +2,10 @@
 
 Simplicity is the ultimate sophistication (cit.)
 
+> [!WARNING]
+>
+> This is a **experimental** project not aiming to be a product, but to be **demonstrative**. Therefore it is distributed in source only form and during compilation mixes stuff from different sources in a way that distributing the binaries could potentially infringe the licensing terms of those sources. However, **personal use** is fine, especially for study and research.
+
 ### Index
 
 - [Quick Overview](#quick-overview)
@@ -29,6 +33,9 @@ Its relative performances tend to improve in the real-world scenarios:
 - it is faster in compressing `/bin` files on a low-power consumer hardware
 - higher throughput ratios with a mild desktop background activity: 1.8x and **5.8x**
 - against `/bin`, it matches 85-to-**96%** of theoretical throughput speed increase
+- re-ordering the `PTGZ` table fields to act as header, creates a stand-alone new format
+
+The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
 <br>
 
