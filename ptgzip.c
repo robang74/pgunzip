@@ -587,8 +587,9 @@ static const char* ungz_file_reader(void *opaque, uint64_t *len) {
     return (const char *)ctx->buffer;
 }
 
-static int inflate_stream(int infd, int ofd, size_t len)
+static int ungz_inflate_stream(int infd, int ofd, size_t len)
 {
+    int ret = 0;
     uint8_t *inbuf = NULL;
     uint8_t *outbuf = NULL;
     chunk_t c = {0};
@@ -620,17 +621,14 @@ static int inflate_stream(int infd, int ofd, size_t len)
 
         if (avail == 0) {
             /* Check termination or error states */
-            if (state.status == PIGZ_STATUS_EOF) {
+            if (state.status == PIGZ_STATUS_EOF)
                 break;
-            }
             if (state.status  < PIGZ_STATUS_EOF) {
                 /* If multiple concatenated members were read,
                    ignore trailing junk errors */
-                if (c.idx > 0
-                && state.status == PIGZ_STATUS_BAD_HEADER) {
+                if (state.status == PIGZ_STATUS_BAD_HEADER)
                     break;
-                }
-                fprintf(stderr, "ungz error status: %d\n", state.status);
+                ret = state.status;
                 break;
             }
         }
@@ -640,14 +638,13 @@ static int inflate_stream(int infd, int ofd, size_t len)
 
         /* Retrieve pointer to decompressed data directly from ungz internal state */
         const char *decomp_ptr = pigz_consume(&state, chunk_len);
-        if (!decomp_ptr && chunk_len > 0) {
+        if (!decomp_ptr && chunk_len > 0)
             break;
-        }
 
         if (ofd == STDOUT_FILENO) {
-            if (full_write(ofd, decomp_ptr, chunk_len) < 0) {
-                goto endfunc;
-            }
+            ret = full_write(ofd, decomp_ptr, chunk_len);
+            if(ret < 0) goto endfunc;
+            else ret = 0;
         } else {
             if (c.thr) {
                 pthread_join(c.thr, NULL);
@@ -670,8 +667,10 @@ endfunc:
     free(inbuf);
     free(outbuf);
 #endif
-    return (state.status < PIGZ_STATUS_EOF && c.idx == 0) ? -1 : 0;
+    return ret;
 }
+
+#define inflate_stream ungz_inflate_stream
 
 #else //////////////////////////////////////////////////////////////////////////
 
@@ -702,7 +701,7 @@ static void *thread_chunk_write(void *arg)
 #define _SEEKER_FUNC  0
 #define _READ_AHEAD  (1 && !_SEEKER_FUNC)
 
-static int inflate_stream(int infd, int ofd, size_t len)
+static int zlib_inflate_stream(int infd, int ofd, size_t len)
 {
     size_t w, r, set = 0, rmn = 0;
     uint8_t *inbuf  = NULL;
@@ -853,6 +852,8 @@ endfunc:
     #endif
     return !(ret == Z_STREAM_END || nchunks);
 }
+
+#define inflate_stream zlib_inflate_stream
 
 #endif /////////////////////////////////////////////////////////////////////////
 
@@ -1332,6 +1333,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     /* stdin fallback, but table can be available on shorts files */
     if (opt_decompress) {
         int ret = inflate_stream(infd, ofd, max_out_size);
+        if(ret) _print2("inflate_stream error: %d\n", ret);
         if(!ret && !opt_keep)
         {
             if(unlink(filename))
