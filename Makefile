@@ -15,7 +15,7 @@ LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
-TARGETS   = $(TARGET) pxgzip plgzip pmgzip
+TARGETS   = $(TARGET) pxgzip plgzip pmgzip pugzip
 GZCMD     = $(shell command -v pigz gzip | head -n1)
 SRC       = ptgzip.c
 NTS      ?= 30
@@ -73,6 +73,10 @@ $(LIBZ_A): $(LIBZ_DIR)
 	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
+
+# cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
+# cmake --build build
+
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
@@ -95,6 +99,12 @@ $(MINZ_DIR)/miniz.c: minz/.sync
 
 pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
 	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
+
+ungz/libungz.a:
+	make -C ungz libungz.a
+
+pugzip: ptgzip.c ungz/libungz.a $(LIBZ_A)
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread ungz/libungz.a $(LIBZ_A) -D_USE_UNGZ=1
 
 # -----------------------------------------------------------------------------
 # Tests

@@ -108,6 +108,10 @@ enum {
 #define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
 
+#ifndef _USE_UNGZ
+#define _USE_UNGZ 0
+#endif
+
 #if   _USE_ZNG
   #include "zlib-ng.h"
   #define _deflate_init2 zng_deflateInit2
@@ -554,6 +558,123 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
  *******************************************************************************
 */
 
+#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
+#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
+
+#if _USE_UNGZ //////////////////////////////////////////////////////////////////
+
+#define UNGZ_IMPLEMENTATION
+#include "ungz/ungz.h"
+
+/* Context structure passed into the pigz_reader callback */
+typedef struct {
+    int fd;
+    uint8_t *buffer;
+    size_t buf_size;
+} reader_ctx_t;
+
+/* Callback function expected by ungz (pigz_reader) */
+static const char* ungz_file_reader(void *opaque, uint64_t *len) {
+    reader_ctx_t *ctx = (reader_ctx_t *)opaque;
+    ssize_t bytes_read = full_read(ctx->fd, ctx->buffer, ctx->buf_size);
+
+    if (bytes_read <= 0) {
+        *len = 0;
+        return NULL;
+    }
+
+    *len = (uint64_t)bytes_read;
+    return (const char *)ctx->buffer;
+}
+
+static int inflate_stream(int infd, int ofd, size_t len)
+{
+    uint8_t *inbuf = NULL;
+    uint8_t *outbuf = NULL;
+    chunk_t c = {0};
+    pigz_state state;
+    reader_ctx_t reader_ctx;
+
+    if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE) ||
+        posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
+        perror("malloc");
+        return -1;
+    }
+
+    /* Initialize chunk configuration */
+    c.map = b_mmap_out | b_mmap_in;
+    if (!len) c.map |= b_mmap_seek;
+    c.out = outbuf;
+    c.ofd = ofd;
+
+    /* Setup reader context and initialize ungz state */
+    reader_ctx.fd = infd;
+    reader_ctx.buffer = inbuf;
+    reader_ctx.buf_size = UNZIN_CHUNK_SIZE;
+
+    pigz_init(&state, &reader_ctx, ungz_file_reader);
+
+    while (1) {
+        /* Determine how many decompressed bytes are currently available */
+        uint64_t avail = pigz_available(&state);
+
+        if (avail == 0) {
+            /* Check termination or error states */
+            if (state.status == PIGZ_STATUS_EOF) {
+                break;
+            }
+            if (state.status  < PIGZ_STATUS_EOF) {
+                /* If multiple concatenated members were read,
+                   ignore trailing junk errors */
+                if (c.idx > 0
+                && state.status == PIGZ_STATUS_BAD_HEADER) {
+                    break;
+                }
+                fprintf(stderr, "ungz error status: %d\n", state.status);
+                break;
+            }
+        }
+
+        /* Clamp output chunk to worker buffer capacity */
+        uint64_t chunk_len = (avail > UNOUT_CHUNK_SIZE) ? UNOUT_CHUNK_SIZE : avail;
+
+        /* Retrieve pointer to decompressed data directly from ungz internal state */
+        const char *decomp_ptr = pigz_consume(&state, chunk_len);
+        if (!decomp_ptr && chunk_len > 0) {
+            break;
+        }
+
+        if (ofd == STDOUT_FILENO) {
+            if (full_write(ofd, decomp_ptr, chunk_len) < 0) {
+                goto endfunc;
+            }
+        } else {
+            if (c.thr) {
+                pthread_join(c.thr, NULL);
+                c.thr = 0;
+            }
+            /* Copy available output to chunk buffer for multi-threaded processing */
+            __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
+            c.out_len = chunk_len;
+            chunk_work_start(&c.thr, &c);
+            c.out_off += chunk_len;
+            c.idx++;
+        }
+    }
+
+endfunc:
+    if (c.thr) {
+        pthread_join(c.thr, NULL);
+    }
+#if _USE_FREE
+    free(inbuf);
+    free(outbuf);
+#endif
+    return (state.status < PIGZ_STATUS_EOF && c.idx == 0) ? -1 : 0;
+}
+
+#else //////////////////////////////////////////////////////////////////////////
+
 #include <endian.h>
 
 static ALWAYS_INLINE
@@ -577,9 +698,6 @@ static void *thread_chunk_write(void *arg)
     c->error |= chunk_write(c);
     return NULL;
 }
-
-#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
-#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
 
 #define _SEEKER_FUNC  0
 #define _READ_AHEAD  (1 && !_SEEKER_FUNC)
@@ -735,6 +853,8 @@ endfunc:
     #endif
     return !(ret == Z_STREAM_END || nchunks);
 }
+
+#endif /////////////////////////////////////////////////////////////////////////
 
 // =============================================================================
 // Prep
