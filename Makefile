@@ -6,16 +6,18 @@
 #   make distclean # remove binary, libz/ source tree and tarball
 
 VERSION  ?= 2.3.3
-ARCHIVE   = $(VERSION).tar.gz
+ZARCHIVE  = $(VERSION).tar.gz
 TARBALL   = zlib-ng-$(VERSION).tar.gz
-REPOURL   = https://github.com/robang74/zlib-ng/archive/refs/tags
-URL       = $(REPOURL)/$(ARCHIVE)
+REPOURL   = https://github.com/robang74
+ZURL      = $(REPOURL)/zlib-ng/archive/refs/tags/$(ZARCHIVE)
+BARCHIVE  = uchaosys.zip
+BURL      = $(REPOURL)/busybox/archive/refs/heads/$(BARCHIVE)
 LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
-TARGETS   = $(TARGET) pxgzip plgzip pmgzip pugzip
+TARGETS   = pxgzip plgzip bbox/gzip pmgzip pugzip $(TARGET)
 GZCMD     = $(shell command -v pigz gzip | head -n1)
 SRC       = ptgzip.c
 NTS      ?= 30
@@ -42,9 +44,14 @@ all: $(TARGETS)
 source: $(LIBZ_A)
 
 $(TARBALL):
-	@echo ">>> Downloading $(TARBALL) ..."
-	wget -O $@ $(URL) || curl -Lo $@ $(URL) || \
-		{ echo "Error: install wget or curl"; rm -f $(TARBALL); exit 1; }
+	@echo ">>> Downloading $@ ..."
+	wget -O $@ $(ZURL) || curl -Lo $@ $(ZURL) || \
+		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
+
+busybox.zip:
+	@echo ">>> Downloading $@ ..."
+	wget -O $@ $(BURL) || curl -Lo $@ $(BURL) || \
+		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
 
 $(LIBZ_DIR): $(TARBALL)
 	@echo ">>> Extracting $(TARBALL) -> $(LIBZ_DIR)/"
@@ -77,6 +84,13 @@ $(LIBZ_A): $(LIBZ_DIR)
 # cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
 # cmake --build build
 
+bbox: busybox.zip
+	unzip -q $^ && mv -f busybox-uchaosys/ $@/
+	cp -f $@/ubuntu/config.gzip $@/.config
+
+bbox/gzip: bbox/.config | bbox
+	cd $^ && make -j && mv busybox gzip
+
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
@@ -98,7 +112,7 @@ ungz/.sync:
 	git submodule update --init --recursive
 	touch $@
 
-$(MINZ_DIR)/miniz.c: minz/.sync
+$(MINZ_DIR)/miniz.c: | minz/.sync
 	cd minz && sh amalgamate.sh
 
 $(MINZ_DIR)/miniz.c.o: $(MINZ_DIR)/miniz.c
@@ -107,7 +121,7 @@ $(MINZ_DIR)/miniz.c.o: $(MINZ_DIR)/miniz.c
 minz/libminz.a: $(MINZ_DIR)/miniz.c.o
 	$(AR) rcs $@ $<
 
-ungz/libungz.a: ungz/.sync
+ungz/libungz.a: | ungz/.sync
 	make -C ungz libungz.a
 
 libmerge.mri: $(LIBZ_A) minz/libminz.a ungz/libungz.a
@@ -151,7 +165,7 @@ endif
 libz.tar: /bin/tar
 	@/bin/tar cf libz.tar libz
 
-libz.tar.gz: libz.tar ptgzip
+libz.tar.gz: | libz.tar ptgzip
 #	$(GZCMD) -nk libz.tar
 	./ptgzip -nk libz.tar
 
