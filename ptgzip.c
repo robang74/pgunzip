@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <semaphore.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -1379,6 +1380,18 @@ int main(int argc, char **argv)
     int nthreads;
     sem_t sem;
 
+    struct rlimit lim;
+
+    // Get current CPU limit (in seconds)
+    prlimit(0, RLIMIT_CPU, NULL, &lim);
+
+    // Bump soft limit up to the hard limit
+    if (lim.rlim_cur < lim.rlim_max) {
+        lim.rlim_cur = lim.rlim_max;
+        if (prlimit(0, RLIMIT_CPU, &lim, NULL))
+          perror("prlimit");
+    }
+
 #if _USE_OPT
     static struct option longopts[] = {
         {"stdout",      no_argument,       NULL, 'c'},
@@ -1588,7 +1601,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         if (ofd < 0) {
             ofd = 0;
             perror("open");
-        } 
+        }
     }
     else
     while (ofd && !opt_stdout) {
