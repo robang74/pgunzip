@@ -1510,6 +1510,9 @@ int main(int argc, char **argv)
         }
         read_filesize = st.st_size;
 
+        posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
+        posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
+
         if(_DNT_MMAP || !read_filesize)
             break;
 
@@ -1657,6 +1660,22 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         }
 
         break;
+    }
+
+
+    if (ofd == STDOUT_FILENO)
+    {
+#if 0
+        static char stdout_buf[1 << 20];  // 1MB buffer
+        setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
+#else
+        int pipesz = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
+        if (pipesz > 0 && pipesz < (1 << 20)) {
+            for (int target = 1 << 20; target >= pipesz; target >>= 1)
+                if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, target) == target)
+                    break;
+        }
+#endif
     }
 
 // =============================================================================
