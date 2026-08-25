@@ -1087,7 +1087,7 @@ The main idea behind ptgz_header() is about using a standard GZIP header
 #define PTGZ_HEADER_MIN_SIZE 20
 
 static
-const uint8_t *ptgz_header(uint32_t in_len, int16_t size)
+const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
 {
     static __thread uint8_t buf[PTGZ_HEADER_MIN_SIZE];
 
@@ -1128,6 +1128,35 @@ const uint8_t *ptgz_header(uint32_t in_len, int16_t size)
     buf[19] = (uint8_t)(in_len >> 24);
 
     return buf; // return a local value but it is fine
+}
+
+static
+uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
+{
+    uint16_t plen;
+
+    *size = 0;
+    *nbytes = 0;
+    if(!buf) return NULL;
+
+    if ( buf[0] != 0x1f ||   buf[1] != 0x8b
+    ||   buf[2] != 0x08 || !(buf[3]  & 0x04)
+    ||  buf[12] != 'p'  ||  buf[13] != 'z'
+    ){
+        return NULL;
+    } else {
+//      xlen = ((uint16_t)buf[11] << 8) | buf[10];
+        plen = ((uint16_t)buf[15] << 8) | buf[14];
+    }
+    if(plen < 4) return NULL;
+
+    *nbytes = plen;
+    *size = ( ((uint32_t)buf[16])       )
+          | ( ((uint32_t)buf[17]) <<  8 )
+          | ( ((uint32_t)buf[18]) << 16 )
+          | ( ((uint32_t)buf[19]) << 24 );
+
+    return &buf[20];
 }
 
 // =============================================================================
@@ -1420,7 +1449,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         }
         return ret;
     } else {
-        full_write(ofd, ptgz_header(chunk_size, 0), PTGZ_HEADER_MIN_SIZE);
+        full_write(ofd, ptgz_header_make(chunk_size, 0), PTGZ_HEADER_MIN_SIZE);
     }
 
 // =============================================================================
