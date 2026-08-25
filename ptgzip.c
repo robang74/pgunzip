@@ -1054,20 +1054,20 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 /* RAF
  *******************************************************************************
 
-The main idea behind ptgz_header() is about using a standard GZIP header
- crafted on RFC-1952 specifications which can contains a table of chunks
- or when the input is from STDIN the size of the reading chunk which will
- be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
+  The main idea behind ptgz_header() is about using a standard GZIP header
+  crafted on RFC-1952 specifications which can contains a table of chunks
+  or when the input is from STDIN the size of the reading chunk which will
+  be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
 
- $ printf ""   | gzip -c | wc -c
-    20
- $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
-    OK
+    $ printf ""   | gzip -c | wc -c
+       20
+    $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
+       OK
 
- Switching from appending a table to using the FEXTRA field in GZIP header,
- the simplest approach is to add that header as a void GZIP file which does
- not hurt the gzip inflating operations. The overhead is increased by an
- extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
+  Switching from appending a table to using the FEXTRA field in GZIP header,
+  the simplest approach is to add that header as a void GZIP file which does
+  not hurt the gzip inflating operations. The overhead is increased by an
+  extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
 
   +-----------------------------------------------------------------------+
   | Header FEXTRA (RFC-1952)                                              |
@@ -1081,10 +1081,15 @@ The main idea behind ptgz_header() is about using a standard GZIP header
   |  +-----------------------------------------------------------------+  |
   +-----------------------------------------------------------------------+
 
+  So, it seems that PTGZ  could be a 100% back-compatible format and also
+  being embedded into a RFC-1952 header while the 64-bit coverage range
+  and its memory burden spread among many PTGZ headers along the GZIP file,
+  every time the current table run out of fields.
+
  *******************************************************************************
 */
 
-#define PTGZ_HEADER_MIN_SIZE 20
+#define PTGZ_HEADER_MIN_SIZE 30
 
 static
 const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
@@ -1127,6 +1132,11 @@ const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
     buf[18] = (uint8_t)(in_len >> 16);
     buf[19] = (uint8_t)(in_len >> 24);
 
+    // 6. Termination 10 bytes
+    buf[20] = 0x03; buf[21] = 0x00; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    *(uint32_t *)&buf[22] = 0; // CRC32 = 0
+    *(uint32_t *)&buf[26] = 0; // ISIZE = 0
+
     return buf; // return a local value but it is fine
 }
 
@@ -1168,6 +1178,7 @@ static int opt_help       = 0;    /* -h, --help */
 static int opt_quiet      = 0;    /* -q, --quiet */
         // compression_level ;    /* -#, --fast (=1), --best (=9) */
 static int opt_keep       = 0;    /* -k, --keep */
+static int opt_test       = 0;    /* -t, --test */
 static int opt_force      = 0;    /* -f, --force */
 static int opt_memory     = 0;    /* -m, --memory (KiB) */
 static int opt_processes  = 0;    /* -p, --processes */
@@ -1193,6 +1204,7 @@ int main(int argc, char **argv)
         {"force",       no_argument,       NULL, 'f'},
         {"fast",        no_argument,       NULL, '1'},
         {"best",        no_argument,       NULL, '9'},
+        {"test",        no_argument,       NULL, 't'},
         {"keep",        no_argument,       NULL, 'k'},
         {"no-name",     no_argument,       NULL, 'n'},
         {"verbose",     no_argument,       NULL, 'v'},
@@ -1203,7 +1215,7 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int ch = getopt_long(argc, argv, "cdfhnvqk123456789m:p:", longopts, NULL);
+        int ch = getopt_long(argc, argv, "cdfhnvqtk123456789m:p:", longopts, NULL);
         if(ch == -1) { filename = argv[optind]; break; }
         switch (ch) {
         case 'c':
@@ -1214,6 +1226,9 @@ int main(int argc, char **argv)
             break;
         case 'f':
             opt_force = 1;
+            break;
+        case 't':
+            opt_test = 1;
             break;
         case '?':
         case 'h':
@@ -1374,11 +1389,22 @@ int main(int argc, char **argv)
     }
 
 #if _DEBUG & 0x10 // -----------------------------------------------------------
-float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
+float x = ((float)100 * (read_filesize % chunk_size)) / chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
 #endif // ----------------------------------------------------------------------
+
+    if (opt_decompress && opt_test)
+    {
+        uint8_t buf[PTGZ_HEADER_MIN_SIZE], *ptr;
+        uint16_t nbytes;
+        uint32_t size;
+        full_read(infd, buf, PTGZ_HEADER_MIN_SIZE);
+        ptr = ptgz_header_read(buf, &nbytes, &size);
+        _print2("PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
+        return !ptr;
+    }
 
 // === open output file ========================================================
 
@@ -1436,22 +1462,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         break;
     }
 
-// === sequential gunzip =======================================================
-
-    /* stdin fallback, but table can be available on shorts files */
-    if (opt_decompress) {
-        int ret = inflate_stream(infd, ofd, max_out_size);
-        if(ret) _print2("inflate_stream error: %d\n", ret);
-        if(!ret && !opt_keep && !opt_stdout)
-        {
-            if(unlink(filename))
-                perror("unlink");
-        }
-        return ret;
-    } else {
-        full_write(ofd, ptgz_header_make(chunk_size, 0), PTGZ_HEADER_MIN_SIZE);
-    }
-
 // =============================================================================
 // Threads
 // =============================================================================
@@ -1464,11 +1474,39 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     pgunz_t *ptbl = create_pgunz_table(tot_chunks);
     uint32_t *list = ptbl->cur.list;
 
+// === sequential gunzip =======================================================
+
+    /* stdin fallback, but table can be available on shorts files */
+    if (opt_decompress)
+    {
+        int ret = inflate_stream(infd, ofd, max_out_size);
+        if( ret) _print2("inflate_stream error: %d\n", ret);
+        if(!ret && !opt_keep && !opt_stdout && !opt_test)
+        {
+            if(unlink(filename))
+                perror("unlink");
+        }
+        return ret;
+    }
+    else
+    {
+         const uint32_t *ptr =
+        (const uint32_t *)ptgz_header_make(chunk_size, 0);
+        full_write(ofd, ptr, PTGZ_HEADER_MIN_SIZE);
+        _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
+        list[0] = PTGZ_HEADER_MIN_SIZE;
+        next_idx++;
+        current++;
+    }
+
+// =============================================================================
+
     /* setup chunk descriptors and output buffers, spawn worker threads */
 #if _THR_WAIT
     sem_init(&sem, 0, 0);
 #endif
-    for (uint32_t i = 0; i < nthreads; i++, current++) {
+    for (uint32_t i = 0; i < nthreads; i++, current++)
+    {
         chunk_t *c = &chunks[0][i];
         chunk_init(c, current, ofd, infd, &sem);
         if(c->state == 3) {
