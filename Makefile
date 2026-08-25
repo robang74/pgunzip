@@ -295,6 +295,19 @@ _test-basic: libz.tar $(CMD2T) ptgzip
 
 test-basic: _test-basic blkline
 
+_test-ptgz:
+	@printf "\n=== ./ptgzip PTGZ sanity check ===\n\n"
+	rm -f libz.tar libz.tar.gz
+	make -j libz.tar ptgzip >/dev/null
+	@echo
+	./ptgzip libz.tar -kv
+	head -c64 libz.tar.gz | hexdump -C
+	@echo
+	./ptgzip -dt libz.tar.gz
+	zcat libz.tar.gz | wc -c; echo ret=$$?
+
+test-ptgz: _test-ptgz blkline
+
 _test-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) gunzp sanity check ===\n\n"
 	cat libz.tar.gz | $(CMD2T) -dkfv $(CMDVC) | tee test.dz | wc -c
