@@ -39,6 +39,7 @@
 #define MAX_THREADS         16
 #define MAX_CHUNK_SIZE     (1UL << 18)     /* max target size per segment */
 #define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
+#define PTGZ_HEADER_SIZE    30
 
 static unsigned cpu_procs = 0;
 
@@ -414,10 +415,11 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->state = 1;
     c->idx = idx;
     c->error = 0;
-    c->sem_ptr = _THR_WAIT ? sem_ptr : NULL;
-    c->out_cap = zbuf_max_size(chunk_size);
-    c->out_off = WBUF_MAX_SIZE * idx; //(_USE_MMAP ? c->out_cap : chunk_size) * idx;
-    c->in_off  =                           chunk_size  * idx;
+    c->sem_ptr  = _THR_WAIT ? sem_ptr : NULL;
+    c->out_cap  = zbuf_max_size(chunk_size);
+    c->out_off  = WBUF_MAX_SIZE * idx;
+    c->in_off   =    chunk_size * idx;
+    c->out_off += PTGZ_HEADER_SIZE;
     if(infd != STDIN_FILENO) {
         c->in_len = (idx + 1 == tot_chunks)
                   ? (size_t)(read_filesize - c->in_off)
@@ -558,7 +560,9 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
  *******************************************************************************
 */
 
-#define UNZIN_CHUNK_SIZE  MAX_CHUNK_SIZE
+#define size_by_blocks(_len) ((((_len) + 511) >> 9) << 9)
+#define zread_max_size(_len) (zbuf_max_size(_len) + PTGZ_HEADER_SIZE + 4)
+#define UNZIN_CHUNK_SIZE size_by_blocks(zread_max_size(MAX_CHUNK_SIZE))
 #define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
 
 #if _USE_UNGZ //////////////////////////////////////////////////////////////////
@@ -869,41 +873,41 @@ endfunc:
 /* RAF ptzip v0.5
  *******************************************************************************
 
-    This structure implies a table which can map a certain range, which
-    determines also the  max file size, by the following consideration:
+  This structure implies a table which can map a certain range, which
+  determines also the  max file size, by the following consideration:
 
-    -> max size of chunk  * max number of words = max input  range
-    -> max size of offset * max number of words = max output range
+  -> max size of chunk  * max number of words = max input  range
+  -> max size of offset * max number of words = max output range
 
-typedef struct ALIGNED4 {
+  typedef struct ALIGNED4 {
     uint32_t  align4 // the content should start at 32-bit aligned file address
     uint16_t  magic1 // the magic number is divided in two halves bc appending
     uint16_t  npages // the size of the read expressed 4KiB memory pages 2^12
     uint32_t *chunks // pointer to the list of the chunks addresses in bytes
     uint16_t  nwords // number - 2 of words the list contains: 0,1 not useful
     uint16_t  magic2 // the magic number is divided in two halves bc appending
-} __attribute__ ((packed)) pgunz_t
+  } __attribute__ ((packed)) pgunz_t
 
-    Currently these two numbers are defined by the following choices:
+  Currently these two numbers are defined by the following choices:
 
-    -> 2^16 * 4KiB * 2^16 = 2^44 =  16 TB
-    -> 2^32        * 2^16 = 2^48 = 256 TB
+  -> 2^16 * 4KiB * 2^16 = 2^44 =  16 TB
+  -> 2^32        * 2^16 = 2^48 = 256 TB
 
-    There is an evident unbalance about these two ranges and moreover
-    the extention is way bigger than the common need. However in design
-    a format, its ability to scale fitting future needs isn't optional.
+  There is an evident unbalance about these two ranges and moreover
+  the extention is way bigger than the common need. However in design
+  a format, its ability to scale fitting future needs isn't optional.
 
-    Using two 32-bit plain values, both ranges raise to 64-bit addressing space.
+  Using two 32-bit plain values, both ranges raise to 64-bit addressing space.
 
-    Finally, when reading by STDIN, the size of the table cannot be determined
-    beforehands, then a linked list is required but it will consume 3x memory
-    compared a plain buffer which the max size is 16GB. While compressing N
-    chunks at time implies a limited amount of RAM despite the file in input
-    creating such table requires, in the worst case, write a separate file.
+  Finally, when reading by STDIN, the size of the table cannot be determined
+  beforehands, then a linked list is required but it will consume 3x memory
+  compared a plain buffer which the max size is 16GB. While compressing N
+  chunks at time implies a limited amount of RAM despite the file in input
+  creating such table requires, in the worst case, write a separate file.
 
-    For a 4GB (2^32) file in input, divided by 256KiB (2^18) chunks, the list
-    size is about 2^14 words equivalent to 64KiB which is a volume of memory
-    that it is fine to pre-allocate on end-users systems.
+  For a 4GB (2^32) file in input, divided by 256KiB (2^18) chunks, the list
+  size is about 2^14 words equivalent to 64KiB which is a volume of memory
+  that it is fine to pre-allocate on end-users systems.
 
  *******************************************************************************
  */
@@ -1054,15 +1058,15 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 /* RAF
  *******************************************************************************
 
-  The main idea behind ptgz_header() is about using a standard GZIP header
+The main idea behind ptgz_header() is about using a standard GZIP header
   crafted on RFC-1952 specifications which can contains a table of chunks
   or when the input is from STDIN the size of the reading chunk which will
   be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
 
-    $ printf ""   | gzip -c | wc -c
-       20
-    $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
-       OK
+ $ printf ""   | gzip -c | wc -c
+    20
+ $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
+    OK
 
   Switching from appending a table to using the FEXTRA field in GZIP header,
   the simplest approach is to add that header as a void GZIP file which does
@@ -1089,24 +1093,22 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
  *******************************************************************************
 */
 
-#define PTGZ_HEADER_MIN_SIZE 30
-
 static
 const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
 {
-    static __thread uint8_t buf[PTGZ_HEADER_MIN_SIZE];
+    static __thread uint8_t buf[PTGZ_HEADER_SIZE];
 
     // 1. Fixed Header GZIP 10 bytes
     buf[0] = 0x1f; // Magic bytes
     buf[1] = 0x8b;
-    buf[2] = 0x08; // Compression method: DEFLATE
-    buf[3] = 0x04; // FLG: 0x04 = FEXTRA enabled
-    buf[4] = 0x00; // MTIME
+    buf[2] = 0x08;                // Compression method: DEFLATE
+    buf[3] = 0x04;                // FLG: 0x04 = FEXTRA enabled
+    buf[4] = 0x00;                // MTIME
     buf[5] = 0x00;
     buf[6] = 0x00;
     buf[7] = 0x00;
-    buf[8] = 0x00; // XFL
-    buf[9] = 0x03; // OS
+    buf[8] = 0x00;                // XFL
+    buf[9] = 0x03;                // OS
 
     uint16_t plen = size ?: 4;
 
@@ -1389,7 +1391,7 @@ int main(int argc, char **argv)
     }
 
 #if _DEBUG & 0x10 // -----------------------------------------------------------
-float x = ((float)100 * (read_filesize % chunk_size)) / chunk_size;
+float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
@@ -1397,10 +1399,10 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     if (opt_decompress && opt_test)
     {
-        uint8_t buf[PTGZ_HEADER_MIN_SIZE], *ptr;
+        uint8_t buf[PTGZ_HEADER_SIZE], *ptr;
         uint16_t nbytes;
         uint32_t size;
-        full_read(infd, buf, PTGZ_HEADER_MIN_SIZE);
+        full_read(infd, buf, PTGZ_HEADER_SIZE);
         ptr = ptgz_header_read(buf, &nbytes, &size);
         _print2("PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
         return !ptr;
@@ -1438,7 +1440,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         #endif
 
         // RAF, TODO: the PTGZ determines the output file size
-        max_out_size = (opt_decompress ? 0 : WBUF_MAX_SIZE) * tot_chunks;
+        max_out_size  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * tot_chunks;
+        max_out_size += PTGZ_HEADER_SIZE;
 
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
@@ -1480,7 +1483,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if (opt_decompress)
     {
         int ret = inflate_stream(infd, ofd, max_out_size);
-        if( ret) _print2("inflate_stream error: %d\n", ret);
+        if(ret) _print2("inflate_stream error: %d\n", ret);
         if(!ret && !opt_keep && !opt_stdout && !opt_test)
         {
             if(unlink(filename))
@@ -1492,11 +1495,16 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     {
          const uint32_t *ptr =
         (const uint32_t *)ptgz_header_make(chunk_size, 0);
-        full_write(ofd, ptr, PTGZ_HEADER_MIN_SIZE);
+        full_write(ofd, ptr, PTGZ_HEADER_SIZE);
         _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
-        list[0] = PTGZ_HEADER_MIN_SIZE;
+#if 0
+        if(out_mmap_base)
+           out_mmap_base += PTGZ_HEADER_SIZE;
+
+        list[0] = PTGZ_HEADER_SIZE;
         next_idx++;
         current++;
+#endif
     }
 
 // =============================================================================
@@ -1674,8 +1682,8 @@ dispose:
      * Loop through all compressed chunk lengths stored in list[]
      */
     if(out_mmap_base) {
-        uint8_t *src = out_mmap_base;
-        uint8_t *dst = out_mmap_base + list[0]; /* Skip chunk 0 */
+        uint8_t *src = out_mmap_base + PTGZ_HEADER_SIZE;
+        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
@@ -1686,8 +1694,8 @@ dispose:
         outlen += dst - out_mmap_base;
     } else {
         int i;
-        off_t src = 0;
-        off_t dst = list[0]; /* Start immediately after Chunk 0 */
+        off_t src = PTGZ_HEADER_SIZE;
+        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
@@ -1708,6 +1716,7 @@ dispose:
         }
         outlen = dst;
     }
+    outlen += PTGZ_HEADER_SIZE;
 
 skip_reorgnz:
     /* Update outlen and truncate remaining sparse tail */
