@@ -239,10 +239,7 @@ Finally, ptgzip -d w/o PTGZ is 3.0x faster than gzip, on i5-8365.
 
 ### Development
 
-The main idea behind ptgz_header() is about using a standard GZIP header
- crafted on RFC-1952 specifications which can contains a table of chunks
- or when the input is from STDIN the size of the reading chunk which will
- be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
+The main idea behind ptgz_header() is about using a standard GZIP header crafted on RFC-1952 specifications which can contains a table of chunks or when the input is from STDIN the size of the reading chunk which will be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
 
 ```sh
  $ printf ""   | gzip -c | wc -c
@@ -251,24 +248,23 @@ The main idea behind ptgz_header() is about using a standard GZIP header
     OK
 ```
 
- Switching from appending a table to using the FEXTRA field in GZIP header,
- the simplest approach is to add that header as a void GZIP file which does
- not hurt the gzip inflating operations. The overhead is increased by an
- extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
+Switching from appending a table to using the FEXTRA field in GZIP header, the simplest approach is to add that header as a void GZIP file which does not hurt the gzip inflating operations. The overhead is increased by an extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
 
 ```
-  +-----------------------------------------------------------------------+
-  | Header FEXTRA (RFC-1952)                                              |
-  |                                                                       |
-  | [ XLEN (2B) ] = total size of the extra data                          |
-  |  +-----------------------------------------------------------------+  |
-  |  | Subfield PTGZ                                                   |  |
-  |  |                                                                 |  |
-  |  | [ ID  (2B: 'p','z') ]                                           |  |
-  |  | [ LEN (2B: payload) ] = size of this subfield only, eq. XLEN-4  |  |
-  |  +-----------------------------------------------------------------+  |
-  +-----------------------------------------------------------------------+
++-----------------------------------------------------------------------+
+| Header FEXTRA (RFC-1952)                                              |
+|                                                                       |
+| [ XLEN (2B) ] = total size of the extra data                          |
+|  +-----------------------------------------------------------------+  |
+|  | Subfield PTGZ                                                   |  |
+|  |                                                                 |  |
+|  | [ ID  (2B: 'p','z') ]                                           |  |
+|  | [ LEN (2B: payload) ] = size of this subfield only, eq. XLEN-4  |  |
+|  +-----------------------------------------------------------------+  |
++-----------------------------------------------------------------------+
 ```
+
+So, it seems that PTGZ  could be a 100% back-compatible format and also being embedded into a RFC-1952 header while the 64-bit coverage range and its memory burden spread among many PTGZ headers along the GZIP file, every time the current table run out of fields.
 
 <br>
 
