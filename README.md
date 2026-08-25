@@ -197,13 +197,6 @@ Despite the existing shortcomings, the v0.5 is capable of competing and in many 
 $ make _test-clean test-basic
 
 === ./ptgzip file sanity check ===
-
-./ptgzip libz.tar -v  && du -b libz.tar*
-zlib-ng, nthr: 8, size: 36 x 258280 = 9297920, gz: 2890092 [160] (31.1%), zl: 6
-9297920	libz.tar
-2890092	libz.tar.gz
-zcat libz.tar.gz | tee test.dz | wc -c
-9297920
 >>> Result: OK
 
 roberto@x280[0]:~/robang74/pgunzip$ tail -c160 libz.tar.gz | hexdump -C
@@ -265,6 +258,20 @@ Switching from appending a table to using the FEXTRA field in GZIP header, the s
 ```
 
 So, it seems that PTGZ  could be a 100% back-compatible format and also being embedded into a RFC-1952 header while the 64-bit coverage range and its memory burden spread among many PTGZ headers along the GZIP file, every time the current table run out of fields.
+
+```
+roberto@x280[0]:~/robang74/pgunzip$ make _test-clean _test-basic test-ptgz
+
+./ptgzip libz.tar -kv
+PTGZ> magic: 0x04088b1f, size: 258280
+zlib-ng, nth:8/36, file: 36 x 258280 = 9297920, gz: 2890152 [160] (31.1%), zl:6
+head -c64 libz.tar.gz | hexdump -C
+00000000  1f 8b 08 04 00 00 00 00  00 03 08 00 70 7a 04 00  |............pz..|
+00000010  e8 f0 03 00 03 00 00 00  00 00 00 00 00 00 1f 8b  |................|
+00000020  08 00 00 00 00 00 00 03  ec 3d 6b 77 da 48 b2 f3  |.........=kw.H..|
+00000030  59 bf a2 57 66 63 f0 5a  18 b0 cd 24 93 65 76 30  |Y..Wfc.Z...$.ev0|
+00000040
+```
 
 <br>
 
