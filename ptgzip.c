@@ -767,7 +767,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#define _SEEKER_FUNC  5
+#define _SEEKER_FUNC  0
 #define _READ_AHEAD  (0 && !_SEEKER_FUNC)
 
 static int zlib_inflate_stream(int infd, int ofd, size_t len)
@@ -779,33 +779,39 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
     _stream_t strm = {0};
     chunk_t c = {0};
 
-    /* ********************************************************** */
-    uint16_t nbytes;
-    uint32_t out_size, in_size;
-    uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0}, *ptr = NULL;
-
-    w = full_read(infd, buf, PTGZ_HEADER_SIZE);
-    if(w == PTGZ_HEADER_SIZE)
-        ptr = ptgz_header_read(buf, &nbytes, &in_size);
-    r = size_by_blocks(zread_max_size(MIN_CHUNK_SIZE));
-
-    if (!ptr || in_size < r) {
-        out_size = UNOUT_CHUNK_SIZE;
-        in_size  = UNZIN_CHUNK_SIZE;
-    } else {
-        in_size = size_by_blocks(zread_max_size(in_size));
-        r = size_by_blocks(in_size >> 2);
-        out_size = (r < MIN_CHUNK_SIZE) ? MIN_CHUNK_SIZE : r;
-        ptr = NULL;
-    }
-    /* ********************************************************** */
-
-    if (posix_memalign((void **)&inbuf,  64,  in_size)
-    ||  posix_memalign((void **)&outbuf, 64, out_size)) {
+    r = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
+    if (posix_memalign((void **)&inbuf,  64, r)
+    ||  posix_memalign((void **)&outbuf, 64, r)
+    ){
         perror("malloc");
         return -1;
     }
-    if(ptr && w) __builtin_memcpy(inbuf, buf, w);
+
+    /* ********************************************************** */
+    uint16_t nbytes;
+    uint32_t out_size, in_size;
+    uint8_t *ptr = NULL;
+
+    w = full_read(infd, outbuf, PTGZ_HEADER_SIZE);
+    if(w >= PTGZ_HEADER_SIZE) {
+        ptr = ptgz_header_read(outbuf, &nbytes, &in_size);
+        w  -= PTGZ_HEADER_SIZE;
+    }
+    if(w) __builtin_memcpy(inbuf, &outbuf[PTGZ_HEADER_SIZE], w);
+
+    if (!ptr || in_size < MIN_CHUNK_SIZE) {
+        out_size = UNOUT_CHUNK_SIZE;
+        in_size  = UNZIN_CHUNK_SIZE;
+    } else {
+        in_size  = size_by_blocks(zread_max_size(in_size));
+        out_size = size_by_blocks(in_size >> 2);
+        if(out_size < UNOUT_CHUNK_SIZE)
+           out_size = UNOUT_CHUNK_SIZE;
+    }
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
+#endif // ----------------------------------------------------------------------
+    /* ********************************************************** */
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
@@ -815,8 +821,8 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
 
     c.map = b_mmap_out | b_mmap_in;
     if(!len) c.map |= b_mmap_seek;
-    strm.next_in  = ptr ? &inbuf[PTGZ_HEADER_SIZE] : inbuf;
-    strm.avail_in = ptr ? w - PTGZ_HEADER_SIZE : 0;
+    strm.next_in  = inbuf;
+    strm.avail_in = w;
     c.out = outbuf;
     c.ofd = ofd;
 
