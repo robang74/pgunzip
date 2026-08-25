@@ -14,6 +14,7 @@
 
 #define _GNU_SOURCE
 
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 #define ALIGNED4      __attribute__ ((aligned(4)))
+#define ALIGNED8      __attribute__ ((aligned(8)))
 
 #define MAX_THREADS         16
 #define MAX_CHUNK_SIZE     (1UL << 18)     /* max target size per segment */
@@ -1058,15 +1060,15 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 /* RAF
  *******************************************************************************
 
-The main idea behind ptgz_header() is about using a standard GZIP header
+  The main idea behind ptgz_header() is about using a standard GZIP header
   crafted on RFC-1952 specifications which can contains a table of chunks
   or when the input is from STDIN the size of the reading chunk which will
   be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
 
- $ printf ""   | gzip -c | wc -c
-    20
- $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
-    OK
+$ printf ""   | gzip -c | wc -c
+   20
+$ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
+   OK
 
   Switching from appending a table to using the FEXTRA field in GZIP header,
   the simplest approach is to add that header as a void GZIP file which does
@@ -1090,23 +1092,45 @@ The main idea behind ptgz_header() is about using a standard GZIP header
   and its memory burden spread among many PTGZ headers along the GZIP file,
   every time the current table run out of fields.
 
+$ make _test-clean _test-basic test-ptgz
+./ptgzip libz.tar -kv
+PTGZ> magic: 0x04088b1f, size: 258280
+zlib-ng, nth:8/36, file: 36 x 258280 = 9297920, gz: 2890152 [160] (31.1%), zl:6
+head -c64 libz.tar.gz | hexdump -C
+00000000 [1f 8b] 08 04 00 00 00 00  00 03 08 00 70 7a  04 00  |............pz..|
+00000010  e8 f0  03 00 03 00 00 00  00 00 00 00 00 00 [1f 8b] |................|
+00000020  08 00  00 00 00 00 00 03  ec 3d 6b 77 da 48  b2 f3  |.........=kw.H..|
+00000030  59 bf  a2 57 66 63 f0 5a  18 b0 cd 24 93 65  76 30  |Y..Wfc.Z...$.ev0|
+00000040
+
+  The current table has 4 words (16 bytes) that are redundant when the PTGZ
+  format is embedded in the GZIP header. The current overhead is 4 words plus
+  a word for each record, in the embedded format would be 10 bytes + 3 bytes
+  for each record (2^24 offset range is 2 x 16 MB x 16 cores = 512 MB RAM max).
+
  *******************************************************************************
 */
 
 static
-const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
+const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
-    static __thread uint8_t buf[PTGZ_HEADER_SIZE];
+    static __thread uint8_t ALIGNED4 buf[PTGZ_HEADER_SIZE] = {0};
 
     // 1. Fixed Header GZIP 10 bytes
     buf[0] = 0x1f; // Magic bytes
     buf[1] = 0x8b;
     buf[2] = 0x08;                // Compression method: DEFLATE
     buf[3] = 0x04;                // FLG: 0x04 = FEXTRA enabled
-    buf[4] = 0x00;                // MTIME
-    buf[5] = 0x00;
-    buf[6] = 0x00;
-    buf[7] = 0x00;
+#if 0
+    //RAF this function is used one-time only, and buf = {0}
+    //*(uint32_t *)&buf[4] = 0;   // MTIME (32-bit aligned, =0)
+#else
+    // MTIME
+    buf[4] = (uint8_t)(ctm      );
+    buf[5] = (uint8_t)(ctm >>  8);
+    buf[6] = (uint8_t)(ctm >> 16);
+    buf[7] = (uint8_t)(ctm >> 24);
+#endif
     buf[8] = 0x00;                // XFL
     buf[9] = 0x03;                // OS
 
@@ -1128,16 +1152,21 @@ const uint8_t *ptgz_header_make(uint32_t in_len, int16_t size)
     buf[15] = (uint8_t)(plen >> 8);
 
     // 5. Payload Size Writing
-
     buf[16] = (uint8_t)(in_len      );
     buf[17] = (uint8_t)(in_len >>  8);
     buf[18] = (uint8_t)(in_len >> 16);
     buf[19] = (uint8_t)(in_len >> 24);
 
     // 6. Termination 10 bytes
-    buf[20] = 0x03; buf[21] = 0x00; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
-    *(uint32_t *)&buf[22] = 0; // CRC32 = 0
-    *(uint32_t *)&buf[26] = 0; // ISIZE = 0
+    buf[20] = 0x03; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+#if 0
+    buf[21] = 0x00;
+    buf[22] = 0x00; buf[23] = 0x00; buf[24] = 0x00; buf[25] = 0x00; // CRC32
+    buf[26] = 0x00; buf[27] = 0x00; buf[28] = 0x00; buf[29] = 0x00; // ISIZE
+#else
+    //RAF this function is used one-time only, and buf = {0}
+    //__builtin_memset(&buf[21], 0, PTGZ_HEADER_SIZE - 21);
+#endif
 
     return buf; // return a local value but it is fine
 }
@@ -1493,8 +1522,14 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     }
     else
     {
+        /* RAF
+         * The GZIP modify-time is a 32-bit unsigned value and therefore
+         * it will not overflow in the year 2038 but in 2106. So, we can
+         * use time() output as-is without worrying too much about 2038.
+         */
+        time_t utc = time(NULL);
          const uint32_t *ptr =
-        (const uint32_t *)ptgz_header_make(chunk_size, 0);
+        (const uint32_t *)ptgz_header_make(utc, chunk_size, 0);
         full_write(ofd, ptr, PTGZ_HEADER_SIZE);
         _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
 #if 0
