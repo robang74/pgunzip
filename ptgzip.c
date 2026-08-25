@@ -180,13 +180,17 @@ enum {
 #define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
 
 static uint8_t *read_mmap_base = NULL;
-static uint8_t *out_mmap_base = NULL;
-static off_t read_filesize = 0;
-static size_t chunk_size   = 0;
-static int tot_chunks      = 0;
+static uint8_t *out_mmap_base  = NULL;
+static off_t read_filesize     = 0;
+static size_t chunk_size       = 0;
+static int tot_chunks          = 0;
+static int compression_level   = 6;
 
-static int compression_level = 6;
 static int chunk_write(chunk_t *c);
+static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
+static const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
+
+// =============================================================================
 
 static
 size_t full_read(int fd, const void *buf, size_t len)
@@ -565,7 +569,7 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 #define size_by_blocks(_len) ((((_len) + 511) >> 9) << 9)
 #define zread_max_size(_len) (zbuf_max_size(_len) + PTGZ_HEADER_SIZE + 4)
 #define UNZIN_CHUNK_SIZE size_by_blocks(zread_max_size(MAX_CHUNK_SIZE))
-#define UNOUT_CHUNK_SIZE  MIN_CHUNK_SIZE
+#define UNOUT_CHUNK_SIZE                               MIN_CHUNK_SIZE
 
 #if _USE_UNGZ //////////////////////////////////////////////////////////////////
 
@@ -705,22 +709,44 @@ static void *thread_chunk_write(void *arg)
 }
 
 #define _SEEKER_FUNC  0
-#define _READ_AHEAD  (1 && !_SEEKER_FUNC)
+#define _READ_AHEAD  (0 && !_SEEKER_FUNC)
 
 static int zlib_inflate_stream(int infd, int ofd, size_t len)
 {
-    size_t w, r, set = 0, rmn = 0;
+    size_t r, w = 0, set = 0, rmn = 0;
     uint8_t *inbuf  = NULL;
     uint8_t *outbuf = NULL;
     int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
 
-    if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE)
-    ||  posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
+    /* ********************************************************** */
+    uint16_t nbytes;
+    uint32_t out_size, in_size;
+    uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0}, *ptr = NULL;
+
+    w = full_read(infd, buf, PTGZ_HEADER_SIZE);
+    if(w == PTGZ_HEADER_SIZE)
+        ptr = ptgz_header_read(buf, &nbytes, &in_size);
+    r = size_by_blocks(zread_max_size(MIN_CHUNK_SIZE));
+
+    if (!ptr || in_size < r) {
+        out_size = UNOUT_CHUNK_SIZE;
+        in_size  = UNZIN_CHUNK_SIZE;
+    } else {
+        in_size = size_by_blocks(zread_max_size(in_size));
+        r = size_by_blocks(in_size >> 2);
+        out_size = (r < MIN_CHUNK_SIZE) ? MIN_CHUNK_SIZE : r;
+        ptr = NULL;
+    }
+    /* ********************************************************** */
+
+    if (posix_memalign((void **)&inbuf,  64,  in_size)
+    ||  posix_memalign((void **)&outbuf, 64, out_size)) {
         perror("malloc");
         return -1;
     }
+    if(ptr && w) __builtin_memcpy(inbuf, buf, w);
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
@@ -730,10 +756,8 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
 
     c.map = b_mmap_out | b_mmap_in;
     if(!len) c.map |= b_mmap_seek;
-#if _READ_AHEAD
-    strm.next_in  = inbuf;
-    strm.avail_in = 0;
-#endif
+    strm.next_in  = ptr ? &inbuf[PTGZ_HEADER_SIZE] : inbuf;
+    strm.avail_in = ptr ? w - PTGZ_HEADER_SIZE : 0;
     c.out = outbuf;
     c.ofd = ofd;
 
@@ -743,7 +767,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
         r = strm.avail_in;
         if (!eof && r < MIN_CHUNK_SIZE) { // feed the input buffer
             if (r) __builtin_memmove(inbuf, strm.next_in, r);
-            w = full_read(infd, inbuf + r, UNZIN_CHUNK_SIZE - r);
+            w = full_read(infd, inbuf + r, in_size - r);
             if (!w) eof = 1; // EOF
             else strm.avail_in += w;
             strm.next_in = inbuf;
@@ -752,7 +776,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
             break;
         #else
         if (!strm.avail_in) { // feed the input buffer
-            r = full_read(infd, inbuf, UNZIN_CHUNK_SIZE);
+            r = full_read(infd, inbuf, in_size);
             if (!r) break; // EOF
             strm.next_in = inbuf;
             strm.avail_in = r;
@@ -761,7 +785,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
 #else // chunks splitting
         if (!strm.avail_in) { // feed the input buffer
             if (rmn) __builtin_memmove(inbuf, &inbuf[set], rmn);
-            r = rmn + full_read(infd, inbuf + rmn, UNZIN_CHUNK_SIZE - rmn);
+            r = rmn + full_read(infd, inbuf + rmn, in_size - rmn);
             if (!r) break; // EOF
 
             strm.next_in = inbuf;
@@ -814,7 +838,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
         }
 #endif
         strm.next_out  = outbuf;
-        strm.avail_out = UNOUT_CHUNK_SIZE;
+        strm.avail_out = out_size;
 
         ret = _inflate(&strm, Z_NO_FLUSH);
         if (ret < 0 && ret != Z_BUF_ERROR) {
@@ -824,7 +848,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
             break;
         }
 
-        w = UNOUT_CHUNK_SIZE - strm.avail_out;
+        w = out_size - strm.avail_out;
         if(ofd == STDOUT_FILENO) {
             if (full_write(ofd, outbuf, w) < 0)
                 goto endfunc;
@@ -1114,7 +1138,7 @@ head -c64 libz.tar.gz | hexdump -C
 static
 const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
-    static __thread uint8_t ALIGNED4 buf[PTGZ_HEADER_SIZE] = {0};
+    static __thread uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0};
 
     // 1. Fixed Header GZIP 10 bytes
     buf[0] = 0x1f; // Magic bytes
@@ -1428,9 +1452,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     if (opt_decompress && opt_test)
     {
-        uint8_t buf[PTGZ_HEADER_SIZE], *ptr;
-        uint16_t nbytes;
         uint32_t size;
+        uint16_t nbytes;
+        uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0}, *ptr;
         full_read(infd, buf, PTGZ_HEADER_SIZE);
         ptr = ptgz_header_read(buf, &nbytes, &size);
         _print2("PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
