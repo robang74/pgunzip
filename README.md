@@ -100,8 +100,8 @@ The semaphored (`_THR_WAIT=0`) way has been selected as the new default configur
 
 Meaning of `_THR_WAIT` compiling flag:
 
-- 0: wake up when a thread is ready (any)
-- 1: wait for a specific thread (ordered)
+- `0`: wake up when a thread is ready (any)
+- `1`: wait for a specific thread (ordered)
 
 The CRASH_FLAGS are the opposite of the new default
 
