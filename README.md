@@ -10,7 +10,7 @@ Simplicity is the ultimate sophistication (cit.)
 
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
-    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05)
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05) &dash; [Development](#development)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -234,6 +234,41 @@ ptgzip -d is 1.7x faster than pigz, w/o PTGZ format support which will enable pt
 While the inflate_stream() will continue to process chunksi in a sequential manner which is compatible with a STDIN input stream of data. Otherwise, also the chunks inflating could be parallelised as already compress() does.
 
 Finally, ptgzip -d w/o PTGZ is 3.0x faster than gzip, on i5-8365.
+
+---
+
+### Development
+
+The main idea behind ptgz_header() is about using a standard GZIP header
+ crafted on RFC-1952 specifications which can contains a table of chunks
+ or when the input is from STDIN the size of the reading chunk which will
+ be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
+
+```sh
+ $ printf ""   | gzip -c | wc -c
+    20
+ $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
+    OK
+```
+
+ Switching from appending a table to using the FEXTRA field in GZIP header,
+ the simplest approach is to add that header as a void GZIP file which does
+ not hurt the gzip inflating operations. The overhead is increased by an
+ extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
+
+```
+  +-----------------------------------------------------------------------+
+  | Header FEXTRA (RFC-1952)                                              |
+  |                                                                       |
+  | [ XLEN (2B) ] = total size of the extra data                          |
+  |  +-----------------------------------------------------------------+  |
+  |  | Subfield PTGZ                                                   |  |
+  |  |                                                                 |  |
+  |  | [ ID  (2B: 'p','z') ]                                           |  |
+  |  | [ LEN (2B: payload) ] = size of this subfield only, eq. XLEN-4  |  |
+  |  +-----------------------------------------------------------------+  |
+  +-----------------------------------------------------------------------+
+```
 
 <br>
 

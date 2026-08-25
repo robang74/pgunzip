@@ -483,7 +483,7 @@ void chunk_work_start(pthread_t *p, chunk_t *c)
 // gunzip
 // =============================================================================
 
-/* RAF
+/* RAF ptgzip v0.5
  *******************************************************************************
 
   $ make _test-clean _test-basic speed-gunzp
@@ -866,7 +866,7 @@ endfunc:
 #define TABLE_ITEMS ((uint32_t)tot_chunks + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 
-/* RAF
+/* RAF ptzip v0.5
  *******************************************************************************
 
     This structure implies a table which can map a certain range, which
@@ -1049,6 +1049,81 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 #endif // ----------------------------------------------------------------------
 
     return ptbl;
+}
+
+/* RAF
+ *******************************************************************************
+
+The main idea behind ptgz_header() is about using a standard GZIP header
+ crafted on RFC-1952 specifications which can contains a table of chunks
+ or when the input is from STDIN the size of the reading chunk which will
+ be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
+
+ $ printf ""   | gzip -c | wc -c
+    20
+ $ { printf "" | gzip -c; gzip -c libz.tar; } | gzip -dt && echo OK
+    OK
+
+ Switching from appending a table to using the FEXTRA field in GZIP header,
+ the simplest approach is to add that header as a void GZIP file which does
+ not hurt the gzip inflating operations. The overhead is increased by an
+ extra 20 bytes compared to the minimum needed, but it speeds-up devel/debug.
+
+  +-----------------------------------------------------------------------+
+  | Header FEXTRA (RFC-1952)                                              |
+  |                                                                       |
+  | [ XLEN (2B) ] = total size of the extra data                          |
+  |  +-----------------------------------------------------------------+  |
+  |  | Subfield PTGZ                                                   |  |
+  |  |                                                                 |  |
+  |  | [ ID  (2B: 'p','z') ]                                           |  |
+  |  | [ LEN (2B: payload) ] = size of this subfield only, eq. XLEN-4  |  |
+  |  +-----------------------------------------------------------------+  |
+  +-----------------------------------------------------------------------+
+
+ *******************************************************************************
+*/
+static
+const uint8_t *ptgz_header(uint32_t in_len, int16_t size)
+{
+    static __thread uint8_t buf[20];
+
+    // 1. Fixed Header GZIP 10 bytes
+    buf[0] = 0x1f; buf[1] = 0x8b; // Magic bytes
+    buf[2] = 0x08;                // Compression method: DEFLATE
+    buf[3] = 0x04;                // FLG: 0x04 = FEXTRA enabled
+    buf[4] = 0x00;                // MTIME
+    buf[5] = 0x00;
+    buf[6] = 0x00;
+    buf[7] = 0x00;
+    buf[8] = 0x00;                // XFL
+    buf[9] = 0x03;                // OS
+
+    uint16_t plen = size ?: 4;
+
+    // XLEN = Subfield ID (2B) + Subfield LEN (2B) + Payload Length
+    uint16_t xlen = size  + 4;
+
+    // 2. FEXTRA field: XLEN 2 bytes
+    buf[10] = (uint8_t)(xlen     );
+    buf[11] = (uint8_t)(xlen >> 8);
+
+    // 3. PTGZ Subfield ID 2 bytes
+    buf[12] = 'p';
+    buf[13] = 'z';
+
+    // 4. Subfield Payload Length 2 bytes
+    buf[14] = (uint8_t)(plen     );
+    buf[15] = (uint8_t)(plen >> 8);
+
+    // 5. Payload Size Writing
+
+    buf[16] = (uint8_t)(in_len      );
+    buf[17] = (uint8_t)(in_len >>  8);
+    buf[18] = (uint8_t)(in_len >> 16);
+    buf[19] = (uint8_t)(in_len >> 24);
+
+    return buf; // return a local value but it is fine
 }
 
 // =============================================================================
