@@ -273,6 +273,8 @@ head -c64 libz.tar.gz | hexdump -C
 00000040
 ```
 
+The current table has 4 words (16 bytes) that are redundant when the PTGZ format is embedded in the GZIP header. The current overhead is 4 words plus a word for each record, in the embedded format would be 10 bytes + 3 bytes for each record (2^24 offset range is 2 x 16 MB x 16 cores = 512 MB RAM max).
+
 <br>
 
 ## Deflating
