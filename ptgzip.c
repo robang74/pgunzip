@@ -748,41 +748,41 @@ endfunc:
 /* RAF
  *******************************************************************************
 
-    This structure implies a table which can map a certain range, which
-    determines also the  max file size, by the following consideration:
+  This structure implies a table which can map a certain range, which
+  determines also the  max file size, by the following consideration:
 
-    -> max size of chunk  * max number of words = max input  range
-    -> max size of offset * max number of words = max output range
+  -> max size of chunk  * max number of words = max input  range
+  -> max size of offset * max number of words = max output range
 
-typedef struct ALIGNED4 {
+  typedef struct ALIGNED4 {
     uint32_t  align4 // the content should start at 32-bit aligned file address
     uint16_t  magic1 // the magic number is divided in two halves bc appending
     uint16_t  npages // the size of the read expressed 4KiB memory pages 2^12
     uint32_t *chunks // pointer to the list of the chunks addresses in bytes
     uint16_t  nwords // number - 2 of words the list contains: 0,1 not useful
     uint16_t  magic2 // the magic number is divided in two halves bc appending
-} __attribute__ ((packed)) pgunz_t
+  } __attribute__ ((packed)) pgunz_t
 
-    Currently these two numbers are defined by the following choices:
+  Currently these two numbers are defined by the following choices:
 
-    -> 2^16 * 4KiB * 2^16 = 2^44 =  16 TB
-    -> 2^32        * 2^16 = 2^48 = 256 TB
+  -> 2^16 * 4KiB * 2^16 = 2^44 =  16 TB
+  -> 2^32        * 2^16 = 2^48 = 256 TB
 
-    There is an evident unbalance about these two ranges and moreover
-    the extention is way bigger than the common need. However in design
-    a format, its ability to scale fitting future needs isn't optional.
+  There is an evident unbalance about these two ranges and moreover
+  the extention is way bigger than the common need. However in design
+  a format, its ability to scale fitting future needs isn't optional.
 
-    Using two 32-bit plain values, both ranges raise to 64-bit addressing space.
+  Using two 32-bit plain values, both ranges raise to 64-bit addressing space.
 
-    Finally, when reading by STDIN, the size of the table cannot be determined
-    beforehands, then a linked list is required but it will consume 3x memory
-    compared a plain buffer which the max size is 16GB. While compressing N
-    chunks at time implies a limited amount of RAM despite the file in input
-    creating such table requires, in the worst case, write a separate file.
+  Finally, when reading by STDIN, the size of the table cannot be determined
+  beforehands, then a linked list is required but it will consume 3x memory
+  compared a plain buffer which the max size is 16GB. While compressing N
+  chunks at time implies a limited amount of RAM despite the file in input
+  creating such table requires, in the worst case, write a separate file.
 
-    For a 4GB (2^32) file in input, divided by 256KiB (2^18) chunks, the list
-    size is about 2^14 words equivalent to 64KiB which is a volume of memory
-    that it is fine to pre-allocate on end-users systems.
+  For a 4GB (2^32) file in input, divided by 256KiB (2^18) chunks, the list
+  size is about 2^14 words equivalent to 64KiB which is a volume of memory
+  that it is fine to pre-allocate on end-users systems.
 
  *******************************************************************************
  */
@@ -1212,7 +1212,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     /* stdin fallback, but table can be available on shorts files */
     if (opt_decompress) {
         int ret = inflate_stream(infd, ofd, max_out_size);
-        if(!ret && !opt_keep)
+        if(!ret && !opt_keep && !opt_stdout)
         {
             if(unlink(filename))
                 perror("unlink");
