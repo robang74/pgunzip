@@ -708,7 +708,66 @@ static void *thread_chunk_write(void *arg)
     return NULL;
 }
 
-#define _SEEKER_FUNC  0
+#include <immintrin.h>
+#include <stdint.h>
+#include <stddef.h>
+
+/**
+ * AVX2-accelerated Gzip header scanner.
+ * Searches for sequence: 0x1F 0x8B 0x08 starting from offset 1 up to 'r - 3'.
+ * Returns offset 'n' if found, otherwise 0.
+ */
+
+static ALWAYS_INLINE __attribute__((target("avx2")))
+uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
+    if (r < 4) return 0;
+
+    const uint32_t max_idx = r - 3;
+    uint32_t n = 1;
+
+    // 1. PROLOGUE: Scalar search until (p + n) reaches 32-byte alignment
+    while (n < max_idx && (((uintptr_t)(p + n)) & 31) != 0) {
+        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08) {
+            return n;
+        }
+        n++;
+    }
+
+    // 2. VECTOR SCAN: Aligned loads for maximum L1/L2 bandwidth
+    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
+    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
+    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+
+    for (; n + 31 < max_idx; n += 32) {
+        // Aligned load on chunk0; overlapping chunk1 and chunk2 use unaligned loads
+        // offset by 1 and 2 bytes relative to the aligned chunk0 pointer
+        __m256i chunk0 = _mm256_load_si256((const __m256i *)(p + n));
+        __m256i chunk1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
+        __m256i chunk2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
+
+        __m256i m0 = _mm256_cmpeq_epi8(chunk0, v_b0);
+        __m256i m1 = _mm256_cmpeq_epi8(chunk1, v_b1);
+        __m256i m2 = _mm256_cmpeq_epi8(chunk2, v_b2);
+
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), m2);
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
+
+        if (mask != 0) {
+            return n + __builtin_ctz(mask);
+        }
+    }
+
+    // 3. EPILOGUE: Scalar tail loop for remaining unaligned trailing bytes
+    for (; n < max_idx; n++) {
+        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08) {
+            return n;
+        }
+    }
+
+    return 0;
+}
+
+#define _SEEKER_FUNC  5
 #define _READ_AHEAD  (0 && !_SEEKER_FUNC)
 
 static int zlib_inflate_stream(int infd, int ofd, size_t len)
@@ -789,7 +848,9 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
             if (!r) break; // EOF
 
             strm.next_in = inbuf;
-//fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
+#endif // ----------------------------------------------------------------------
             #if   _SEEKER_FUNC == 1
             set = chunk_seeker(inbuf, r - 3);
             if (set) {
@@ -833,6 +894,62 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
                     set = n;
                     break;
                 }
+            }
+            #elif _SEEKER_FUNC == 4
+            /* RAF
+             * There is a chance that the 2nd chunk of two is found but this
+             * isn't a such trouble rather than a equilibration of the work
+             * among threads: similar loads provides a more balanced hurd.
+             *
+             * WARNING: for testing only, it is incompatible with PTGZ full
+             *          format specification which includes furhter tables.
+             * 
+             * The seeker function #4 is competitive with #5 even when AVX2
+             * is available, therefore the #3 should be used when another
+             * unmissable PTGZ header is expected to be found next.
+             */
+            set = 0;
+            rmn = 0;
+            strm.avail_in = r;
+            w = (r < 4) ? 0 : (r >> 1) - 2;
+            size_t f = 0, n = w + 1;
+            while(w) {
+                if ((inbuf[w  ] == 0x1f
+                &&   inbuf[w+1] == 0x8b
+                &&   inbuf[w+2] == 0x08)) {
+                    f = w;
+                    break;
+                }
+                if ((inbuf[n  ] == 0x1f
+                &&   inbuf[n+1] == 0x8b
+                &&   inbuf[n+2] == 0x08)) {
+                    f = n;
+                    break;
+                }
+                w--;
+                n++;
+            }
+            if(f) {
+                strm.avail_in = f;
+                rmn = r - f;
+                set = f;
+            }
+            #elif _SEEKER_FUNC == 5
+            /* RAF
+             * The results indicate that AVX2 chuck seeker makes inflate 2%
+             * slower compared to do not seek at all and process everything
+             * sequentially. However, elaborating by chunks allows to use
+             * libdeflate which is expected to be even faster than zlib-ng
+             * and enables the ability to increase the parallelization of
+             * the workload which currently isn't specifically leveraged
+             * as it has been for deflate.
+             */
+            rmn = 0;
+            strm.avail_in = r;
+            set = chunk_seeker_avx2(inbuf, r);
+            if(set) {
+                strm.avail_in = set;
+                rmn = r - set;
             }
             #endif
         }
