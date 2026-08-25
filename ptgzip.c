@@ -1125,7 +1125,7 @@ int main(int argc, char **argv)
             opt_keep = 1;
             break;
         case 'v':
-            opt_verbose = 1;
+            opt_verbose++;
             break;
         case 'm':
             opt_memory = (int)strtoul(optarg, NULL, 0);
@@ -1346,7 +1346,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 // Threads
 // =============================================================================
 
-    int a = 0, next_idx = 0, current = 0;
+    uint32_t next_idx = 0, current = 0;
 
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
@@ -1358,8 +1358,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 #if _THR_WAIT
     sem_init(&sem, 0, 0);
 #endif
-    for (int i = 0; i < nthreads; i++, current++) {
-        chunk_t *c = &chunks[a][i];
+    for (uint32_t i = 0; i < nthreads; i++, current++) {
+        chunk_t *c = &chunks[0][i];
         chunk_init(c, current, ofd, infd, &sem);
         if(c->state == 3) {
             c->state = 0;
@@ -1385,8 +1385,8 @@ do_a_thread_wait:
     _cpu_relax();
 #endif
 do_another_loop:
-    for(int a = 0; a < 2; a++)
-    for(int i = 0, b = !a; i < nthreads; i++)
+    for(uint32_t a = 0; a < 2; a++)
+    for(uint32_t i = 0, b = !a; i < nthreads; i++)
     {
         chunk_t *c  = &chunks[a][i];
         chunk_t *cb = &chunks[b][i];
@@ -1528,7 +1528,7 @@ dispose:
     if(out_mmap_base) {
         uint8_t *src = out_mmap_base;
         uint8_t *dst = out_mmap_base + list[0]; /* Skip chunk 0 */
-        for (int i = 1; i < next_idx; i++) {
+        for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -1540,7 +1540,7 @@ dispose:
         int i;
         off_t src = 0;
         off_t dst = list[0]; /* Start immediately after Chunk 0 */
-        for (int i = 1; i < next_idx; i++) {
+        for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -1609,12 +1609,46 @@ write_table:
 
 do_verbose:
     if(opt_verbose) {
-        fprintf(stderr, "%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
+        _print2("%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
             " (%0.1f%%), zl:%d\n", libz_name, nthreads, tot_chunks,
             next_idx, chunk_size, read_filesize, outlen, len, (float)
             outlen * 100 / read_filesize, compression_level);
+
+        if(opt_verbose < 2 || !list)
+            goto do_free;
+        _print2("ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
+            ptbl->magicw, ptbl->chksum, ptbl->nwords, ptbl->bufsze);
+
+        float sum = 0;
+        uint32_t min = -1, max = 0;
+        for(uint32_t i = 0; i < next_idx; i++) {
+            uint32_t val = list[i];
+            if(val < min) min = val;
+            if(val > max) max = val;
+            sum += val;
+        }
+        _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
+            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum,
+            min >> 12, ((sum / next_idx) / 4096), (max + 4095) >> 12,
+            min, sum / next_idx, max);
+
+        if(opt_verbose < 3 || !list)
+            goto do_free;
+        for(uint32_t i = 0; i < next_idx; i++) {
+            min = 1;
+            max = 0;
+            uint32_t val = list[i];
+            for(uint32_t n = 0; n < next_idx; n++) {
+                uint32_t cur = list[n];
+                if(val < cur) min++;
+                if(val > cur) max++;
+            }
+            _print2("  0x%08x: %6u %10u | <%10u >%10u\n",
+                i, (val + 4095) >> 12, val, min, max)
+        }
     }
 
+do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
     if(read_mmap_base)
