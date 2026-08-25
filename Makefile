@@ -89,7 +89,7 @@ bbox: busybox.zip
 	cp -f $@/ubuntu/config.gzip $@/.config
 
 bbox/gzip: bbox/.config | bbox
-	cd $^ && make -j && mv busybox gzip
+	cd bbox && make -j && mv busybox gzip
 
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
