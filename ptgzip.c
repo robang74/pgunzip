@@ -339,6 +339,8 @@ release:
 static
 int chunk_write(chunk_t *c)
 {
+    if(!c->ofd) return 0;
+
     if(c->map & b_mmap_seek) {
         if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
             perror("ftruncate");
@@ -371,12 +373,14 @@ int chunk_write(chunk_t *c)
 }
 
 static
-size_t full_write(int fd, const void *buf, size_t len)
+size_t full_write(int ofd, const void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
 
+    if(!ofd) return len;
+
     while (len > 0) {
-        ssize_t w = write(fd, p, len);
+        ssize_t w = write(ofd, p, len);
         if (w < 0) {
             if (errno == EINTR) continue;
             perror("write");
@@ -393,6 +397,8 @@ static ALWAYS_INLINE
 size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 {
     size_t len = size;
+
+    if(!ofd) return size;
 
     while (len > 0) {
         ssize_t w = copy_file_range(ofd,
@@ -809,6 +815,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t len)
            out_size = UNOUT_CHUNK_SIZE;
     }
 #if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
 fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
 #endif // ----------------------------------------------------------------------
     /* ********************************************************** */
@@ -909,7 +916,7 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
              *
              * WARNING: for testing only, it is incompatible with PTGZ full
              *          format specification which includes furhter tables.
-             * 
+             *
              * The seeker function #4 is competitive with #5 even when AVX2
              * is available, therefore the #3 should be used when another
              * unmissable PTGZ header is expected to be found next.
@@ -1573,20 +1580,18 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
 #endif // ----------------------------------------------------------------------
 
-    if (opt_decompress && opt_test)
-    {
-        uint32_t size;
-        uint16_t nbytes;
-        uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0}, *ptr;
-        full_read(infd, buf, PTGZ_HEADER_SIZE);
-        ptr = ptgz_header_read(buf, &nbytes, &size);
-        _print2("PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
-        return !ptr;
-    }
-
 // === open output file ========================================================
 
-    while (!opt_stdout) {
+    if (opt_decompress && opt_test)
+    {
+        ofd = open("/dev/null", O_RDWR, 0);
+        if (ofd < 0) {
+            ofd = 0;
+            perror("open");
+        } 
+    }
+    else
+    while (ofd && !opt_stdout) {
         ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
         char *str = malloc(len);
         if(!str) {
@@ -1851,6 +1856,8 @@ dispose:
 // Ending
 // =============================================================================
 
+    if (!ofd) goto do_verbose;
+
     if (ofd == STDOUT_FILENO)
         goto write_table;
 
@@ -1996,7 +2003,7 @@ do_free:
         msync(out_mmap_base, outlen, MS_SYNC);
         munmap(out_mmap_base, max_out_size);
     }
-    close(ofd);
+    if(ofd) close(ofd);
     free(ptbl);
     #endif
 
