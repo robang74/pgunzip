@@ -44,8 +44,6 @@
 #define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
 #define PTGZ_HEADER_SIZE    30
 
-static unsigned cpu_procs = 0;
-
 typedef struct {
     pthread_t thr;
     sem_t    *sem_ptr;
@@ -85,7 +83,7 @@ enum {
 #endif
 
 #ifndef _DO_WRST
-#define _DO_WRST  2 // 0: last run can be shorter than 1/2 chunk_size
+#define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
 #endif              // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
 #define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
@@ -171,7 +169,7 @@ enum {
 #endif
 
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
-#define WBUF_MAX_SIZE zbuf_max_size(chunk_size)
+#define WBUF_MAX_SIZE zbuf_max_size(_g_chunk_size)
 
 #define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
 #define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
@@ -180,12 +178,13 @@ enum {
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
 #define _int_div(_a, _b) (((_a) + (_b) - 1) / (_b))
 
-static uint8_t *read_mmap_base = NULL;
-static uint8_t *out_mmap_base  = NULL;
-static off_t read_filesize     = 0;
-static size_t chunk_size       = 0;
-static int tot_chunks          = 0;
-static int compression_level   = 6;
+static uint8_t *_g_read_mmap_base = NULL;
+static uint8_t *_g_out_mmap_base  = NULL;
+static off_t _g_read_filesize     = 0;
+static size_t _g_chunk_size       = 0;
+static int _g_tot_chunks          = 0;
+static int _g_compression_level   = 6;
+static unsigned _g_cpu_procs      = 0;
 
 static int chunk_write(chunk_t *c);
 static size_t full_write(int ofd, const void *buf, size_t len);
@@ -241,7 +240,7 @@ static void *thread_compress(void *arg)
 
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(c->idx % cpu_procs, &cpuset);
+    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 
     if(!c->in_len) {
@@ -253,7 +252,7 @@ static void *thread_compress(void *arg)
      *    deflateInit() produces RFC-1950 zlib format, not RFC-1952 gzip.
      *    Without +16 the output cannot be concatenated into a valid .gz file.
      */
-    ret = _deflate_init2(&strm, compression_level, Z_DEFLATED,
+    ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
         perror("deflate_init2");
@@ -320,7 +319,7 @@ endfnc:
     _deflate_end(&strm);
     c->state = 2;
     if (c->ofd != STDOUT_FILENO
-    && (!out_mmap_base || !_USE_MMAP)
+    && (!_g_out_mmap_base || !_USE_MMAP)
     ){
         if (c->sem_ptr){
             sem_post(c->sem_ptr);
@@ -352,8 +351,8 @@ int chunk_write(chunk_t *c)
         }
     }
 
-    if(out_mmap_base) {
-        uint8_t *dst = out_mmap_base + c->out_off;
+    if(_g_out_mmap_base) {
+        uint8_t *dst = _g_out_mmap_base + c->out_off;
         return !__builtin_memmove(dst, c->out, c->out_len);
     } else {
         off_t off = c->out_off;
@@ -434,7 +433,7 @@ void chunk_dispose(chunk_t *c)
 
 /*
  * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
- *      makes the .out_cap redundant while out_mmap_base would be likely a
+ *      makes the .out_cap redundant while _g_out_mmap_base would be likely a
  *      more usful member of the chunk_t structure. A revision is needed
  *      after the development is completed to get rid off of global variables
  *      in favor of a data structure that can refers also to its own thread_t.
@@ -446,16 +445,16 @@ int chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     c->idx = idx;
     c->error = 0;
     c->sem_ptr  = _THR_WAIT ? sem_ptr : NULL;
-    c->out_cap  = zbuf_max_size(chunk_size);
+    c->out_cap  = zbuf_max_size(_g_chunk_size);
     c->out_off  = WBUF_MAX_SIZE * idx;
-    c->in_off   =    chunk_size * idx;
+    c->in_off   =    _g_chunk_size * idx;
     c->out_off += PTGZ_HEADER_SIZE;
     if(infd != STDIN_FILENO) {
-        c->in_len = (idx + 1 == tot_chunks)
-                  ? (size_t)(read_filesize - c->in_off)
-                  : chunk_size;
+        c->in_len = (idx + 1 == _g_tot_chunks)
+                  ? (size_t)(_g_read_filesize - c->in_off)
+                  : _g_chunk_size;
     } else {
-        c->in_len = chunk_size;
+        c->in_len = _g_chunk_size;
     }
     c->infd = infd;
     c->ofd = ofd;
@@ -463,8 +462,8 @@ int chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
-    if (out_mmap_base) {
-        c->out = out_mmap_base + c->out_off;
+    if (_g_out_mmap_base) {
+        c->out = _g_out_mmap_base + c->out_off;
         c->map |= b_mmap_out;
     }
     else
@@ -482,8 +481,8 @@ int chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 #endif
 
 #if _USE_MMAP
-    if (read_mmap_base) {
-        c->in = read_mmap_base + c->in_off;
+    if (_g_read_mmap_base) {
+        c->in = _g_read_mmap_base + c->in_off;
         c->map |= b_mmap_in;
     } else
 #endif
@@ -740,10 +739,10 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
 static void *thread_chunk_write(void *arg)
 {
     chunk_t *c = arg;
-    #if 0
+    #if 0 // RAF: slower in this specific corner case
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(c->idx % cpu_procs, &cpuset);
+    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
     #endif
     c->error |= chunk_write(c);
@@ -1059,7 +1058,7 @@ endfunc:
 
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
-#define TABLE_ITEMS ((uint32_t)tot_chunks + 4)
+#define TABLE_ITEMS ((uint32_t)_g_tot_chunks + 4)
 #define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 
 /* RAF ptzip v0.5
@@ -1168,7 +1167,7 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     p[0] = -sum; // checking sum code
     list[nwords] = p[0];
 
-#if 0 // ftrucate does it for us
+#if 0 // ftruncate() does it for us
     *len = (4 - (*len & 3)) & 3;
     u -= *len; // 32-bit align
     *len += (nwords + 4) << 2;
@@ -1307,48 +1306,51 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     static __thread uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0};
 
     // 1. Fixed Header GZIP 10 bytes
-    buf[0] = 0x1f; // Magic bytes
-    buf[1] = 0x8b;
-    buf[2] = 0x08;                // Compression method: DEFLATE
-    buf[3] = 0x04;                // FLG: 0x04 = FEXTRA enabled
+    if (!buf[0]) {                // Set once, because fixed fields
+        buf[0]  = 0x1f;           // Magic 2 bytes
+        buf[1]  = 0x8b;
+        buf[2]  = 0x08;           // Compression method: DEFLATE
+        buf[3]  = 0x04;           // FLG: 0x04 = FEXTRA enabled
+      //buf[8]  = 0x00;           // XFL, already =0 by init
+        buf[9]  = 0x03;           // OS
+        buf[20] = 0x03;           // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    }
+
 #if 0
     //RAF this function is used one-time only, and buf = {0}
-    //*(uint32_t *)&buf[4] = 0;   // MTIME (32-bit aligned, =0)
+    //*(uint32_t *)&buf[4] = 0;   // MTIME =0, 32-bit aligned
 #else
-    // MTIME
-    buf[4] = (uint8_t)(ctm      );
-    buf[5] = (uint8_t)(ctm >>  8);
-    buf[6] = (uint8_t)(ctm >> 16);
-    buf[7] = (uint8_t)(ctm >> 24);
+    if (ctm) {                    // MTIME
+        buf[4] = (uint8_t)(ctm      );
+        buf[5] = (uint8_t)(ctm >>  8);
+        buf[6] = (uint8_t)(ctm >> 16);
+        buf[7] = (uint8_t)(ctm >> 24);
+    }
 #endif
-    buf[8] = 0x00;                // XFL
-    buf[9] = 0x03;                // OS
 
     uint16_t plen = size ?: 4;
-
     // XLEN = Subfield ID (2B) + Subfield LEN (2B) + Payload Length
     uint16_t xlen = plen  + 4;
 
-    // 2. FEXTRA field: XLEN 2 bytes
+    // FEXTRA field: XLEN 2 bytes
     buf[10] = (uint8_t)(xlen     );
     buf[11] = (uint8_t)(xlen >> 8);
 
-    // 3. PTGZ Subfield ID 2 bytes
+    // PTGZ Subfield ID 2 bytes
     buf[12] = 'p';
     buf[13] = 'z';
 
-    // 4. Subfield Payload Length 2 bytes
+    // Subfield Payload Length 2 bytes
     buf[14] = (uint8_t)(plen     );
     buf[15] = (uint8_t)(plen >> 8);
 
-    // 5. Payload Size Writing
+    // Payload Size Writing
     buf[16] = (uint8_t)(in_len      );
     buf[17] = (uint8_t)(in_len >>  8);
     buf[18] = (uint8_t)(in_len >> 16);
     buf[19] = (uint8_t)(in_len >> 24);
 
-    // 6. Termination 10 bytes
-    buf[20] = 0x03; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    // Termination 10 bytes from buf[20]
 #if 0
     buf[21] = 0x00;
     buf[22] = 0x00; buf[23] = 0x00; buf[24] = 0x00; buf[25] = 0x00; // CRC32
@@ -1397,7 +1399,7 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help       = 0;    /* -h, --help */
 static int opt_quiet      = 0;    /* -q, --quiet */
-        // compression_level ;    /* -#, --fast (=1), --best (=9) */
+        // _g_compression_level ;    /* -#, --fast (=1), --best (=9) */
 static int opt_keep       = 0;    /* -k, --keep */
 static int opt_test       = 0;    /* -t, --test */
 static int opt_force      = 0;    /* -f, --force */
@@ -1415,7 +1417,7 @@ int main(int argc, char **argv)
     int nthreads;
     sem_t sem;
 
-#if 1
+    #if 1 //RAF: optional code
     struct rlimit lim;
     // Get current CPU limit (in seconds)
     prlimit(0, RLIMIT_CPU, NULL, &lim);
@@ -1425,7 +1427,7 @@ int main(int argc, char **argv)
         if (prlimit(0, RLIMIT_CPU, &lim, NULL))
           perror("prlimit");
     }
-#endif
+    #endif
 
 #if _USE_OPT
     static struct option longopts[] = {
@@ -1475,7 +1477,7 @@ int main(int argc, char **argv)
             break;
         case '1': case '2': case '3': case '4': case '5':
         case '6': case '7': case '8': case '9':
-            compression_level = ch - '0';
+            _g_compression_level = ch - '0';
             break;
         case 'k':
             opt_keep = 1;
@@ -1509,8 +1511,8 @@ int main(int argc, char **argv)
     if(!opt_processes)
         opt_processes = MAX_THREADS;
 
-    cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
-    nthreads = cpu_procs;
+    _g_cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
+    nthreads = _g_cpu_procs;
     if (nthreads > opt_processes)
         nthreads = opt_processes;
     else
@@ -1543,21 +1545,21 @@ int main(int argc, char **argv)
             _print2("warning: zero lenght file\n");
             return 0;
         }
-        read_filesize = st.st_size;
+        _g_read_filesize = st.st_size;
 
-        #if 1
+        #if 1 //RAF: optional code
         posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
         posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
         #endif
 
-        if(_DNT_MMAP || !read_filesize)
+        if(_DNT_MMAP || !_g_read_filesize)
             break;
 
         // mmap entire file (zero-copy input for all threads)
-        read_mmap_base = mmap(NULL, read_filesize,
+        _g_read_mmap_base = mmap(NULL, _g_read_filesize,
             PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
-        if (read_mmap_base == MAP_FAILED) {
-            read_mmap_base = NULL;
+        if (_g_read_mmap_base == MAP_FAILED) {
+            _g_read_mmap_base = NULL;
             perror("mmap");
         } else {
             // kernel keeps the mapping via vnode reference
@@ -1572,62 +1574,62 @@ int main(int argc, char **argv)
 
     // decide chunk size and total number of chunks
     size_t outlen = 0;
-    tot_chunks = 0;
+    _g_tot_chunks = 0;
 
-    if (!read_filesize) {
+    if (!_g_read_filesize) {
         // RAF, TODO: other values are failing
-        chunk_size = MAX_CHUNK_SIZE;
+        _g_chunk_size = MAX_CHUNK_SIZE;
     }
     else
-    if (read_filesize <= MIN_CHUNK_SIZE) {
+    if (_g_read_filesize <= MIN_CHUNK_SIZE) {
         nthreads = 1;
-        tot_chunks = 1;
-        chunk_size = read_filesize;
+        _g_tot_chunks = 1;
+        _g_chunk_size = _g_read_filesize;
     } else {
         for(int i = nthreads; i > 1; i--) {
-            chunk_size = _int_div(read_filesize, i);
-            if (chunk_size >  MAX_CHUNK_SIZE) {
+            _g_chunk_size = _int_div(_g_read_filesize, i);
+            if (_g_chunk_size >  MAX_CHUNK_SIZE) {
                 break; // multi rounds
             }
-            if (chunk_size >= MIN_CHUNK_SIZE) {
+            if (_g_chunk_size >= MIN_CHUNK_SIZE) {
                 nthreads = i;
                 break; // 1-round split
             }
         }
 
         /* Target: split evenly across all CPUs */
-        chunk_size = _int_div(read_filesize, nthreads);
+        _g_chunk_size = _int_div(_g_read_filesize, nthreads);
 
         /* Clamp to the design limits */
-        if (chunk_size < MIN_CHUNK_SIZE)
-            chunk_size = MIN_CHUNK_SIZE;
+        if (_g_chunk_size < MIN_CHUNK_SIZE)
+            _g_chunk_size = MIN_CHUNK_SIZE;
         else
-        if (chunk_size > MAX_CHUNK_SIZE)
-            chunk_size = MAX_CHUNK_SIZE;
+        if (_g_chunk_size > MAX_CHUNK_SIZE)
+            _g_chunk_size = MAX_CHUNK_SIZE;
 
         /* Page-align for I/O efficiency */
-        chunk_size = _mpceil(chunk_size) << 12;
-        tot_chunks = _int_div(read_filesize, chunk_size);
+        _g_chunk_size = _mpceil(_g_chunk_size) << 12;
+        _g_tot_chunks = _int_div(_g_read_filesize, _g_chunk_size);
 
 #if _DO_WRST
         if (_DO_WRST > 1
-        || (cpu_procs << 1) > tot_chunks) {
-            size_t wrst = read_filesize % chunk_size;
-            if(wrst > (tot_chunks << 1))
-                chunk_size -= (chunk_size - wrst) / tot_chunks;
+        || (_g_cpu_procs << 1) > _g_tot_chunks) {
+            size_t wrst = _g_read_filesize % _g_chunk_size;
+            if(wrst > (_g_tot_chunks << 1))
+                _g_chunk_size -= (_g_chunk_size - wrst) / _g_tot_chunks;
             // RAF: below 64-bit alignment isn't convenient
-            chunk_size = ((chunk_size + 7) >> 3) << 3;
-            tot_chunks = _int_div(read_filesize, chunk_size);
+            _g_chunk_size = ((_g_chunk_size + 7) >> 3) << 3;
+            _g_tot_chunks = _int_div(_g_read_filesize, _g_chunk_size);
         }
 #endif
 
         /* Never keep more threads than chunks */
-        if (nthreads > tot_chunks)
-            nthreads = tot_chunks;
+        if (nthreads > _g_tot_chunks)
+            nthreads = _g_tot_chunks;
     }
 
 #if _DEBUG & 0x10 // -----------------------------------------------------------
-float x = ((float)100*(read_filesize%chunk_size))/chunk_size;
+float x = ((float)100*(_g_read_filesize%_g_chunk_size))/_g_chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
@@ -1674,7 +1676,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         #endif
 
         // RAF, TODO: the PTGZ determines the output file size
-        max_out_size  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * tot_chunks;
+        max_out_size  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * _g_tot_chunks;
         max_out_size += PTGZ_HEADER_SIZE;
 
         /* 1. Pre-allocate max size for output mmap */
@@ -1687,11 +1689,11 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
             break;
 
         /* 2. Map output file into virtual memory */
-        out_mmap_base = mmap(NULL, max_out_size,
+        _g_out_mmap_base = mmap(NULL, max_out_size,
             PROT_READ  | PROT_WRITE,
             MAP_SHARED | MAP_POPULATE, ofd, 0);
-        if (out_mmap_base == MAP_FAILED) {
-            out_mmap_base = NULL;
+        if (_g_out_mmap_base == MAP_FAILED) {
+            _g_out_mmap_base = NULL;
             perror("mmap");
             break;
         }
@@ -1699,11 +1701,10 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         break;
     }
 
-
     if (ofd == STDOUT_FILENO)
     {
-#if 1
-        #if 0
+    #if 1 //RAF: optional code
+        #if 0  //RAF: alternative code
         static char stdout_buf[1 << 20];  // 1MB buffer
         setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
         #else
@@ -1714,7 +1715,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
                     break;
         }
         #endif
-#endif
+    #endif
     }
 
 // =============================================================================
@@ -1726,7 +1727,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    pgunz_t *ptbl = create_pgunz_table(tot_chunks);
+    pgunz_t *ptbl = create_pgunz_table(_g_tot_chunks);
     uint32_t *list = ptbl->cur.list;
 
 // === sequential gunzip =======================================================
@@ -1752,9 +1753,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
          */
         time_t utc = time(NULL);
          const uint32_t *ptr =
-        (const uint32_t *)ptgz_header_make(utc, chunk_size, 0);
+        (const uint32_t *)ptgz_header_make(utc, _g_chunk_size, 0);
         full_write(ofd, ptr, PTGZ_HEADER_SIZE);
-        //_print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
+//      _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], _g_chunk_size);
     }
 
 // =============================================================================
@@ -1782,7 +1783,7 @@ do_a_thread_wait:
 #if _THR_WAIT
 //RAF: one thread completed, at least as
 // long as, at least, one thread exists.
-    if (current != tot_chunks)
+    if (current != _g_tot_chunks)
         if (full_sem_wait(&sem))
             return -1;
 #else
@@ -1815,7 +1816,7 @@ do_another_loop:
 
         /* create another thread to do work */
         if (!cb->thr && !cb->state
-        && (tot_chunks ? (current < tot_chunks) : 1)
+        && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
             if (chunk_init(cb, current, ofd, infd, &sem)) {
                 c->thr = 0;
@@ -1830,7 +1831,7 @@ skip_do_new_thread:
 #if _DEBUG & 0x20 // -----------------------------------------------------------
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, tot_chunks, nthreads, c->idx, next_idx,
+    current, _g_tot_chunks, nthreads, c->idx, next_idx,
     ofd, c->thr, chunks[b][i].state);
 #endif // ----------------------------------------------------------------------
 
@@ -1847,13 +1848,13 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
 
 #if _DEBUG & 0x40 // -----------------------------------------------------------
 fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    c->thr, ofd, next_idx, tot_chunks);
+    c->thr, ofd, next_idx, _g_tot_chunks);
 #endif // ----------------------------------------------------------------------
 
         /* granting the correct order */
         next_idx++;
         if(infd == STDIN_FILENO)
-            read_filesize += c->in_len;
+            _g_read_filesize += c->in_len;
         outlen += (ofd == STDOUT_FILENO)
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
@@ -1923,8 +1924,8 @@ dispose:
      * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
      */
-    if(out_mmap_base) {
-        uint8_t *src = out_mmap_base + PTGZ_HEADER_SIZE;
+    if(_g_out_mmap_base) {
+        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_SIZE;
         uint8_t *dst = src + list[0]; /* Skip chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
@@ -1933,7 +1934,7 @@ dispose:
             __builtin_memmove(dst, src, len);
             dst += len;
         }
-        outlen += dst - out_mmap_base;
+        outlen += dst - _g_out_mmap_base;
     } else {
         int i;
         off_t src = PTGZ_HEADER_SIZE;
@@ -1982,10 +1983,10 @@ write_table:
 
     size_t len = 0;
     ptbl->nwords = next_idx;
-    ptbl->bufsze = chunk_size;
+    ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
-    if (out_mmap_base) {
-        if(!__builtin_memmove(out_mmap_base + outlen, (const void *)u, len))
+    if (_g_out_mmap_base) {
+        if(!__builtin_memmove(_g_out_mmap_base + outlen, (const void *)u, len))
             outlen += len;
     } else {
         outlen += full_write(ofd, (const void *)u, len);
@@ -2009,9 +2010,9 @@ write_table:
 do_verbose:
     if(opt_verbose) {
         _print2("%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
-            " (%0.1f%%), zl:%d\n", libz_name, nthreads, tot_chunks,
-            next_idx, chunk_size, read_filesize, outlen, len, (float)
-            outlen * 100 / read_filesize, compression_level);
+            " (%0.1f%%), zl:%d\n", libz_name, nthreads, _g_tot_chunks,
+            next_idx, _g_chunk_size, _g_read_filesize, outlen, len, (float)
+            outlen * 100 / _g_read_filesize, _g_compression_level);
 
         if(opt_verbose < 2 || !list)
             goto do_free;
@@ -2050,11 +2051,11 @@ do_verbose:
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
-    if(read_mmap_base)
-        munmap(read_mmap_base, read_filesize);
-    if(out_mmap_base) {
-        msync(out_mmap_base, outlen, MS_SYNC);
-        munmap(out_mmap_base, max_out_size);
+    if(_g_read_mmap_base)
+        munmap(_g_read_mmap_base, _g_read_filesize);
+    if(_g_out_mmap_base) {
+        msync(_g_out_mmap_base, outlen, MS_SYNC);
+        munmap(_g_out_mmap_base, max_out_size);
     }
     if(ofd) close(ofd);
     free(ptbl);
