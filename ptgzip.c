@@ -292,7 +292,6 @@ static void *thread_compress(void *arg)
     /* 3. COMPRESSION LOOP:
      *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
      *    - Then Z_FINISH until deflate returns Z_STREAM_END.
-     *    Your old loop called Z_NO_FLUSH forever and never finished the stream.
      */
 #if _ONE_ZDF
 #else
@@ -333,7 +332,7 @@ endfnc:
 release:
     if (c->sem_ptr) {
         sem_post(c->sem_ptr);
-        //c->sem_ptr = NULL;
+        c->sem_ptr = NULL; // Always NULL at the end of the work
     }
     return NULL;
 }
@@ -419,6 +418,20 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
     return size - len;
 }
 
+static ALWAYS_INLINE
+void chunk_dispose(chunk_t *c)
+{
+#if _USE_FREE
+    if(is_outbuf_freeable(c)) free(c->out);
+    if( is_inbuf_freeable(c)) free(c->in);
+    memset(c, 0, sizeof(chunk_t));
+#else
+    c->thr = 0;
+    c->state = 0;
+    //cb->in_len = 0;
+#endif
+}
+
 /*
  * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
  *      makes the .out_cap redundant while out_mmap_base would be likely a
@@ -427,7 +440,7 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static ALWAYS_INLINE
-void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
+int chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
 {
     c->state = 1;
     c->idx = idx;
@@ -468,10 +481,13 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
     }
 #endif
 
+#if _USE_MMAP
     if (read_mmap_base) {
         c->in = read_mmap_base + c->in_off;
         c->map |= b_mmap_in;
-    } else {
+    } else
+#endif
+    {
         if (!c->in)
              if (posix_memalign((void **)&c->in, 64, c->in_len))
                   c->in = NULL;
@@ -480,12 +496,16 @@ void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
             exit(-1);
         }
         c->in_len = full_read(c->infd, c->in, c->in_len);
-        if (!c->in_len) c->state = 3;
-
 #if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
+        if (!c->in_len) {
+            chunk_dispose(c);
+            return 1;
+        }
     }
+
+    return 0;
 }
 
 static ALWAYS_INLINE
@@ -744,26 +764,24 @@ static ALWAYS_INLINE __attribute__((target("avx2")))
 uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     if (r < 4) return 0;
 
-    const uint32_t max_idx = r - 3;
+    const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
     // 1. PROLOGUE: Scalar search until (p + n) reaches 32-byte alignment
-    while (n < max_idx && (((uintptr_t)(p + n)) & 31) != 0) {
-        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08) {
+    for (; n < maxn && (((uintptr_t)(p + n)) & 31) != 0; n++)
+        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08)
             return n;
-        }
-        n++;
-    }
 
     // 2. VECTOR SCAN: Aligned loads for maximum L1/L2 bandwidth
     const __m256i v_b0 = _mm256_set1_epi8(0x1F);
     const __m256i v_b1 = _mm256_set1_epi8(0x8B);
     const __m256i v_b2 = _mm256_set1_epi8(0x08);
 
-    for (; n + 31 < max_idx; n += 32) {
-        // Aligned load on chunk0; overlapping chunk1 and chunk2 use unaligned loads
-        // offset by 1 and 2 bytes relative to the aligned chunk0 pointer
-        __m256i chunk0 = _mm256_load_si256((const __m256i *)(p + n));
+    for (; n + 31 < maxn; n += 32) {
+        // Aligned load on chunk0 and overlapping chunk1 and chunk2
+        // use unaligned loads offset by 1 and 2 bytes relative to
+        // the aligned chunk0 pointer
+        __m256i chunk0 = _mm256_load_si256 ((const __m256i *)(p + n    ));
         __m256i chunk1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
         __m256i chunk2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
 
@@ -774,17 +792,13 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
 
-        if (mask != 0) {
-            return n + __builtin_ctz(mask);
-        }
+        if (mask != 0) return n + __builtin_ctz(mask);
     }
 
     // 3. EPILOGUE: Scalar tail loop for remaining unaligned trailing bytes
-    for (; n < max_idx; n++) {
-        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08) {
+    for (; n < maxn; n++)
+        if (p[n] == 0x1F && p[n + 1] == 0x8B && p[n + 2] == 0x08)
             return n;
-        }
-    }
 
     return 0;
 }
@@ -1752,9 +1766,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
-        chunk_init(c, current, ofd, infd, &sem);
-        if(c->state == 3) {
-            c->state = 0;
+        if (chunk_init(c, current, ofd, infd, &sem)) {
             nthreads = i;
             break;
         }
@@ -1792,36 +1804,28 @@ do_another_loop:
         if (c->state < 2)
             continue;
 
-        if (c->thr)
+        if (!c->thr)
+            goto skip_do_new_thread;
+
+        if (!c->in_len && c->state == 3)
         {
-            if (!c->in_len && c->state == 3)
-            {
-                current--;
-                goto dispose;
-            }
-            else
-            /* create another thread to do work */
-            if (!cb->thr && !cb->state
-            && (tot_chunks ? (current < tot_chunks) : 1)
-            ){
-                chunk_init(cb, current, ofd, infd, &sem);
-                if(cb->state == 3) {
-                    #if _USE_FREE
-                    if(is_outbuf_freeable(cb)) free(cb->out);
-                    if( is_inbuf_freeable(cb)) free(cb->in);
-                    memset(cb, 0, sizeof(chunk_t));
-                    #else
-                    cb->state = 0;
-                    //cb->in_len = 0;
-                    #endif
-                    c->thr = 0;
-                } else {
-                    current++;
-                    chunk_work_start(&cb->thr, cb);
-//                  pthread_detach(cb->thr);
-                }
+            current--;
+            goto dispose;
+        }
+
+        /* create another thread to do work */
+        if (!cb->thr && !cb->state
+        && (tot_chunks ? (current < tot_chunks) : 1)
+        ){
+            if (chunk_init(cb, current, ofd, infd, &sem)) {
+                c->thr = 0;
+            } else {
+                current++;
+                chunk_work_start(&cb->thr, cb);
+//              pthread_detach(cb->thr);
             }
         }
+skip_do_new_thread:
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
 if (ofd != STDOUT_FILENO || c->idx == next_idx)
