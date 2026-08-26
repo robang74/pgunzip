@@ -188,6 +188,7 @@ static int tot_chunks          = 0;
 static int compression_level   = 6;
 
 static int chunk_write(chunk_t *c);
+static size_t full_write(int ofd, const void *buf, size_t len);
 static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
 static const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
 
@@ -342,9 +343,12 @@ int chunk_write(chunk_t *c)
 {
     if(!c->ofd) return 0;
 
-    if(c->map & b_mmap_seek) {
+    if (c->ofd == STDOUT_FILENO)
+        return (full_write(c->ofd, c->out, c->out_len) < 0);
+
+    if(0 && c->map & b_mmap_seek) {
         if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
-            perror("ftruncate");
+            perror("ftruncate wr");
             return 1;
         }
     }
@@ -670,7 +674,12 @@ static int ungz_inflate_stream(int infd, int ofd, size_t len)
             /* Copy available output to chunk buffer for multi-threaded processing */
             __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
             c.out_len = chunk_len;
-            chunk_work_start(&c.thr, &c);
+            if (pthread_create(&c.thr, NULL,
+                thread_chunk_write, &c)
+            ){
+                perror("pthread_create");
+                return -1;
+            }
             c.out_off += chunk_len;
             c.idx++;
         }
@@ -711,6 +720,12 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
 static void *thread_chunk_write(void *arg)
 {
     chunk_t *c = arg;
+    #if 0
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(c->idx % cpu_procs, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+    #endif
     c->error |= chunk_write(c);
     return NULL;
 }
@@ -780,7 +795,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
 static int zlib_inflate_stream(int infd, int ofd, size_t len)
 {
     size_t r, w = 0, set = 0, rmn = 0;
-    uint8_t *inbuf  = NULL;
+    uint8_t * inbuf = NULL;
     uint8_t *outbuf = NULL;
     int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
@@ -831,7 +846,6 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     if(!len) c.map |= b_mmap_seek;
     strm.next_in  = inbuf;
     strm.avail_in = w;
-    c.out = outbuf;
     c.ofd = ofd;
 
     while (1) {
@@ -980,18 +994,25 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
         }
 
         w = out_size - strm.avail_out;
-        if(ofd == STDOUT_FILENO) {
+        if(1 || ofd == STDOUT_FILENO) {
             if (full_write(ofd, outbuf, w) < 0)
                 goto endfunc;
         } else {
             if (c.thr) {
                 pthread_join(c.thr, NULL);
+                //fprintf(stderr, "state: %u\n", c.state);
+                c.out_off += c.out_len;
                 c.thr = 0;
+                c.idx++;
             }
             c.out_len = w;
-            chunk_work_start(&c.thr, &c);
-            c.out_off += w;
-            c.idx++;
+            c.out = outbuf;
+            if (pthread_create(&c.thr, NULL,
+                thread_chunk_write, &c)
+            ){
+                perror("pthread_create");
+                return -1;
+            }
         }
 
         if (ret == Z_STREAM_END) {
@@ -1380,17 +1401,17 @@ int main(int argc, char **argv)
     int nthreads;
     sem_t sem;
 
+#if 1
     struct rlimit lim;
-
     // Get current CPU limit (in seconds)
     prlimit(0, RLIMIT_CPU, NULL, &lim);
-
     // Bump soft limit up to the hard limit
     if (lim.rlim_cur < lim.rlim_max) {
         lim.rlim_cur = lim.rlim_max;
         if (prlimit(0, RLIMIT_CPU, &lim, NULL))
           perror("prlimit");
     }
+#endif
 
 #if _USE_OPT
     static struct option longopts[] = {
@@ -1510,8 +1531,10 @@ int main(int argc, char **argv)
         }
         read_filesize = st.st_size;
 
+        #if 1
         posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
         posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
+        #endif
 
         if(_DNT_MMAP || !read_filesize)
             break;
@@ -1665,16 +1688,18 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     if (ofd == STDOUT_FILENO)
     {
-#if 0
+#if 1
+        #if 0
         static char stdout_buf[1 << 20];  // 1MB buffer
         setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
-#else
+        #else
         int pipesz = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
         if (pipesz > 0 && pipesz < (1 << 20)) {
             for (int target = 1 << 20; target >= pipesz; target >>= 1)
                 if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, target) == target)
                     break;
         }
+        #endif
 #endif
     }
 
@@ -1715,15 +1740,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
          const uint32_t *ptr =
         (const uint32_t *)ptgz_header_make(utc, chunk_size, 0);
         full_write(ofd, ptr, PTGZ_HEADER_SIZE);
-        _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
-#if 0
-        if(out_mmap_base)
-           out_mmap_base += PTGZ_HEADER_SIZE;
-
-        list[0] = PTGZ_HEADER_SIZE;
-        next_idx++;
-        current++;
-#endif
+        //_print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], chunk_size);
     }
 
 // =============================================================================

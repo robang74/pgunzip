@@ -165,7 +165,7 @@ endif
 libz.tar: /bin/tar
 	@/bin/tar cf libz.tar libz
 
-libz.tar.gz: | libz.tar ptgzip
+libz.tar.gz: libz.tar | ptgzip
 #	$(GZCMD) -nk libz.tar
 	./ptgzip -nk libz.tar
 
@@ -220,7 +220,7 @@ stress: libz.tar $(CMD2T)
 	@echo
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
+	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(CMDVC)" && sync && \
     eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd 2>&-"; done | dd bs=1M of=$$nl
@@ -228,7 +228,7 @@ _speed-gunzp: libz.tar.gz $(CMD2T)
 speed-gunzp: _speed-gunzp blkline
 
 _speef-gunzp: libz.tar.gz $(CMD2T)
-	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
+	@printf "\n=== $(CMD2T) '-dk' speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(NP)" && sync && \
     eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done; sync
@@ -316,9 +316,15 @@ _test-gunzp: libz.tar.gz $(CMD2T)
 
 test-gunzp: _test-gunzp blkline
 
-_test-inout: libz.tar $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="cat libz.tar | $(CMD2T) $(CMDVC)" && sync && \
+_test-inout: libz.tar libz.tar.gz $(CMD2T)
+	@printf "\n=== $(CMD2T) I/O speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="dd if=libz.tar bs=1M status=none |\
+	    $(CMD2T) $(CMDVC)" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
+	@printf "\n=== $(CMD2T) -d I/O speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="dd if=libz.tar.gz bs=1M status=none |\
+	    $(CMD2T) -d $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
