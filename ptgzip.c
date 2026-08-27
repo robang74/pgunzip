@@ -20,6 +20,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <immintrin.h>
 #include <semaphore.h>
 #include <sys/resource.h>
 #include <sys/types.h>
@@ -199,7 +201,8 @@ static int _g_tot_chunks          = 0;
 static int _g_compression_level   = 6;
 static unsigned _g_cpu_procs      = 0;
 
-static int chunk_write(chunk_t *c);
+static bool chunk_read(chunk_t *c);
+static bool chunk_write(chunk_t *c);
 static size_t full_write(int ofd, const void *buf, size_t len);
 static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
 static const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
@@ -449,9 +452,41 @@ release:
     return NULL;
 }
 
+static
+bool chunk_read(chunk_t *c)
+{
+   if(!c->in_len) return 0;
+
+    if (c->ofd == STDOUT_FILENO) {
+        c->in_len = full_read(c->infd, c->in, c->in_len);
+    } else
+    if(_g_out_mmap_base) {
+        uint8_t *src = _g_read_mmap_base + c->out_off;
+        __builtin_memcpy(c->in, src, c->in_len);
+    } else {
+        off_t off = c->in_off;
+        size_t len = c->in_len;
+        uint8_t *p = c->in;
+        while (len > 0) {
+            ssize_t w = pread(c->infd, p, len, off);
+            if (!w) break;
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                perror("p/read");
+                return 1;
+            }
+            p   += w;
+            off += w;
+            len -= w;
+        }
+        c->in_len -= len;
+    }
+
+    return 0;
+}
 
 static
-int chunk_write(chunk_t *c)
+bool chunk_write(chunk_t *c)
 {
     if(!c->ofd) return 0;
 
@@ -467,12 +502,11 @@ int chunk_write(chunk_t *c)
 
     if(_g_out_mmap_base) {
         uint8_t *dst = _g_out_mmap_base + c->out_off;
-        return !__builtin_memmove(dst, c->out, c->out_len);
+        return !__builtin_memcpy(dst, c->out, c->out_len);
     } else {
         off_t off = c->out_off;
         size_t len = c->out_len;
         uint8_t *p = c->out;
-
         while (len > 0) {
             ssize_t w = pwrite(c->ofd, p, len, off);
             if (w < 0) {
@@ -622,7 +656,7 @@ int deflate_chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
             perror("malloc in buf");
             exit(-1);
         }
-        c->in_len = full_read(c->infd, c->in, c->in_len);
+        c->error |= chunk_read(c) << 3;
 #if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
@@ -653,6 +687,19 @@ void chunk_inflate_start(pthread_t *p, chunk_t *c)
 
     perror("pthread_create");
     exit(1);
+}
+
+static void *thread_chunk_write(void *arg)
+{
+    chunk_t *c = arg;
+    #if 0 // RAF: slower in this specific corner case
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+    #endif
+    c->error |= chunk_write(c);
+    return NULL;
 }
 
 // =============================================================================
@@ -749,14 +796,20 @@ typedef struct {
     int fd;
     uint8_t *buffer;
     size_t buf_size;
+    size_t pre_size;
 } reader_ctx_t;
 
 /* Callback function expected by ungz (pigz_reader) */
-static const char* ungz_file_reader(void *opaque, uint64_t *len) {
+static const char* ungz_file_reader(void *opaque, uint64_t *len)
+{
     reader_ctx_t *ctx = (reader_ctx_t *)opaque;
-    ssize_t bytes_read = full_read(ctx->fd, ctx->buffer, ctx->buf_size);
+    ssize_t bytes_read = full_read(ctx->fd,
+        ctx->buffer   + ctx->pre_size,
+        ctx->buf_size - ctx->pre_size);
+    bytes_read +=       ctx->pre_size ;
+                        ctx->pre_size = 0;
 
-    if (bytes_read <= 0) {
+    if (bytes_read < 0) {
         *len = 0;
         return NULL;
     }
@@ -765,7 +818,8 @@ static const char* ungz_file_reader(void *opaque, uint64_t *len) {
     return (const char *)ctx->buffer;
 }
 
-static int ungz_inflate_stream(int infd, int ofd, size_t len)
+static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek)
 {
     int ret = 0;
     uint8_t *inbuf = NULL;
@@ -780,16 +834,18 @@ static int ungz_inflate_stream(int infd, int ofd, size_t len)
         return -1;
     }
 
+    reader_ctx.fd       = infd;
+    reader_ctx.buffer   = inbuf;
+    reader_ctx.buf_size = UNZIN_CHUNK_SIZE;
+    reader_ctx.pre_size = buf_size;
+    if (buf_size)
+        __builtin_memcpy(inbuf, buf, buf_size);
+
     /* Initialize chunk configuration */
     c.map = b_mmap_out | b_mmap_in;
-    if (!len) c.map |= b_mmap_seek;
+    if (!seek) c.map |= b_mmap_seek;
     c.out = outbuf;
     c.ofd = ofd;
-
-    /* Setup reader context and initialize ungz state */
-    reader_ctx.fd = infd;
-    reader_ctx.buffer = inbuf;
-    reader_ctx.buf_size = UNZIN_CHUNK_SIZE;
 
     pigz_init(&state, &reader_ctx, ungz_file_reader);
 
@@ -797,27 +853,27 @@ static int ungz_inflate_stream(int infd, int ofd, size_t len)
         /* Determine how many decompressed bytes are currently available */
         uint64_t avail = pigz_available(&state);
 
-        if (avail == 0) {
-            /* Check termination or error states */
-            if (state.status == PIGZ_STATUS_EOF)
+        if (state.status == PIGZ_STATUS_EOF)
+            break;
+        /* Check termination or error states */
+        if (state.status < PIGZ_STATUS_EOF) {
+            if (state.status == PIGZ_STATUS_BAD_HEADER && !avail)
                 break;
-            if (state.status  < PIGZ_STATUS_EOF) {
-                /* If multiple concatenated members were read,
-                   ignore trailing junk errors */
-                if (state.status == PIGZ_STATUS_BAD_HEADER)
-                    break;
-                ret = state.status;
-                break;
-            }
+            ret = state.status;
+            fprintf(stderr, "inflate error: %d (avail: %lu)\n", ret, avail);
+            break;
         }
 
         /* Clamp output chunk to worker buffer capacity */
-        uint64_t chunk_len = (avail > UNOUT_CHUNK_SIZE) ? UNOUT_CHUNK_SIZE : avail;
+        uint64_t chunk_len = (avail > UNOUT_CHUNK_SIZE)
+                           ?  UNOUT_CHUNK_SIZE : avail;
 
         /* Retrieve pointer to decompressed data directly from ungz internal state */
         const char *decomp_ptr = pigz_consume(&state, chunk_len);
-        if (!decomp_ptr && chunk_len > 0)
+        if (!decomp_ptr) {
+            ret = chunk_len;
             break;
+        }
 
         if (ofd == STDOUT_FILENO) {
             ret = full_write(ofd, decomp_ptr, chunk_len);
@@ -828,17 +884,20 @@ static int ungz_inflate_stream(int infd, int ofd, size_t len)
                 pthread_join(c.thr, NULL);
                 c.thr = 0;
             }
-            /* Copy available output to chunk buffer for multi-threaded processing */
-            __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
-            c.out_len = chunk_len;
-            if (pthread_create(&c.thr, NULL,
-                thread_chunk_write, &c)
-            ){
-                perror("pthread_create");
-                return -1;
+            if(chunk_len) {
+                /* Copy available output to chunk buffer for multi-threaded processing */
+                __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
+                c.out_len = chunk_len;
+                if (pthread_create(&c.thr, NULL,
+                    thread_chunk_write, &c)
+                ){
+                    perror("pthread_create");
+                    ret = -1;
+                    goto endfunc;
+                }
+                c.out_off += chunk_len;
+                c.idx++;
             }
-            c.out_off += chunk_len;
-            c.idx++;
         }
     }
 
@@ -873,23 +932,6 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
     }
     return 0;
 }
-
-static void *thread_chunk_write(void *arg)
-{
-    chunk_t *c = arg;
-    #if 0 // RAF: slower in this specific corner case
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
-    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-    #endif
-    c->error |= chunk_write(c);
-    return NULL;
-}
-
-#include <immintrin.h>
-#include <stdint.h>
-#include <stddef.h>
 
 /**
  * AVX2-accelerated Gzip header scanner.
@@ -940,7 +982,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#if 0
+#if _USE_MNZ
 #define _SEEKER_FUNC  5
 #define _READ_AHEAD   1
 #else
@@ -965,10 +1007,13 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
         perror("malloc");
         return -1;
     }
-    if(buf && buf_size) {
+    if(buf_size) {
         __builtin_memcpy(inbuf, buf, buf_size);
         w = buf_size;
     }
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, " buf: %p, buf_size: %lu, w: %lu\n", buf, buf_size, w);
+#endif // ----------------------------------------------------------------------
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
@@ -991,14 +1036,12 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
         #else
         if (!strm.avail_in) { // feed the input buffer
         #endif
-            if (n) __builtin_memmove(inbuf, &inbuf[set], n);
-            r = n + full_read(infd, inbuf + rmn, in_size - n);
+            if (n && set)
+                __builtin_memmove(inbuf, &inbuf[set], n);
+            r = n + full_read(infd, inbuf + n, in_size - n);
 
             if (!r) eof = 1; // EOF
             else strm.avail_in += r;
-
-            if (eof && !strm.avail_in)
-                break;
 
             set = 0;
             rmn = 0;
@@ -1101,22 +1144,43 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
             }
             #endif
         }
+        if (eof && !strm.avail_in)
+            break;
 
         strm.next_out  = outbuf;
         strm.avail_out = out_size;
 
-        ret = _inflate(&strm, Z_NO_FLUSH);
-        if (ret < 0 && ret != Z_BUF_ERROR) {
-            if (ret == Z_DATA_ERROR && nchunks)
-                break; /* ignore trailing junk/ptgz table */
-            fprintf(stderr, "inflate error: %d\n", ret);
-            break;
+        if(strm.avail_in) {
+            ret = _inflate(&strm, Z_NO_FLUSH);
+            if (ret < 0 && ret != Z_BUF_ERROR) {
+                /* ignore trailing junk/ptgz table */
+                if (ret == Z_DATA_ERROR) {
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "inflate mnz: %d (avail: %u, %u)\n",
+    ret, strm.avail_in, strm.avail_out);
+#endif // ----------------------------------------------------------------------
+#if _USE_MNZ
+                    ret = Z_STREAM_END;
+                    goto do_write;
+#else
+                    ret = 0;
+                    break;
+#endif
+                }
+
+                fprintf(stderr, "inflate error: %d (avail: %u, %u)\n",
+                    ret, strm.avail_in, strm.avail_out);
+                break;
+            }
         }
 
+do_write:
         w = out_size - strm.avail_out;
         if(1 || ofd == STDOUT_FILENO) {
-            if (full_write(ofd, outbuf, w) < 0)
+            if (full_write(ofd, outbuf, w) < 0) {
+                ret = -1;
                 goto endfunc;
+            }
         } else {
             if (c.thr) {
                 pthread_join(c.thr, NULL);
@@ -1125,21 +1189,27 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 c.thr = 0;
                 c.idx++;
             }
-            c.out_len = w;
-            c.out = outbuf;
-            if (pthread_create(&c.thr, NULL,
-                thread_chunk_write, &c)
-            ){
-                perror("pthread_create");
-                return -1;
+            if(w) {
+                c.out_len = w;
+                c.out = outbuf;
+                if (pthread_create(&c.thr, NULL,
+                    thread_chunk_write, &c)
+                ){
+                    perror("pthread_create");
+                    return -1;
+                }
             }
         }
 
         if (ret == Z_STREAM_END) {
+            ret = 0;
             nchunks++;
             _inflate_end(&strm);
             if (_inflate_init2(&strm, 15 + 16) != Z_OK) {
-                ret = Z_STREAM_ERROR;
+                ret = 1;
+                /*#if _USE_MNZ
+                continue;
+                #endif*/
                 break;
             }
         }
@@ -1152,8 +1222,8 @@ endfunc:
     free(inbuf);
     free(outbuf);
     #endif
-    ret = !(ret == Z_STREAM_END || nchunks);
-    if (ret) _print2("%s error: %d\n", __func__, ret);
+    if (ret)
+        _print2("%s error: %d\n", __func__, ret);
     return ret;
 }
 
@@ -1832,17 +1902,18 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
         int ret;
         uint16_t nbytes;
         uint8_t *ptr = NULL;
-        uint32_t out_size, in_size;
+        uint32_t out_size, in_size = 0;
         uint8_t buf[PTGZ_HEADER_SIZE];
 
         size_t w = full_read(infd, buf, PTGZ_HEADER_SIZE);
         if(w == PTGZ_HEADER_SIZE) {
             //RAF: this can be elaborated with a full parallel approach
             ptr = ptgz_header_read(buf, &nbytes, &in_size);
-            w  -= PTGZ_HEADER_SIZE;
+            if(ptr) w = 0; //-= PTGZ_HEADER_SIZE;
         }
+        //fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
 
-        if (!ptr || in_size < MIN_CHUNK_SIZE) {
+        if (!ptr || (in_size && in_size < MIN_CHUNK_SIZE)) {
             out_size = UNOUT_CHUNK_SIZE;
             in_size  = UNZIN_CHUNK_SIZE;
         } else {
@@ -1850,11 +1921,11 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
             out_size = size_by_blocks(in_size >> 2);
             if(out_size < UNOUT_CHUNK_SIZE)
                out_size = UNOUT_CHUNK_SIZE;
-            ptr = buf;
         }
 
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, w,!max_out_size);
+            out_size, buf, w, !max_out_size);
+        //fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
         if (!ret && !opt_keep && !opt_test && !opt_stdout) {
             if(unlink(filename))
                 perror("unlink");
