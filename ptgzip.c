@@ -802,12 +802,12 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#define _SEEKER_FUNC  0
-#define _READ_AHEAD  (0 && !_SEEKER_FUNC)
+#define _SEEKER_FUNC  5
+#define _READ_AHEAD   1
 
 static int zlib_inflate_stream(int infd, int ofd, size_t len)
 {
-    size_t r, w = 0, set = 0, rmn = 0;
+    size_t r, n, f, w = 0, set = 0, rmn = 0;
     uint8_t * inbuf = NULL;
     uint8_t *outbuf = NULL;
     int ret, eof = 0, nchunks = 0;
@@ -862,7 +862,7 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     c.ofd = ofd;
 
     while (1) {
-#if _SEEKER_FUNC == 0
+#if 0 //_SEEKER_FUNC == 0
         #if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
         r = strm.avail_in;
         if (!eof && r < MIN_CHUNK_SIZE) { // feed the input buffer
@@ -883,11 +883,23 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
         }
         #endif
 #else // chunks splitting
+        n = rmn + strm.avail_in;
+        #if _READ_HEAD // read-ahead is not convenient, at the best match 1:1
+        if (!eof && strm.avail_in < (in_size >> 1)) { // feed the input buffer
+        #else
         if (!strm.avail_in) { // feed the input buffer
-            if (rmn) __builtin_memmove(inbuf, &inbuf[set], rmn);
-            r = rmn + full_read(infd, inbuf + rmn, in_size - rmn);
-            if (!r) break; // EOF
+        #endif
+            if (n) __builtin_memmove(inbuf, &inbuf[set], n);
+            r = n + full_read(infd, inbuf + rmn, in_size - n);
 
+            if (!r) eof = 1; // EOF
+            else strm.avail_in += r;
+
+            if (eof && !strm.avail_in)
+                break;
+
+            set = 0;
+            rmn = 0;
             strm.next_in = inbuf;
 #if 0 // -----------------------------------------------------------------------
 fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
@@ -899,11 +911,8 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 rmn = r - set;
             } else {
                 strm.avail_in = r;
-                rmn = 0;
             }
             #elif _SEEKER_FUNC == 2
-            set = 0;
-            rmn = 0;
             strm.avail_in = r;
             register uint8_t *p = inbuf + 1;
             r -= 3; // to avoid the buffer overflow
@@ -921,8 +930,6 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 }
             }
             #elif _SEEKER_FUNC == 3
-            set = 0;
-            rmn = 0;
             strm.avail_in = r;
             r -= 2; // to avoid the buffer overflow
             for (size_t n = 1; n < r; n++) {
@@ -949,11 +956,10 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
              * is available, therefore the #3 should be used when another
              * unmissable PTGZ header is expected to be found next.
              */
-            set = 0;
-            rmn = 0;
             strm.avail_in = r;
             w = (r < 4) ? 0 : (r >> 1) - 2;
-            size_t f = 0, n = w + 1;
+            n = w + 1;
+            f = 0;
             while(w) {
                 if ((inbuf[w  ] == 0x1f
                 &&   inbuf[w+1] == 0x8b
@@ -985,7 +991,6 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
              * the workload which currently isn't specifically leveraged
              * as it has been for deflate.
              */
-            rmn = 0;
             strm.avail_in = r;
             set = chunk_seeker_avx2(inbuf, r);
             if(set) {
