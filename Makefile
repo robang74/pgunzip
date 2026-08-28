@@ -106,6 +106,7 @@ plgzip: ptgzip.c
 
 minz/.sync:
 	git submodule update --init --recursive
+	cd minz/ && git am 00*.patch ||:
 	touch $@
 
 ungz/.sync:
@@ -113,7 +114,7 @@ ungz/.sync:
 	touch $@
 
 $(MINZ_DIR)/miniz.c: | minz/.sync
-	cd minz && sh amalgamate.sh
+	cd minz && SKIPTESTS=1 sh amalgamate.sh
 
 $(MINZ_DIR)/miniz.c.o: $(MINZ_DIR)/miniz.c
 	$(CC) $(CFLAGS) -c $< -o $<.o
@@ -415,7 +416,7 @@ clean:
 	rm -f $(TARGETS) libz.tar libz.tar.gz test.dz
 
 veryclean: clean
-	rm -rf libz minz/.sync
+	rm -rf libz minz/.sync minz/amalgamation libzall.a
 
 distclean: veryclean
 	rm -f $(TARBALL)
