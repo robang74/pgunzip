@@ -106,13 +106,14 @@ plgzip: ptgzip.c
 
 minz/.sync:
 	git submodule update --init --recursive
-	#cd minz/ && git am 00*.patch ||:
 	touch $@
 
 updateminz: | minz/.sync
 	@echo "Updating miniz at the rfc1952 branch HEAD"
 	cd minz && git fetch origin rfc1952 \
-	  && git checkout FETCH_HEAD
+	  && git checkout --force FETCH_HEAD
+	cd minz/ && cat 00*.patch | patch -p1 \
+	  && git status | grep modified
 	rm -rf libzall.a minz/amalgamation/
 
 ungz/.sync:
