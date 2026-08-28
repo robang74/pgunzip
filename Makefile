@@ -112,8 +112,8 @@ updateminz: | minz/.sync
 	@echo "Updating miniz at the rfc1952 branch HEAD"
 	cd minz && git fetch origin rfc1952 \
 	  && git checkout --force FETCH_HEAD
-	cd minz/ && cat 00*.patch | patch -p1 \
-	  && git status | grep modified
+	cd minz/ && cat 00*.patch 2>&- | patch -p1
+	cd minz/ && git status | grep modified ||:
 	rm -rf libzall.a minz/amalgamation/
 
 ungz/.sync:
