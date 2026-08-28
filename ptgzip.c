@@ -1159,13 +1159,8 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
 fprintf(stderr, "inflate mnz: %d (avail: %u, %u)\n",
     ret, strm.avail_in, strm.avail_out);
 #endif // ----------------------------------------------------------------------
-#if _USE_MNZ
-                    ret = Z_STREAM_END;
-                    goto do_write;
-#else
                     ret = 0;
                     break;
-#endif
                 }
 
                 fprintf(stderr, "inflate error: %d (avail: %u, %u)\n",
@@ -1174,7 +1169,6 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u)\n",
             }
         }
 
-do_write:
         w = out_size - strm.avail_out;
         if(1 || ofd == STDOUT_FILENO) {
             if (full_write(ofd, outbuf, w) < 0) {
@@ -1207,9 +1201,6 @@ do_write:
             _inflate_end(&strm);
             if (_inflate_init2(&strm, 15 + 16) != Z_OK) {
                 ret = 1;
-                /*#if _USE_MNZ
-                continue;
-                #endif*/
                 break;
             }
         }
