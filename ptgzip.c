@@ -982,7 +982,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#if _USE_MNZ
+#if 0 //_USE_MNZ
 #define _SEEKER_FUNC  5
 #define _READ_AHEAD   1
 #else
@@ -1150,28 +1150,31 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
         strm.next_out  = outbuf;
         strm.avail_out = out_size;
 
-        if(strm.avail_in) {
+        if(strm.avail_in || ret == Z_BUF_ERROR) {
             ret = _inflate(&strm, Z_NO_FLUSH);
-            if (ret < 0 && ret != Z_BUF_ERROR) {
-                /* ignore trailing junk/ptgz table */
-                if (ret == Z_DATA_ERROR) {
+            if (ret < 0 && ret != Z_BUF_ERROR) { // -5
+                if (ret == Z_DATA_ERROR) { // -3
 #if 0 // -----------------------------------------------------------------------
-fprintf(stderr, "inflate mnz: %d (avail: %u, %u)\n",
-    ret, strm.avail_in, strm.avail_out);
+fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
+    ret, strm.avail_in, strm.avail_out, out_size - strm.avail_out, Z_DATA_ERROR);
 #endif // ----------------------------------------------------------------------
+#if _USE_MNZ
+                    //ret = Z_STREAM_END;
+                    //goto do_stream_end;
+#endif
                     ret = 0;
-                    break;
+                    break; /* ignore trailing junk/ptgz table */
                 }
-
                 fprintf(stderr, "inflate error: %d (avail: %u, %u)\n",
                     ret, strm.avail_in, strm.avail_out);
                 break;
             }
         }
 
+
         w = out_size - strm.avail_out;
         if(1 || ofd == STDOUT_FILENO) {
-            if (full_write(ofd, outbuf, w) < 0) {
+            if (w && full_write(ofd, outbuf, w) < 0) {
                 ret = -1;
                 goto endfunc;
             }
@@ -1196,10 +1199,18 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u)\n",
         }
 
         if (ret == Z_STREAM_END) {
+do_stream_end:
             ret = 0;
             nchunks++;
+            if(_USE_MNZ && !w)
+                break;
             _inflate_end(&strm);
-            if (_inflate_init2(&strm, 15 + 16) != Z_OK) {
+            ret = _inflate_init2(&strm, 15 + 16);
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "  init2 mnz: %d (avail: %u, %u, write: %ld)\n",
+    ret, strm.avail_in, strm.avail_out, out_size - strm.avail_out);
+#endif // ----------------------------------------------------------------------
+            if (ret != Z_OK) {
                 ret = 1;
                 break;
             }
