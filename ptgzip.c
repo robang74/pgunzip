@@ -1233,45 +1233,6 @@ endfunc:
 
 #endif /////////////////////////////////////////////////////////////////////////
 
-static ALWAYS_INLINE
-int inflate_chunk_init(chunk_t *c, int idx, int ofd,
-    int infd, sem_t *sem_ptr) {}
-
-static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
-{
-//      size_t input_lenght = 0;
-//      uint32_t next_idx = 0,
-        uint32_t current = 0, nthreads = _g_cpu_procs;
-
-        _g_chunk_size = in_size;
-        chunk_t chunks[2][MAX_THREADS];
-        memset(chunks, 0, sizeof(chunks));
-
-        for (uint32_t i = 0; i < nthreads; i++, current++)
-        {
-            chunk_t *c = &chunks[0][i];
-            int ret = inflate_chunk_init(c, current, ofd, infd, sem_ptr);
-/*
-            c.in_off = input_lenght;
-            r = chunk_read(infd, &c); //c.in, c.in_len;
-            input_lenght += r
-*/
-            if (ret) {
-                nthreads = i;
-                break;
-            }
-            chunk_inflate_start(&c->thr, c);
-//          pthread_detach(c->thr);
-            //RAF: the bottleneck is the next one in the ordered list
-            //     since after the first the father starts to write
-            //     then the bottleneck is the first one, let it go!
-            if(!i) _cpu_relax();
-        }
-}
-
-#define _inflate_parallel zlib_inflate_parallel
-
 // =============================================================================
 // Prep
 // =============================================================================
@@ -1611,6 +1572,309 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 
     return &buf[20];
 }
+
+// =============================================================================
+// Core
+// =============================================================================
+
+static ALWAYS_INLINE
+int inflate_chunk_init(chunk_t *c, int idx, int ofd,
+    int infd, sem_t *sem_ptr) {}
+
+static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
+{
+//  size_t input_lenght = 0;
+    size_t outlen = 0;
+    uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
+
+    _g_chunk_size = in_size;
+    chunk_t chunks[2][MAX_THREADS];
+    memset(chunks, 0, sizeof(chunks));
+
+    pgunz_t *ptbl = create_pgunz_table(_g_tot_chunks);
+    uint32_t *list = ptbl->cur.list;
+
+    sem_t sem;
+#if _THR_WAIT
+    sem_init(&sem, 0, 0);
+#endif
+
+    for (uint32_t i = 0; i < nthreads; i++, current++)
+    {
+        chunk_t *c = &chunks[0][i];
+        int ret = inflate_chunk_init(c, current, ofd, infd, sem_ptr);
+/*
+        c.in_off = input_lenght;
+        r = chunk_read(infd, &c); //c.in, c.in_len;
+        input_lenght += r
+*/
+        if (ret) {
+            nthreads = i;
+            break;
+        }
+        chunk_inflate_start(&c->thr, c);
+//      pthread_detach(c->thr);
+        //RAF: the bottleneck is the next one in the ordered list
+        //     since after the first the father starts to write
+        //     then the bottleneck is the first one, let it go!
+        if(!i) _cpu_relax();
+    }
+
+do_a_thread_wait:
+#if _THR_WAIT
+//RAF: one thread completed, at least as
+// long as, at least, one thread exists.
+    if (current != _g_tot_chunks)
+        if (full_sem_wait(&sem))
+            return -1;
+#else
+    _cpu_relax();
+#endif
+do_another_loop:
+    for(uint32_t a = 0; a < 2; a++)
+    for(uint32_t i = 0, b = !a; i < nthreads; i++)
+    {
+        chunk_t *c  = &chunks[a][i];
+        chunk_t *cb = &chunks[b][i];
+
+        if (c->error) {
+            _print2("\nERROR: inflate failed on chunk %d,"
+                " size: %lu, err: %d\n", current + i, c->out_len, c->error);
+            return c->error;
+        }
+        if (c->state < 2)
+            continue;
+
+        if (!c->thr)
+            goto skip_do_new_thread;
+
+        if (!c->in_len && c->state == 3)
+        {
+            current--;
+            goto dispose;
+        }
+
+        /* create another thread to do work */
+        if (!cb->thr && !cb->state
+        && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
+        ){
+            if (inflate_chunk_init(cb, current, ofd, infd, &sem)) {
+                c->thr = 0;
+            } else {
+                current++;
+                chunk_inflate_start(&cb->thr, cb);
+//              pthread_detach(cb->thr);
+            }
+        }
+skip_do_new_thread:
+
+#if _DEBUG & 0x20 // -----------------------------------------------------------
+if (ofd != STDOUT_FILENO || c->idx == next_idx)
+fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    current, _g_tot_chunks, nthreads, c->idx, next_idx,
+    ofd, c->thr, chunks[b][i].state);
+#endif // ----------------------------------------------------------------------
+
+        /* thread write done or ready to */
+        if (c->state != 3)
+            continue;
+
+        /* ordered writing on STDOUT, only */
+        if (ofd == STDOUT_FILENO
+        &&  c->idx != next_idx
+        ){
+            continue;
+        }
+
+#if _DEBUG & 0x40 // -----------------------------------------------------------
+fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
+    c->thr, ofd, next_idx, _g_tot_chunks);
+#endif // ----------------------------------------------------------------------
+
+        /* granting the correct order */
+        next_idx++;
+        if(infd == STDIN_FILENO)
+            _g_read_filesize += c->in_len;
+        outlen += (ofd == STDOUT_FILENO)
+                ? full_write(ofd, c->out, c->out_len)
+                : c->out_len
+                ;
+        if(list) list[ c->idx ] = c->out_len;
+
+dispose:
+        #if _USE_FREE
+        /* disposing the chunk and its buffer */
+        if (is_outbuf_freeable(c)) {
+            free(c->out);
+            c->out = NULL;
+        }
+        if (is_inbuf_freeable(c)) {
+            free(c->in);
+            c->in = NULL;
+        }
+        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
+        #else
+        c->state = 0;
+        //c->in_len = 0;
+        #endif
+
+#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
+       *            under this circumstances is better to keep them into
+       *            the current chuck which will be reused only by large
+       *            files while the smaller wouldn't.
+       */
+        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
+        chunk_t *cb; //RAF: it will be the next one, if any
+        if (i+1 < nthreads)
+            cb = &chunks[b][i+1];
+        else
+            cb = &chunks[a][ 0 ];
+        if(!cb->state)
+            __builtin_memcpy(cb, c, sizeof(chunk_t));
+#endif
+
+        /* disposing the thread */
+//      pthread_join(c->thr, NULL);
+        c->thr = 0;
+
+        // RAF: another pending work-done might be available
+        goto do_another_loop;
+    }
+
+    // RAF: no pending work-done available
+    // is there something else to wait for?
+    if (next_idx < current)
+        goto do_a_thread_wait;
+
+    // -----------------------------------------------------------
+    // Ending 
+    // -----------------------------------------------------------
+
+    if (!ofd) goto do_verbose;
+
+    if (ofd == STDOUT_FILENO)
+        goto write_table;
+
+    if(next_idx < 2) {
+        list = NULL;
+        goto skip_reorgnz;
+    }
+
+    /*
+     * In-place file reorganization using kernel-Level zero-copy
+     * Loop through all compressed chunk lengths stored in list[]
+     */
+    if(_g_out_mmap_base) {
+        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_SIZE;
+        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
+        for (uint32_t i = 1; i < next_idx; i++) {
+            size_t len = list[i];
+            src += WBUF_MAX_SIZE;
+            if (!len) continue; //RAF: it should never happens, by design
+            __builtin_memmove(dst, src, len);
+            dst += len;
+        }
+        outlen += dst - _g_out_mmap_base;
+    } else {
+        int i;
+        off_t src = PTGZ_HEADER_SIZE;
+        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
+        for (uint32_t i = 1; i < next_idx; i++) {
+            size_t len = list[i];
+            src += WBUF_MAX_SIZE;
+            if (!len) continue; //RAF: it should never happens, by design
+
+            off_t off_in = src;
+            while (len > 0) {
+                ssize_t ret = copy_file_range(ofd,
+                    &off_in, ofd, &dst, len, 0);
+                if (!ret) break;
+                if (ret < 0) {
+                    if (errno == EINTR) continue;
+                    perror("copy_file_range");
+                    return 1;
+                }
+                len -= ret;
+            }
+        }
+        outlen = dst;
+    }
+    outlen += PTGZ_HEADER_SIZE;
+
+skip_reorgnz:
+    /* Update outlen and truncate remaining sparse tail */
+    if(list)
+        outlen = ((outlen + 3) >> 2) << 2;
+    if (ftruncate(ofd, outlen) < 0) {
+        perror("ftruncate");
+        return 1;
+    }
+    if(lseek(ofd, 0, SEEK_END) < 0) {
+        perror("lseek");
+        return -1;
+    }
+
+write_table:
+    size_t len = 0;
+do_verbose:
+    if(opt_verbose) {
+        _print2("%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
+            " (%0.1f%%), zl:%d\n", libz_name, nthreads, _g_tot_chunks,
+            next_idx, _g_chunk_size, _g_read_filesize, outlen, len, (float)
+            outlen * 100 / _g_read_filesize, _g_compression_level);
+
+        if(opt_verbose < 2 || !list)
+            goto do_free;
+        _print2("ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
+            ptbl->magicw, ptbl->chksum, ptbl->nwords, ptbl->bufsze);
+
+        float sum = 0;
+        uint32_t min = -1, max = 0;
+        for(uint32_t i = 0; i < next_idx; i++) {
+            uint32_t val = list[i];
+            if(val < min) min = val;
+            if(val > max) max = val;
+            sum += val;
+        }
+        _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
+            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum,
+            min >> 12, ((sum / next_idx) / 4096), (max + 4095) >> 12,
+            min, sum / next_idx, max);
+
+        if(opt_verbose < 3 || !list)
+            goto do_free;
+        for(uint32_t i = 0; i < next_idx; i++) {
+            min = 1;
+            max = 0;
+            uint32_t val = list[i];
+            for(uint32_t n = 0; n < next_idx; n++) {
+                uint32_t cur = list[n];
+                if(val < cur) min++;
+                if(val > cur) max++;
+            }
+            _print2("  0x%08x: %6u %10u | <%10u >%10u\n",
+                i, (val + 4095) >> 12, val, min, max)
+        }
+    }
+
+do_free:
+    #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
+    sem_destroy(&sem);
+    if(_g_read_mmap_base)
+        munmap(_g_read_mmap_base, _g_read_filesize);
+    if(_g_out_mmap_base) {
+        msync(_g_out_mmap_base, outlen, MS_SYNC);
+        munmap(_g_out_mmap_base, max_out_size);
+    }
+    if(ofd) close(ofd);
+    free(ptbl);
+    #endif
+
+    return 0;
+}
+
+#define _inflate_parallel zlib_inflate_parallel
 
 // =============================================================================
 // Main
