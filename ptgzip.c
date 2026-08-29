@@ -42,10 +42,15 @@
 #define ALIGNED4      __attribute__ ((aligned(4)))
 #define ALIGNED8      __attribute__ ((aligned(8)))
 
-#define MAX_THREADS         16
-#define MAX_CHUNK_SIZE     (1UL << 18)     /* max target size per segment */
-#define MIN_CHUNK_SIZE     (1UL << 16)     /* 2x min gzip compress window */
-#define PTGZ_HEADER_SIZE    30
+#define MAX_THREADS           16
+#define MAX_CHUNK_SIZE       (1UL << 18)     /* max target size per segment */
+#define MIN_CHUNK_SIZE       (1UL << 16)     /* 2x min gzip compress window */
+#define PTGZ_HEADER_SIZE      30UL
+#define PTGZ_LIST_MAX_WORDS   16380UL
+#define PTGZ_HEADER_CURSIZE  (PTGZ_HEADER_SIZE + _g_ptgz_list_size)
+#define PTGZ_HEADER_MAXSIZE  (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
+
+static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
 
 static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help       = 0;    /* -h, --help */
@@ -196,6 +201,7 @@ enum {
 static uint8_t *_g_read_mmap_base = NULL;
 static uint8_t *_g_out_mmap_base  = NULL;
 static off_t _g_read_filesize     = 0;
+static size_t _g_ptgz_list_size   = 0;
 static size_t _g_chunk_size       = 0;
 static int _g_tot_chunks          = 0;
 static int _g_compression_level   = 6;
@@ -578,7 +584,7 @@ void chunk_init(chunk_t *c, int idx, int ofd,
         m.state = 1;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
         m.out_cap = out_size ?: WBUF_MAX_SIZE;
-        m.out_off = out_size ? 0 : PTGZ_HEADER_SIZE;
+        m.out_off = out_size ? 0 : PTGZ_HEADER_CURSIZE;
         m.in_len = _g_chunk_size;
         m.infd = infd;
         m.ofd = ofd;
@@ -1481,10 +1487,10 @@ head -c64 libz.tar.gz | hexdump -C
 static
 const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
-    static __thread uint8_t buf[PTGZ_HEADER_SIZE] ALIGNED4 = {0};
+    uint8_t *buf = _g_ptgz_header;
 
     // 1. Fixed Header GZIP 10 bytes
-    if (!buf[0]) {                // Set once, because fixed fields
+    if (buf[0] == 0) {            // Set once, because fixed fields
         buf[0]  = 0x1f;           // Magic 2 bytes
         buf[1]  = 0x8b;
         buf[2]  = 0x08;           // Compression method: DEFLATE
@@ -1506,9 +1512,9 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     }
 #endif
 
-    uint16_t plen = size ?: 4;
+    uint16_t plen = size + 4;
     // XLEN = Subfield ID (2B) + Subfield LEN (2B) + Payload Length
-    uint16_t xlen = plen  + 4;
+    uint16_t xlen = plen + 4;
 
     // FEXTRA field: XLEN 2 bytes
     buf[10] = (uint8_t)(xlen     );
@@ -1522,7 +1528,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     buf[14] = (uint8_t)(plen     );
     buf[15] = (uint8_t)(plen >> 8);
 
-    // Payload Size Writing
+    // First field is the input chunk lenght
     buf[16] = (uint8_t)(in_len      );
     buf[17] = (uint8_t)(in_len >>  8);
     buf[18] = (uint8_t)(in_len >> 16);
@@ -1535,7 +1541,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     buf[26] = 0x00; buf[27] = 0x00; buf[28] = 0x00; buf[29] = 0x00; // ISIZE
 #else
     //RAF this function is used one-time only, and buf = {0}
-    //__builtin_memset(&buf[21], 0, PTGZ_HEADER_SIZE - 21);
+    //__builtin_memset(&buf[21], 0, PTGZ_HEADER_MAXSIZE - 21);
 #endif
 
     return buf; // return a local value but it is fine
@@ -1561,7 +1567,7 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
     }
     if(plen < 4) return NULL;
 
-    *nbytes = plen;
+    *nbytes = plen - 4;
     *size = ( ((uint32_t)buf[16])       )
           | ( ((uint32_t)buf[17]) <<  8 )
           | ( ((uint32_t)buf[18]) << 16 )
@@ -1713,7 +1719,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
                 chunk_inflate_start(&cb->thr, cb);
 //              pthread_detach(cb->thr);
             }
-        }        
+        }
 skip_do_new_thread:
 
         /* thread write done or ready to */
@@ -1808,7 +1814,7 @@ dispose:
      * Loop through all compressed chunk lengths stored in list[]
      */
     if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_SIZE;
+        uint8_t *src = _g_out_mmap_base;
         uint8_t *dst = src + list[0]; /* Skip chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
@@ -1820,7 +1826,7 @@ dispose:
         outlen += dst - _g_out_mmap_base;
     } else {
         int i;
-        off_t src = PTGZ_HEADER_SIZE;
+        off_t src = 0;
         off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
@@ -1842,7 +1848,7 @@ dispose:
         }
         outlen = dst;
     }
-    outlen += PTGZ_HEADER_SIZE;
+//  outlen += PTGZ_HEADER_CURSIZE;
 
 skip_reorgnz:
     /* Update outlen and truncate remaining sparse tail */
@@ -2197,7 +2203,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
         // RAF, TODO: the PTGZ determines the output file size
         max_out_size  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * _g_tot_chunks;
-        max_out_size += PTGZ_HEADER_SIZE;
+        max_out_size += PTGZ_HEADER_CURSIZE;
 
         /* 1. Pre-allocate max size for output mmap */
         if (ftruncate(ofd, max_out_size) < 0) {
@@ -2240,6 +2246,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
 // === sequential gunzip =======================================================
 
+    pgunz_t *ptbl;
+    uint32_t *list;
+
 #if 0 // -----------------------------------------------------------------------
 fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
 fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
@@ -2250,19 +2259,31 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     {
         int ret;
         uint16_t nbytes;
-        uint8_t *ptr = NULL;
         uint32_t out_size, in_size = 0;
-        uint8_t buf[PTGZ_HEADER_SIZE];
+        uint8_t *ptr = NULL;
+        size_t w;
 
-        size_t w = full_read(infd, buf, PTGZ_HEADER_SIZE);
-        if(w == PTGZ_HEADER_SIZE) {
-            //RAF: this can be elaborated with a full parallel approach
-            ptr = ptgz_header_read(buf, &nbytes, &in_size);
-            if(ptr) w = 0; //-= PTGZ_HEADER_SIZE;
-        }
-        //fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
+        w = full_read(infd, _g_ptgz_header, PTGZ_HEADER_MAXSIZE);
+        if(w < PTGZ_HEADER_SIZE)
+            goto set_default_values;
 
-        if (!ptr || (in_size && in_size < MIN_CHUNK_SIZE)) {
+        //RAF: this can be elaborated with a full parallel approach
+        ptr = ptgz_header_read(_g_ptgz_header, &nbytes, &in_size);
+//      fprintf(stderr, "\n>>> w: %lu, ptr: %p, sze: %u -- ", w, ptr, in_size);
+        if(!ptr)
+            goto set_default_values;
+
+        _g_tot_chunks = nbytes >> 2;
+        ptbl = create_pgunz_table(0);
+        ptbl->cur.size = _g_tot_chunks;
+        ptbl->cur.list = (uint32_t *)ptr;
+        w -= nbytes + PTGZ_HEADER_SIZE;
+        ptr = w ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - w] : NULL;
+//      fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
+
+        if (in_size  < MIN_CHUNK_SIZE) {
+set_default_values:
+            ptr      = _g_ptgz_header;
             out_size = UNOUT_CHUNK_SIZE;
             in_size  = UNZIN_CHUNK_SIZE;
         } else {
@@ -2272,19 +2293,20 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
                out_size = UNOUT_CHUNK_SIZE;
         }
 
-        if(w) {
+        if(!_g_tot_chunks) {
             ret = _inflate_stream(infd, ofd, in_size,
-                out_size, buf, w, !max_out_size);
+                out_size, ptr, w, !max_out_size);
         } else {
 #if _DEBUG == 0xFF //RAF: code under development
             ret = _inflate_parallel(infd, ofd, in_size,
-                out_size, buf, w, !max_out_size, &sem);
+                out_size, ptr, w, !max_out_size, &sem);
 #else
             ret = _inflate_stream(infd, ofd, in_size,
-                out_size, buf, w, !max_out_size);
+                out_size, ptr, w, !max_out_size);
 #endif
         }
-        //fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
+
+//      fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
         if (!ret && !opt_keep && !opt_test && !opt_stdout) {
             if(unlink(filename))
                 perror("unlink");
@@ -2293,6 +2315,9 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
         return ret;
     }
 
+    ptbl = create_pgunz_table(_g_tot_chunks);
+    list = ptbl->cur.list;
+
 // =============================================================================
 // Threads
 // =============================================================================
@@ -2300,8 +2325,10 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
 
-    pgunz_t *ptbl = create_pgunz_table(_g_tot_chunks);
-    uint32_t *list = ptbl->cur.list;
+    _g_ptgz_list_size = _g_tot_chunks;
+    if(_g_ptgz_list_size > PTGZ_LIST_MAX_WORDS)
+       _g_ptgz_list_size = PTGZ_LIST_MAX_WORDS;
+    _g_ptgz_list_size = _g_ptgz_list_size << 2;
 
     /* RAF
      * The GZIP modify-time is a 32-bit unsigned value and therefore
@@ -2310,9 +2337,13 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
      */
     time_t utc = time(NULL);
      const uint32_t *ptr =
-    (const uint32_t *)ptgz_header_make(utc, _g_chunk_size, 0);
-    full_write(ofd, ptr, PTGZ_HEADER_SIZE);
-//      _print2("PTGZ> magic: 0x%08x, size: %lu\n", ptr[0], _g_chunk_size);
+    (const uint32_t *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
+    full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
+
+#if _DEBUG // ------------------------------------------------------------------
+_print2("PTGZ> magic: 0x%08x, size: %lu / %lu\n",
+    ptr[0], _g_chunk_size, PTGZ_HEADER_CURSIZE);
+#endif // ----------------------------------------------------------------------
 
 // =============================================================================
 
@@ -2482,7 +2513,7 @@ dispose:
      * Loop through all compressed chunk lengths stored in list[]
      */
     if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_SIZE;
+        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_CURSIZE;
         uint8_t *dst = src + list[0]; /* Skip chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
@@ -2494,7 +2525,7 @@ dispose:
         outlen += dst - _g_out_mmap_base;
     } else {
         int i;
-        off_t src = PTGZ_HEADER_SIZE;
+        off_t src = PTGZ_HEADER_CURSIZE;
         off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
         for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
@@ -2516,7 +2547,7 @@ dispose:
         }
         outlen = dst;
     }
-    outlen += PTGZ_HEADER_SIZE;
+    outlen += PTGZ_HEADER_CURSIZE;
 
 skip_reorgnz:
     /* Update outlen and truncate remaining sparse tail */
