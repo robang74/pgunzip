@@ -570,7 +570,7 @@ void chunk_init(chunk_t *c, int idx, int ofd,
     int infd, sem_t *sem_ptr, size_t out_size)
 {
     static ALIGNED4 chunk_t m = {0};
-    
+
     if(m.state == 0) {
         m.state = 1;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
@@ -582,7 +582,7 @@ void chunk_init(chunk_t *c, int idx, int ofd,
     }
 
     __builtin_memcpy(c, &m, sizeof(m));
-    
+
     c->idx = idx;
     c->out_off += c->out_cap  * idx;
     c->in_off = _g_chunk_size * idx;
@@ -1789,7 +1789,7 @@ dispose:
         goto do_a_thread_wait;
 
     // -----------------------------------------------------------
-    // Ending 
+    // Ending
     // -----------------------------------------------------------
 
     if (!ofd) goto do_verbose;
@@ -2271,14 +2271,14 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
 
         if(w) {
             ret = _inflate_stream(infd, ofd, in_size,
-                out_size, ptr, w, !max_out_size);
+                out_size, buf, w, !max_out_size);
         } else {
 #if _DEBUG == 0xFF //RAF: code under development
             ret = _inflate_parallel(infd, ofd, in_size,
-                out_size, ptr, w, !max_out_size, &sem);
+                out_size, buf, w, !max_out_size, &sem);
 #else
             ret = _inflate_stream(infd, ofd, in_size,
-                out_size, ptr, w, !max_out_size);
+                out_size, buf, w, !max_out_size);
 #endif
         }
         //fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
