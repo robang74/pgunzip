@@ -87,9 +87,9 @@ enum {
     b_mmap_seek = 8,
 };
 
-#ifndef _DEBUG
-#define _DEBUG    0 //0xFF
-#endif
+//#ifndef _DEBUG
+#define _DEBUG    0 //xFF
+//#endif
 #ifndef _USE_OPT
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
@@ -418,13 +418,16 @@ static void *thread_inflate(void *arg)
     ret = _inflate(&strm, Z_FINISH);
 
 #if _DEBUG & 0x01 // -----------------------------------------------------------
-if(strm.total_out)
-    fprintf(stderr, ">>> tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
+if(strm.avail_out)
+    fprintf(stderr, ">>> out: %d, cap: %ld\n", strm.avail_out, c->out_cap);
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END /* && ret != Z_BUF_ERROR && ret != Z_OK */) {
+    if (ret != Z_STREAM_END && ret != Z_BUF_ERROR
+    &&  ret != Z_DATA_ERROR && ret != Z_OK
+    ){
         perror("inflate");
+        //fprintf(stderr, "inflate returns: %d\n", ret);
         c->error = ret; //RAF: rarely it returns Z_OK = 0
     }
 
@@ -1634,20 +1637,16 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
 
     pgunz_t *ptbl = create_pgunz_table(_g_tot_chunks);
     uint32_t *list = ptbl->cur.list;
-
+/*
     sem_t sem;
 #if _THR_WAIT
     sem_init(&sem, 0, 0);
 #endif
-
+*/
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
-/*
-        c.in_off = input_lenght;
-        r = chunk_read(infd, &c); //c.in, c.in_len;
-        input_lenght += r
-*/
+
         chunk_init(c, current, ofd, infd, sem_ptr, out_size);
         if (inflate_chunk_init(c)) {
             nthreads = i;
@@ -1666,11 +1665,12 @@ do_a_thread_wait:
 //RAF: one thread completed, at least as
 // long as, at least, one thread exists.
     if (current != _g_tot_chunks)
-        if (full_sem_wait(&sem))
+        if (full_sem_wait(sem_ptr))
             return -1;
 #else
     _cpu_relax();
 #endif
+//  fprintf(stderr, "o\n");
 do_another_loop:
     for(uint32_t a = 0; a < 2; a++)
     for(uint32_t i = 0, b = !a; i < nthreads; i++)
@@ -1683,13 +1683,19 @@ do_another_loop:
                 " size: %lu, err: %d\n", current + i, c->out_len, c->error);
             return c->error;
         }
+
         if (c->state < 2)
             continue;
 
         if (!c->thr)
             goto skip_do_new_thread;
 
-        if (!c->in_len && c->state == 3)
+#if _DEBUG & 0x40 // -----------------------------------------------------------
+fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n",
+    c->thr, ofd, c->idx, next_idx, _g_tot_chunks, c->out_len, outlen);
+#endif // ----------------------------------------------------------------------
+
+        if (!c->out_len && c->state == 3)
         {
             current--;
             goto dispose;
@@ -1707,15 +1713,8 @@ do_another_loop:
                 chunk_inflate_start(&cb->thr, cb);
 //              pthread_detach(cb->thr);
             }
-        }
+        }        
 skip_do_new_thread:
-
-#if _DEBUG & 0x20 // -----------------------------------------------------------
-//if (ofd != STDOUT_FILENO || c->idx == next_idx)
-fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, _g_tot_chunks, nthreads, c->idx, next_idx,
-    ofd, c->thr, chunks[b][i].state);
-#endif // ----------------------------------------------------------------------
 
         /* thread write done or ready to */
         if (c->state != 3)
@@ -1728,11 +1727,6 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             continue;
         }
 
-#if _DEBUG & 0x40 // -----------------------------------------------------------
-fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    c->thr, ofd, next_idx, _g_tot_chunks);
-#endif // ----------------------------------------------------------------------
-
         /* granting the correct order */
         next_idx++;
         if(infd == STDIN_FILENO)
@@ -1742,6 +1736,13 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
                 : c->out_len
                 ;
         if(list) list[ c->idx ] = c->out_len;
+
+#if _DEBUG & 0x20 // -----------------------------------------------------------
+//if (ofd != STDOUT_FILENO || c->idx == next_idx)
+fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    current, _g_tot_chunks, nthreads, c->idx, next_idx, ofd, cb->thr, cb->state);
+#endif // ----------------------------------------------------------------------
+
 
 dispose:
         #if _USE_FREE
@@ -1901,6 +1902,7 @@ do_verbose:
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
+/*
     sem_destroy(&sem);
     if(_g_read_mmap_base)
         munmap(_g_read_mmap_base, _g_read_filesize);
@@ -1909,6 +1911,7 @@ do_free:
         munmap(_g_out_mmap_base, max_out_size);
     }
     if(ofd) close(ofd);
+*/
     free(ptbl);
     #endif
 
