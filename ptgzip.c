@@ -88,7 +88,7 @@ enum {
 };
 
 #ifndef _DEBUG
-#define _DEBUG    0
+#define _DEBUG    0 //0xFF
 #endif
 #ifndef _USE_OPT
 #define _USE_OPT  1 //RAF: no difference in gz speed
@@ -565,22 +565,30 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
     return size - len;
 }
 
-static ALWAYS_INLINE
-void chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
+static
+void chunk_init(chunk_t *c, int idx, int ofd,
+    int infd, sem_t *sem_ptr, size_t out_size)
 {
-    c->state = 1;
+    static ALIGNED4 chunk_t m = {0};
+    
+    if(m.state == 0) {
+        m.state = 1;
+        m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
+        m.out_cap = out_size ?: WBUF_MAX_SIZE;
+        m.out_off = out_size ? 0 : PTGZ_HEADER_SIZE;
+        m.in_len = _g_chunk_size;
+        m.infd = infd;
+        m.ofd = ofd;
+    }
+
+    __builtin_memcpy(c, &m, sizeof(m));
+    
     c->idx = idx;
-    c->error = 0;
-    c->sem_ptr  = _THR_WAIT ? sem_ptr : NULL;
+    c->out_off += c->out_cap  * idx;
+    c->in_off = _g_chunk_size * idx;
 
-//  c->out_cap  = zbuf_max_size(_g_chunk_size);
-//  c->out_off  = WBUF_MAX_SIZE * idx;
-//  c->in_off   = _g_chunk_size * idx;
-//  c->in_len   = _g_chunk_size;
-
-    c->infd = infd;
-    c->ofd = ofd;
-    c->map = 0;
+    if (infd != STDIN_FILENO && idx + 1 == _g_tot_chunks)
+        c->in_len = (size_t)_g_read_filesize - c->in_off;
 }
 
 static ALWAYS_INLINE
@@ -604,23 +612,9 @@ void chunk_dispose(chunk_t *c)
  *      after the development is completed to get rid off of global variables
  *      in favor of a data structure that can refers also to its own thread_t.
  */
-static ALWAYS_INLINE
-int deflate_chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
+static
+int deflate_chunk_init(chunk_t *c)
 {
-
-    chunk_init(c, idx, ofd, infd, sem_ptr);
-
-    c->out_cap  = zbuf_max_size(_g_chunk_size);
-    c->out_off  = WBUF_MAX_SIZE * idx;
-    c->in_off   =    _g_chunk_size * idx;
-    c->out_off += PTGZ_HEADER_SIZE;
-    if(infd != STDIN_FILENO) {
-        c->in_len = (idx + 1 == _g_tot_chunks)
-                  ? (size_t)(_g_read_filesize - c->in_off)
-                  : _g_chunk_size;
-    } else {
-        c->in_len = _g_chunk_size;
-    }
 
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
@@ -637,7 +631,7 @@ int deflate_chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
          if (posix_memalign((void **)&c->out, 64, c->out_cap))
               c->out = NULL;
     if (!c->out) {
-        perror("malloc in buf");
+        perror("posix_memalign");
         exit(-1);
     }
 #endif
@@ -653,12 +647,12 @@ int deflate_chunk_init(chunk_t *c, int idx, int ofd, int infd, sem_t *sem_ptr)
              if (posix_memalign((void **)&c->in, 64, c->in_len))
                   c->in = NULL;
         if (!c->in) {
-            perror("malloc in buf");
+            perror("posix_memalign");
             exit(-1);
         }
         c->error |= chunk_read(c) << 3;
 #if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, ">>> thr(%04d): read = %lu\n", idx, c->in_len);
+fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
 #endif  // ---------------------------------------------------------------------
         if (!c->in_len) {
             chunk_dispose(c);
@@ -1577,9 +1571,55 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 // Core
 // =============================================================================
 
-static ALWAYS_INLINE
-int inflate_chunk_init(chunk_t *c, int idx, int ofd,
-    int infd, sem_t *sem_ptr) {}
+static
+int inflate_chunk_init(chunk_t *c)
+{
+#if _USE_MMAP
+    /* Assign output pointer inside mapped output file space */
+    if (_g_out_mmap_base) {
+        c->out = _g_out_mmap_base + c->out_off;
+        c->map |= b_mmap_out;
+    }
+    else
+#endif
+#if _ZLIB_MEM
+    c->out = NULL;
+#else
+    if (!c->out)
+         if (posix_memalign((void **)&c->out, 64, c->out_cap))
+              c->out = NULL;
+    if (!c->out) {
+        perror("posix_memalign");
+        exit(-1);
+    }
+#endif
+
+#if _USE_MMAP
+    if (_g_read_mmap_base) {
+        c->in = _g_read_mmap_base + c->in_off;
+        c->map |= b_mmap_in;
+    } else
+#endif
+    {
+        if (!c->in)
+             if (posix_memalign((void **)&c->in, 64, c->in_len))
+                  c->in = NULL;
+        if (!c->in) {
+            perror("posix_memalign");
+            exit(-1);
+        }
+        c->error |= chunk_read(c) << 3;
+#if _DEBUG & 0x02 // -----------------------------------------------------------
+fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
+#endif  // ---------------------------------------------------------------------
+        if (!c->in_len) {
+            chunk_dispose(c);
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
@@ -1603,13 +1643,13 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
-        int ret = inflate_chunk_init(c, current, ofd, infd, sem_ptr);
 /*
         c.in_off = input_lenght;
         r = chunk_read(infd, &c); //c.in, c.in_len;
         input_lenght += r
 */
-        if (ret) {
+        chunk_init(c, current, ofd, infd, sem_ptr, out_size);
+        if (inflate_chunk_init(c)) {
             nthreads = i;
             break;
         }
@@ -1659,7 +1699,8 @@ do_another_loop:
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            if (inflate_chunk_init(cb, current, ofd, infd, &sem)) {
+            chunk_init(cb, current, ofd, infd, sem_ptr, out_size);
+            if (inflate_chunk_init(cb)) {
                 c->thr = 0;
             } else {
                 current++;
@@ -1670,7 +1711,7 @@ do_another_loop:
 skip_do_new_thread:
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
-if (ofd != STDOUT_FILENO || c->idx == next_idx)
+//if (ofd != STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, _g_tot_chunks, nthreads, c->idx, next_idx,
     ofd, c->thr, chunks[b][i].state);
@@ -2232,7 +2273,7 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
             ret = _inflate_stream(infd, ofd, in_size,
                 out_size, ptr, w, !max_out_size);
         } else {
-#if 0
+#if _DEBUG == 0xFF //RAF: code under development
             ret = _inflate_parallel(infd, ofd, in_size,
                 out_size, ptr, w, !max_out_size, &sem);
 #else
@@ -2278,7 +2319,8 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
-        if (deflate_chunk_init(c, current, ofd, infd, &sem)) {
+        chunk_init(c, current, ofd, infd, &sem, 0);
+        if (deflate_chunk_init(c)) {
             nthreads = i;
             break;
         }
@@ -2329,7 +2371,8 @@ do_another_loop:
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            if (deflate_chunk_init(cb, current, ofd, infd, &sem)) {
+            chunk_init(cb, current, ofd, infd, &sem, 0);
+            if (deflate_chunk_init(cb)) {
                 c->thr = 0;
             } else {
                 current++;
