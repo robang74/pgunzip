@@ -459,7 +459,7 @@ bool chunk_read(chunk_t *c)
 
     if (c->ofd == STDOUT_FILENO) {
         c->in_len = full_read(c->infd, c->in, c->in_len);
-    } else
+    } else // The operations below can be post-poned w/ a thread
     if(_g_out_mmap_base) {
         uint8_t *src = _g_read_mmap_base + c->out_off;
         __builtin_memcpy(c->in, src, c->in_len);
@@ -1233,6 +1233,45 @@ endfunc:
 
 #endif /////////////////////////////////////////////////////////////////////////
 
+static ALWAYS_INLINE
+int inflate_chunk_init(chunk_t *c, int idx, int ofd,
+    int infd, sem_t *sem_ptr) {}
+
+static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
+{
+//      size_t input_lenght = 0;
+//      uint32_t next_idx = 0,
+        uint32_t current = 0, nthreads = _g_cpu_procs;
+
+        _g_chunk_size = in_size;
+        chunk_t chunks[2][MAX_THREADS];
+        memset(chunks, 0, sizeof(chunks));
+
+        for (uint32_t i = 0; i < nthreads; i++, current++)
+        {
+            chunk_t *c = &chunks[0][i];
+            int ret = inflate_chunk_init(c, current, ofd, infd, sem_ptr);
+/*
+            c.in_off = input_lenght;
+            r = chunk_read(infd, &c); //c.in, c.in_len;
+            input_lenght += r
+*/
+            if (ret) {
+                nthreads = i;
+                break;
+            }
+            chunk_inflate_start(&c->thr, c);
+//          pthread_detach(c->thr);
+            //RAF: the bottleneck is the next one in the ordered list
+            //     since after the first the father starts to write
+            //     then the bottleneck is the first one, let it go!
+            if(!i) _cpu_relax();
+        }
+}
+
+#define _inflate_parallel zlib_inflate_parallel
+
 // =============================================================================
 // Prep
 // =============================================================================
@@ -1925,8 +1964,18 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
                out_size = UNOUT_CHUNK_SIZE;
         }
 
-        ret = _inflate_stream(infd, ofd, in_size,
-            out_size, buf, w, !max_out_size);
+        if(w) {
+            ret = _inflate_stream(infd, ofd, in_size,
+                out_size, ptr, w, !max_out_size);
+        } else {
+#if 0
+            ret = _inflate_parallel(infd, ofd, in_size,
+                out_size, ptr, w, !max_out_size, &sem);
+#else
+            ret = _inflate_stream(infd, ofd, in_size,
+                out_size, ptr, w, !max_out_size);
+#endif
+        }
         //fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
         if (!ret && !opt_keep && !opt_test && !opt_stdout) {
             if(unlink(filename))
