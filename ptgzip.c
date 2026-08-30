@@ -1510,11 +1510,128 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+static
+int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
+{
+    uint32_t *list = vo->ptbl->cur.list;
+
+    if (!ofd) return 0;
+
+    if(vo->nidx < 2 || !list) {
+        list = NULL;
+        goto skip_reorgnz;
+    }
+
+    if (ofd == STDOUT_FILENO)
+        goto write_table;
+
+    /*
+     * In-place file reorganization using kernel-Level zero-copy
+     * Loop through all compressed chunk lengths stored in list[]
+     */
+    if(_g_out_mmap_base) {
+        uint8_t *src = _g_out_mmap_base + offset;
+        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
+        for (uint32_t i = 1; i < vo->nidx; i++) {
+            size_t len = list[i];
+            src += WBUF_MAX_SIZE;
+            if (!len) continue; //RAF: it should never happens, by design
+            __builtin_memmove(dst, src, len);
+            dst += len;
+        }
+        vo->olen += dst - _g_out_mmap_base;
+    } else {
+        int i;
+        off_t src = offset;
+        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
+        for (uint32_t i = 1; i < vo->nidx; i++) {
+            size_t len = list[i];
+            src += WBUF_MAX_SIZE;
+            if (!len) continue; //RAF: it should never happens, by design
+
+            off_t off_in = src;
+            while (len > 0) {
+                ssize_t ret = copy_file_range(ofd,
+                    &off_in, ofd, &dst, len, 0);
+                if (!ret) break;
+                if (ret < 0) {
+                    if (errno == EINTR) continue;
+                    perror("copy_file_range");
+                    return 1;
+                }
+                len -= ret;
+            }
+        }
+        vo->olen = dst;
+    }
+    vo->olen += offset;
+
+skip_reorgnz:
+    /* Update vo->olen and truncate remaining sparse tail */
+    if(list)
+        vo->olen = ((vo->olen + 3) >> 2) << 2;
+    if (ftruncate(ofd, vo->olen) < 0) {
+        perror("ftruncate");
+        return 1;
+    }
+    if(lseek(ofd, 0, SEEK_END) < 0) {
+        perror("lseek");
+        return -1;
+    }
+
+write_table:
+    /*
+     * Append metadata table as initially described at this link
+     *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
+     */
+
+    size_t len = 0;
+    vo->ptbl->nwords = vo->nidx;
+    vo->ptbl->bufsze = _g_chunk_size;
+    uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
+
+    if (_g_out_mmap_base) {
+        if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
+            __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
+                (const void *)list, _g_tot_chunks << 2);
+        } else { // append the full PTGZ table at the end of file
+            __builtin_memmove(_g_out_mmap_base + vo->olen,
+                (const void *)u, len);
+            vo->olen += len;
+        }
+    } else
+    if(ofd == STDOUT_FILENO) {
+        // append the full PTGZ table at the end of file
+        full_write(ofd, (const void *)u, len);
+        vo->olen += len;
+    } else { // write PTGZ list in the PTGZ header
+        full_pwrite(ofd, (void *)list,
+            _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
+    }
+
+#if _DEBUG & 0x80 // -----------------------------------------------------------
+    if(ofd > STDOUT_FILENO)
+    {
+        int err;
+        pgunz_t *pz = read_pgunz_table(ofd, &err);
+        if(!pz || err)
+            fprintf(stderr, ">>> ERR -- read_pgunz_table: %d\n", err);
+        else
+        if (memcmp(u, &pz->chksum, len)) {
+            fprintf(stderr, ">>> ERR -- table mismatch, len: %lu\n", len);
+        }
+        return err;
+    }
+#endif // ----------------------------------------------------------------------
+
+    return 0;
+}
+
 #define _verbout_init(_vo) {  \
     _vo.ptbl = ptbl;          \
     _vo.vlvl = opt_verbose;   \
     _vo.nthr = nthreads;      \
-    _vo.nidx = ptbl->nwords;  \
+    _vo.nidx = next_idx;      \
     _vo.isze =  in_size;      \
     _vo.osze = out_size;      \
     _vo.olen = outlen;        \
@@ -2298,6 +2415,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     pgunz_t *ptbl;
     uint8_t *ptr = NULL;
     uint32_t *list = NULL;
+    uint32_t next_idx = 0, current = 0;
 
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
@@ -2330,6 +2448,8 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
 
     list = (uint32_t *)ptr;
     _g_tot_chunks = nbytes >> 2;
+    next_idx = _g_tot_chunks;
+
     ptbl = create_pgunz_table(0);
     ptbl->cur.size = _g_tot_chunks;
     ptbl->nwords = _g_tot_chunks;
@@ -2417,8 +2537,6 @@ _print2("PTGZ> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
 #endif // ----------------------------------------------------------------------
 
 // =============================================================================
-
-    uint32_t next_idx = 0, current = 0;
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
     for (uint32_t i = 0; i < nthreads; i++, current++)
@@ -2574,121 +2692,9 @@ dispose:
         return 1;
     }
 
-    if (!ofd) goto do_verbose;
-
-    if (next_idx < 2 || !list) {
-        list = NULL;
-        goto skip_reorgnz;
-    }
-
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
-
-    /*
-     * In-place file reorganization using kernel-Level zero-copy
-     * Loop through all compressed chunk lengths stored in list[]
-     */
-    if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_CURSIZE;
-        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst, src, len);
-            dst += len;
-        }
-        outlen += dst - _g_out_mmap_base;
-    } else {
-        int i;
-        off_t src = PTGZ_HEADER_CURSIZE;
-        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-
-            off_t off_in = src;
-            while (len > 0) {
-                ssize_t ret = copy_file_range(ofd,
-                    &off_in, ofd, &dst, len, 0);
-                if (!ret) break;
-                if (ret < 0) {
-                    if (errno == EINTR) continue;
-                    perror("copy_file_range");
-                    return 1;
-                }
-                len -= ret;
-            }
-        }
-        outlen = dst;
-    }
-    outlen += PTGZ_HEADER_CURSIZE;
-
-skip_reorgnz:
-    /* Update outlen and truncate remaining sparse tail */
-    if(list)
-        outlen = ((outlen + 3) >> 2) << 2;
-    if (ftruncate(ofd, outlen) < 0) {
-        perror("ftruncate");
-        return 1;
-    }
-    if(lseek(ofd, 0, SEEK_END) < 0) {
-        perror("lseek");
-        return -1;
-    }
-
-write_table:
-    /*
-     * Append metadata table as initially described at this link
-     *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
-     */
-    if(!list) goto do_verbose;
-
-    size_t len = 0;
-    ptbl->nwords = next_idx;
-    ptbl->bufsze = _g_chunk_size;
-    uint8_t *u = finalize_pgunz_table(ptbl, &len);
-
-    if (_g_out_mmap_base) {
-        if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
-            __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
-                (const void *)list, _g_tot_chunks << 2);
-        } else { // append the full PTGZ table at the end of file
-            __builtin_memmove(_g_out_mmap_base + outlen,
-                (const void *)u, len);
-            outlen += len;
-        }
-    } else
-    if(ofd == STDOUT_FILENO) {
-        // append the full PTGZ table at the end of file
-        full_write(ofd, (const void *)u, len);
-        outlen += len;
-    } else { // write PTGZ list in the PTGZ header
-        full_pwrite(ofd, (void *)list,
-            _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
-    }
-
-#if _DEBUG & 0x80 // -----------------------------------------------------------
-    if(ofd > STDOUT_FILENO)
-    {
-        int err;
-        pgunz_t *pz = read_pgunz_table(ofd, &err);
-        if(!pz || err)
-            fprintf(stderr, ">>> ERR -- read_pgunz_table: %d\n", err);
-        else
-        if (memcmp(u, &pz->chksum, len)) {
-            fprintf(stderr, ">>> ERR -- table mismatch, len: %lu\n", len);
-        }
-        return err;
-    }
-#endif // ----------------------------------------------------------------------
-
-do_verbose:
-    /* ********************************************************************** */
-    _verbout_init(vo)
+    _verbout_init(vo);
+    ret = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
     verbose_printout(&vo);
-    /* ********************************************************************** */
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2703,5 +2709,5 @@ do_free:
     free(ptbl);
     #endif
 
-    return 0;
+    return ret;
 }
