@@ -474,7 +474,7 @@ bool chunk_read(chunk_t *c)
         c->in_len = full_read(c->infd, c->in, c->in_len);
     } else // The operations below can be post-poned w/ a thread
     if(_g_out_mmap_base) {
-        uint8_t *src = _g_read_mmap_base + c->out_off;
+        uint8_t *src = _g_read_mmap_base + c->in_off;
         __builtin_memcpy(c->in, src, c->in_len);
     } else {
         off_t off = c->in_off;
@@ -2172,11 +2172,11 @@ int main(int argc, char **argv)
         if (_g_read_mmap_base == MAP_FAILED) {
             _g_read_mmap_base = NULL;
             perror("mmap");
-        } else {
+        } /*else {
             // kernel keeps the mapping via vnode reference
             close(infd);
             infd = -1;
-        }
+        }*/
 
         break;
     }
@@ -2343,7 +2343,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if (!opt_decompress)
         goto set_ptbl_list;
 
-// === sequential gunzip =======================================================
+// === gunzip ==================================================================
 
     /* stdin fallback, but table can be available on shorts files */
     int ret;
@@ -2449,7 +2449,7 @@ set_ptbl_list:
     ptr = (void *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
     full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
 
-#if !_DNT_MMAP //_DEBUG // -----------------------------------------------------
+#if _DEBUG // ------------------------------------------------------------------
 _print2("PTGZ> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
     *(uint32_t *)&ptr[0], _g_tot_chunks, _g_chunk_size, PTGZ_HEADER_CURSIZE);
 #endif // ----------------------------------------------------------------------
