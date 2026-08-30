@@ -42,6 +42,9 @@
 #define ALIGNED4      __attribute__ ((aligned(4)))
 #define ALIGNED8      __attribute__ ((aligned(8)))
 
+#define mpages(_x) ((uint32_t)(_x) >> 12)
+#define MPAGES(_x) mpages((_x) + 4095)
+
 #define MAX_THREADS           16
 #define MAX_CHUNK_SIZE       (1UL << 18)     /* max target size per segment */
 #define MIN_CHUNK_SIZE       (1UL << 16)     /* 2x min gzip compress window */
@@ -125,7 +128,7 @@ enum {
 #ifndef _USE_ZNG
 #define _USE_ZNG  0 //RAF: just API, same speed/size
 #else
-#define libz_name "zlib-ng"
+#define _g_libz_name "zlib-ng"
 #endif
 #ifndef _USE_MNZ
 #define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
@@ -144,7 +147,7 @@ enum {
   #define _stream_t      zng_stream
 #elif _USE_MNZ
   #include "miniz.h"
-  #define libz_name       "miniz"
+  #define _g_libz_name    "miniz"
   #define _deflate_init2  mz_deflateInit2
   #define _deflate_bound  mz_deflateBound
   #define _deflate_end    mz_deflateEnd
@@ -162,8 +165,8 @@ enum {
   #define Z_DEFAULT_COMPRESSION 6
 #else
   #include <zlib.h>
-  #ifndef libz_name
-  #define libz_name          "zlib"
+  #ifndef _g_libz_name
+  #define _g_libz_name     "zlib"
   #endif
   #define _deflate_init2     deflateInit2
   #define _deflate_bound     deflateBound
@@ -171,8 +174,8 @@ enum {
   #define _deflate           deflate
   #define _stream_t        z_stream
 #endif
-#ifndef libz_name
-#define libz_name          "none"
+#ifndef _g_libz_name
+#define _g_libz_name       "none"
 #endif
 
 #if   _USE_ZNG
@@ -826,7 +829,7 @@ static const char* ungz_file_reader(void *opaque, uint64_t *len)
 }
 
 static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek)
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek, void *ptbl)
 {
     int ret = 0;
     uint8_t *inbuf = NULL;
@@ -998,7 +1001,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
 #endif
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek)
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek, void *ptbl)
 {
     size_t r, n, f, w = 0, set = 0, rmn = 0;
     uint8_t * inbuf = NULL;
@@ -1306,6 +1309,17 @@ typedef struct ALIGNED4 {
     /* list stats here */
 } __attribute__ ((packed)) pgunz_t;
 
+typedef struct ALIGNED4 {
+    pgunz_t *ptbl;
+    unsigned nthr;
+    uint32_t nidx;
+    size_t isze;
+    size_t osze;
+    size_t olen;
+    size_t blen;
+    int vlvl;
+} __attribute__ ((packed)) vrbout_t;
+
 const uint8_t ptgz_magic_str[4] = { "ptgz" };
 
 static
@@ -1433,6 +1447,78 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0]
 #endif // ----------------------------------------------------------------------
 
     return ptbl;
+}
+
+static
+void verbose_printout(vrbout_t *vo)
+{
+    if(vo->vlvl < 1)
+        return;
+
+    fprintf(stderr,
+    "%s, nth:%u/%d, file: %d x %zu -> %ld, gz: %lu [%lu, %lu] (%0.1f%%, %d)\n",
+        _g_libz_name, vo->nthr, _g_tot_chunks, vo->nidx, _g_chunk_size,
+        _g_read_filesize, vo->olen, vo->isze, vo->osze,
+        (float) vo->olen * 100 / _g_read_filesize,
+        _g_compression_level
+    );
+
+    if(vo->vlvl < 2 || !vo->ptbl)
+        return;
+
+    fprintf(stderr,
+    "ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
+        vo->ptbl->magicw, vo->ptbl->chksum,
+        vo->ptbl->nwords, vo->ptbl->bufsze
+    );
+
+    uint32_t *list = vo->ptbl->cur.list;
+    if(!list)
+        return;
+
+    float avg, sum = 0;
+    uint32_t min = -1, max = 0;
+    for(uint32_t i = 0; i < vo->nidx; i++) {
+        uint32_t val = list[i];
+        if(val < min) min = val;
+        if(val > max) max = val;
+        sum += val;
+    }
+    avg = sum / vo->nidx;
+    fprintf(stderr,
+    "ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
+        MPAGES(sum), (uint32_t)sum, mpages(min),
+        avg / 4096, MPAGES(max), min, avg, max
+    );
+
+    if(vo->vlvl < 3)
+        return;
+
+    for(uint32_t i = 0; i < vo->nidx; i++) {
+        min = 1;
+        max = 0;
+        uint32_t val = list[i];
+        for(uint32_t n = 0; n < vo->nidx; n++) {
+            uint32_t cur = list[n];
+            if(val < cur) min++;
+            if(val > cur) max++;
+        }
+        fprintf(stderr,
+        "  0x%08x: %8u %10u | <%10u >%10u\n",
+            i, MPAGES(val), val, min, max
+        );
+    }
+}
+
+#define _verbout_init(_vo) {  \
+    _vo.ptbl = ptbl;          \
+    _vo.vlvl = opt_verbose;   \
+    _vo.nthr = nthreads;      \
+    _vo.nidx = ptbl->nwords;  \
+    _vo.isze =  in_size;      \
+    _vo.osze = out_size;      \
+    _vo.olen = outlen;        \
+    _vo.blen = w;             \
 }
 
 /* RAF
@@ -1636,28 +1722,24 @@ fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
 }
 
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
+    size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
 {
+    sem_t sem;
+    int err = 0;
     size_t outlen = 0;
+    uint32_t *list = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
     _g_chunk_size = in_size;
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
-
-    pgunz_t *ptbl = create_pgunz_table(_g_tot_chunks);
-    uint32_t *list = ptbl->cur.list;
-/*
-    sem_t sem;
-#if _THR_WAIT
     sem_init(&sem, 0, 0);
-#endif
-*/
+
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
 
-        chunk_init(c, current, ofd, infd, sem_ptr, out_size);
+        chunk_init(c, current, ofd, infd, &sem, out_size);
         if (inflate_chunk_init(c)) {
             nthreads = i;
             break;
@@ -1675,7 +1757,7 @@ do_a_thread_wait:
 //RAF: one thread completed, at least as
 // long as, at least, one thread exists.
     if (current != _g_tot_chunks)
-        if (full_sem_wait(sem_ptr))
+        if (full_sem_wait(&sem))
             return -1;
 #else
     _cpu_relax();
@@ -1715,7 +1797,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            chunk_init(cb, current, ofd, infd, sem_ptr, out_size);
+            chunk_init(cb, current, ofd, infd, &sem, out_size);
             if (inflate_chunk_init(cb)) {
                 c->thr = 0;
             } else {
@@ -1804,14 +1886,13 @@ dispose:
     // -----------------------------------------------------------
 
     if(_g_tot_chunks && next_idx != _g_tot_chunks) {
+        err = 1;
         _print2("ERROR: next_idx != _g_tot_chunks\n");
-        return 1;
+        goto do_free_n_return;
     }
 
-    if (!ofd) goto do_verbose;
-
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
+    if (!ofd || ofd == STDOUT_FILENO)
+        goto do_free_n_return;
 
     if(next_idx < 2) {
         list = NULL;
@@ -1872,53 +1953,10 @@ skip_reorgnz:
         return -1;
     }
 
-write_table:
-    size_t len = 0;
-do_verbose:
-    if(opt_verbose) {
-        _print2("%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
-            " (%0.1f%%), zl:%d\n", libz_name, nthreads, _g_tot_chunks,
-            next_idx, _g_chunk_size, _g_read_filesize, outlen, len, (float)
-            outlen * 100 / _g_read_filesize, _g_compression_level);
-
-        if(opt_verbose < 2 || !list)
-            goto do_free;
-        _print2("ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
-            ptbl->magicw, ptbl->chksum, ptbl->nwords, ptbl->bufsze);
-
-        float sum = 0;
-        uint32_t min = -1, max = 0;
-        for(uint32_t i = 0; i < next_idx; i++) {
-            uint32_t val = list[i];
-            if(val < min) min = val;
-            if(val > max) max = val;
-            sum += val;
-        }
-        _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
-            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum,
-            min >> 12, ((sum / next_idx) / 4096), (max + 4095) >> 12,
-            min, sum / next_idx, max);
-
-        if(opt_verbose < 3 || !list)
-            goto do_free;
-        for(uint32_t i = 0; i < next_idx; i++) {
-            min = 1;
-            max = 0;
-            uint32_t val = list[i];
-            for(uint32_t n = 0; n < next_idx; n++) {
-                uint32_t cur = list[n];
-                if(val < cur) min++;
-                if(val > cur) max++;
-            }
-            _print2("  0x%08x: %6u %10u | <%10u >%10u\n",
-                i, (val + 4095) >> 12, val, min, max)
-        }
-    }
-
-do_free:
+do_free_n_return:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
-/*
     sem_destroy(&sem);
+/*
     if(_g_read_mmap_base)
         munmap(_g_read_mmap_base, _g_read_filesize);
     if(_g_out_mmap_base) {
@@ -1926,11 +1964,11 @@ do_free:
         munmap(_g_out_mmap_base, max_out_size);
     }
     if(ofd) close(ofd);
-*/
     free(ptbl);
+*/
     #endif
 
-    return 0;
+    return err;
 }
 
 #define _inflate_parallel zlib_inflate_parallel
@@ -1946,7 +1984,10 @@ int main(int argc, char **argv)
     int infd = STDIN_FILENO;
     size_t max_out_size = 0;
     unsigned nthreads;
+    vrbout_t vo;
     sem_t sem;
+
+    sem_init(&sem, 0, 0);
 
     #if 1 //RAF: optional code
     struct rlimit lim;
@@ -1959,10 +2000,6 @@ int main(int argc, char **argv)
           perror("prlimit");
     }
     #endif
-
-#if _THR_WAIT
-    sem_init(&sem, 0, 0);
-#endif
 
 #if _USE_OPT
     static struct option longopts[] = {
@@ -2034,6 +2071,9 @@ int main(int argc, char **argv)
 #else // RAF: this branch was kept for testing _USE_OPT=1 performance impact
     opt_help = (argc < 2);
 #endif
+
+    if(opt_quiet)
+        opt_verbose = 0;
 
     if (opt_help) {
         opt_quiet = 0;
@@ -2312,67 +2352,26 @@ set_default_values:
            out_size = UNOUT_CHUNK_SIZE;
     }
 
-//  fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
-
     /* ********************************************************************** */
-    if(!opt_verbose)
-        goto do_inflate;
-
-    _print2("%s, nth:%u, file: %d x %zu = %ld, size: %u -> %u (%lu)\n",
-        libz_name, nthreads, _g_tot_chunks, _g_chunk_size,
-            _g_read_filesize, in_size, out_size, w);
-
-    if(opt_verbose < 2 || !list)
-        goto do_inflate;
-
-    _print2("ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
-        ptbl->magicw, ptbl->chksum, ptbl->nwords, ptbl->bufsze);
-
-    float sum = 0;
-    uint32_t min = -1, max = 0;
-    for(uint32_t i = 0; i < _g_tot_chunks; i++) {
-        uint32_t val = list[i];
-        if(val < min) min = val;
-        if(val > max) max = val;
-        sum += val;
-    }
-    _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
-        ((uint32_t)sum + 4095) >> 12, (uint32_t)sum, min >> 12,
-        ((sum / _g_tot_chunks) / 4096), (max + 4095) >> 12,
-        min, sum / _g_tot_chunks, max);
-
-    if(opt_verbose < 3 || !list)
-        goto do_inflate;
-
-    for(uint32_t i = 0; i < _g_tot_chunks; i++) {
-        min = 1;
-        max = 0;
-        uint32_t val = list[i];
-        for(uint32_t n = 0; n < _g_tot_chunks; n++) {
-            uint32_t cur = list[n];
-            if(val < cur) min++;
-            if(val > cur) max++;
-        }
-        _print2("  0x%08x: %8u %10u | <%10u >%10u\n",
-            i, (val + 4095) >> 12, val, min, max)
-    }
+    _verbout_init(vo);
+    verbose_printout(&vo);
     /* ********************************************************************** */
 
 do_inflate:
     if(!_g_tot_chunks) {
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size);
+            out_size, ptr, w, !max_out_size, ptbl);
     } else {
 #if _DEBUG == 0xFF //RAF: code under development
         ret = _inflate_parallel(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size, &sem);
+            out_size, ptr, w, !max_out_size, ptbl);
 #else
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size);
+            out_size, ptr, w, !max_out_size, ptbl);
 #endif
     }
 
-//      fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
+//  fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
     if (!ret && !opt_keep && !opt_test && !opt_stdout) {
         if(unlink(filename))
             perror("unlink");
@@ -2577,13 +2576,13 @@ dispose:
 
     if (!ofd) goto do_verbose;
 
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
-
-    if(next_idx < 2) {
+    if (next_idx < 2 || !list) {
         list = NULL;
         goto skip_reorgnz;
     }
+
+    if (ofd == STDOUT_FILENO)
+        goto write_table;
 
     /*
      * In-place file reorganization using kernel-Level zero-copy
@@ -2592,7 +2591,7 @@ dispose:
     if(_g_out_mmap_base) {
         uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_CURSIZE;
         uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < _g_tot_chunks; i++) {
+        for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -2604,7 +2603,7 @@ dispose:
         int i;
         off_t src = PTGZ_HEADER_CURSIZE;
         off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < _g_tot_chunks; i++) {
+        for (uint32_t i = 1; i < next_idx; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -2647,7 +2646,7 @@ write_table:
     if(!list) goto do_verbose;
 
     size_t len = 0;
-    ptbl->nwords = _g_tot_chunks;
+    ptbl->nwords = next_idx;
     ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
 
@@ -2686,45 +2685,10 @@ write_table:
 #endif // ----------------------------------------------------------------------
 
 do_verbose:
-    if(opt_verbose) {
-        _print2("%s, nth:%u/%d, file: %d x %zu = %ld, gz: %lu [%lu]"
-            " (%0.1f%%), zl:%d\n", libz_name, nthreads, _g_tot_chunks,
-            next_idx, _g_chunk_size, _g_read_filesize, outlen, len, (float)
-            outlen * 100 / _g_read_filesize, _g_compression_level);
-
-        if(opt_verbose < 2 || !list)
-            goto do_free;
-        _print2("ptbl> magicw: 0x%08x, chksum: 0x%08x, nwords: %u, bufsze: %u\n",
-            ptbl->magicw, ptbl->chksum, ptbl->nwords, ptbl->bufsze);
-
-        float sum = 0;
-        uint32_t min = -1, max = 0;
-        for(uint32_t i = 0; i < _g_tot_chunks; i++) {
-            uint32_t val = list[i];
-            if(val < min) min = val;
-            if(val > max) max = val;
-            sum += val;
-        }
-        _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
-            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum, min >> 12,
-            ((sum / _g_tot_chunks) / 4096), (max + 4095) >> 12,
-            min, sum / _g_tot_chunks, max);
-
-        if(opt_verbose < 3 || !list)
-            goto do_free;
-        for(uint32_t i = 0; i < _g_tot_chunks; i++) {
-            min = 1;
-            max = 0;
-            uint32_t val = list[i];
-            for(uint32_t n = 0; n < _g_tot_chunks; n++) {
-                uint32_t cur = list[n];
-                if(val < cur) min++;
-                if(val > cur) max++;
-            }
-            _print2("  0x%08x: %8u %10u | <%10u >%10u\n",
-                i, (val + 4095) >> 12, val, min, max)
-        }
-    }
+    /* ********************************************************************** */
+    _verbout_init(vo)
+    verbose_printout(&vo);
+    /* ********************************************************************** */
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
