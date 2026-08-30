@@ -259,21 +259,41 @@ Switching from appending a table to using the FEXTRA field in GZIP header, the s
 
 So, it seems that PTGZ  could be a 100% back-compatible format and also being embedded into a RFC-1952 header while the 64-bit coverage range and its memory burden spread among many PTGZ headers along the GZIP file, every time the current table run out of fields.
 
-```
-roberto@x280[0]:~/robang74/pgunzip$ make _test-clean _test-basic test-ptgz
-
-./ptgzip libz.tar -kv
-PTGZ> magic: 0x04088b1f, size: 258280
-zlib-ng, nth:8/36, file: 36 x 258280 = 9297920, gz: 2890152 [160] (31.1%), zl:6
-head -c64 libz.tar.gz | hexdump -C
-00000000 [1f 8b] 08 04 00 00 00 00  00 03 08 00 70 7a  04 00  |............pz..|
-00000010  e8 f0  03 00 03 00 00 00  00 00 00 00 00 00 [1f 8b] |................|
-00000020  08 00  00 00 00 00 00 03  ec 3d 6b 77 da 48  b2 f3  |.........=kw.H..|
-00000030  59 bf  a2 57 66 63 f0 5a  18 b0 cd 24 93 65  76 30  |Y..Wfc.Z...$.ev0|
-00000040
-```
-
 The current table has 4 words (16 bytes) that are redundant when the PTGZ format is embedded in the GZIP header. The current overhead is 4 words plus a word for each record, in the embedded format would be 10 bytes + 3 bytes for each record (2^24 offset range is 2 x 16 MB x 16 cores = 512 MB RAM max).
+
+```txt
+$ make ptgzip libz.tar EXTRA_CFLAGS="-D_DNT_MMAP=0"
+cc -o ptgzip ptgzip.c -Ilibz/build -Ilibz libzall.a -D_USE_ZNG=0 \
+    -lpthread -g0 -O2 -s -falign-functions=32 -flto -mavx2 -D_DNT_MMAP=0
+make: 'libz.tar' is up to date.
+
+$ ./ptgzip -vkf libz.tar && zcat libz.tar.gz | wc -c
+PTGZ> magic: 0x04088b1f, ntot: 36, size: 258280, head: 174
+zlib-ng, nth:8/36, file: 36 x 258280 = 9297920, gz: 5780216 [160] (62.2%), zl:6
+9297920
+
+$ hexdump -C libz.tar.gz | head -n12
+00000000 [1f 8b] 08 04 4b c3 93 6a  00 03 98 00 70 7a  94 00  |....K..j....pz..|
+00000010  e8 f0  03 00 48 28 01 00  be 53 01 00 29 ba  00 00  |....H(...S..)...|
+00000020  f8 bb  00 00 f4 11 01 00  48 2d 01 00 19 b7  00 00  |........H-......|
+00000030  fb ae  00 00 12 e4 00 00  36 c4 00 00 b9 eb  00 00  |........6.......|
+00000040  1d cd  02 00 8f a9 03 00  c9 ba 03 00 03 08  03 00  |................|
+00000050  c3 b8  03 00 22 fc 00 00  b8 42 00 00 71 5a  00 00  |...."....B..qZ..|
+00000060  6b 4c  00 00 a6 47 00 00  1d 4e 00 00 64 53  00 00  |kL...G...N..dS..|
+00000070  b3 4c  00 00 c6 4e 00 00  9b 49 00 00 54 53  00 00  |.L...N...I..TS..|
+00000080  b2 52  00 00 db bd 01 00  b1 f4 01 00 80 57  01 00  |.R...........W..|
+00000090  62 9e  02 00 05 2e 01 00  2c 6e 01 00 e2 7d  01 00  |b.......,n...}..|
+000000a0  a2 de  00 00 03 00 00 00  00 00 00 00 00 00 [1f 8b] |................|
+000000b0  08 00  00 00 00 00 00 03  ec 3d 6b 77 da 48  b2 f3  |.........=kw.H..|
+```
+
+A customised version in devel branch created the first GZIP file which is RFC-1952 compliant and it starts with a GZIP header in which the `FEXTRA` field contains the chunk size (in output) and the list of compressed chunk offsets (in input).
+
+In short, the `list` element of PTGZ table has been written in the `FEXTRA` field of a valid GZIP header. This allows to read that information before the compressed data and to properly parallelise the inflating process, chunk by chunk.
+
+A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. The overhead, considering a 50% .gz in output, is 30 bytes + 4 bytes each chunk. The relative overhead is 38 bytes over 256 KiB .gz, which is 0.015%.
+
+Reducing to 28 bytes is possible by integrating the PTGZ format in the first chunk header but at the cost of recalculating the CRC32 which takes time in compression while having a separate header allows to strip it away easily.
 
 <br>
 

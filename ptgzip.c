@@ -1497,7 +1497,6 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
         buf[3]  = 0x04;           // FLG: 0x04 = FEXTRA enabled
       //buf[8]  = 0x00;           // XFL, already =0 by init
         buf[9]  = 0x03;           // OS
-        buf[20] = 0x03;           // Raw DEFLATE void (BFINAL=1, BTYPE=00)
     }
 
 #if 0
@@ -1535,6 +1534,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     buf[19] = (uint8_t)(in_len >> 24);
 
     // Termination 10 bytes from buf[20]
+    buf[20 + size] = 0x03;        // Raw DEFLATE void (BFINAL=1, BTYPE=00)
 #if 0
     buf[21] = 0x00;
     buf[22] = 0x00; buf[23] = 0x00; buf[24] = 0x00; buf[25] = 0x00; // CRC32
@@ -2387,9 +2387,9 @@ set_ptbl_list:
     ptr = (void *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
     full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
 
-#if _DEBUG // ------------------------------------------------------------------
-_print2("PTGZ> magic: 0x%08x, size: %lu / %lu\n",
-    *(uint32_t *)&ptr[0], _g_chunk_size, PTGZ_HEADER_CURSIZE);
+#if !_DNT_MMAP //_DEBUG // -----------------------------------------------------
+_print2("PTGZ> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
+    *(uint32_t *)&ptr[0], _g_tot_chunks, _g_chunk_size, PTGZ_HEADER_CURSIZE);
 #endif // ----------------------------------------------------------------------
 
 // =============================================================================
@@ -2621,8 +2621,16 @@ write_table:
     ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
     if (_g_out_mmap_base) {
+#if !_DNT_MMAP // RAF: experimental workaround, requires mmap() enabled, so -D_DNT_MMAP=0
+        if(!__builtin_memmove(_g_out_mmap_base + 20,
+          (const void *)(ptbl->cur.list), ptbl->cur.size << 2)
+        ){
+            //outlen += len;
+        }
+#else
         if(!__builtin_memmove(_g_out_mmap_base + outlen, (const void *)u, len))
             outlen += len;
+#endif
     } else {
         outlen += full_write(ofd, (const void *)u, len);
     }
