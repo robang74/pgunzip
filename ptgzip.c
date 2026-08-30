@@ -631,7 +631,6 @@ void chunk_dispose(chunk_t *c)
 static
 int deflate_chunk_init(chunk_t *c)
 {
-
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
     if (_g_out_mmap_base) {
@@ -1796,55 +1795,7 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 // Core
 // =============================================================================
 
-static
-int inflate_chunk_init(chunk_t *c)
-{
-#if _USE_MMAP
-    /* Assign output pointer inside mapped output file space */
-    if (_g_out_mmap_base) {
-        c->out = _g_out_mmap_base + c->out_off;
-        c->map |= b_mmap_out;
-    }
-    else
-#endif
-#if _ZLIB_MEM
-    c->out = NULL;
-#else
-    if (!c->out)
-         if (posix_memalign((void **)&c->out, 64, c->out_cap))
-              c->out = NULL;
-    if (!c->out) {
-        perror("posix_memalign");
-        exit(-1);
-    }
-#endif
-
-#if _USE_MMAP
-    if (_g_read_mmap_base) {
-        c->in = _g_read_mmap_base + c->in_off;
-        c->map |= b_mmap_in;
-    } else
-#endif
-    {
-        if (!c->in)
-             if (posix_memalign((void **)&c->in, 64, c->in_len))
-                  c->in = NULL;
-        if (!c->in) {
-            perror("posix_memalign");
-            exit(-1);
-        }
-        c->error |= chunk_read(c) << 3;
-#if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
-#endif  // ---------------------------------------------------------------------
-        if (!c->in_len) {
-            chunk_dispose(c);
-            return 1;
-        }
-    }
-
-    return 0;
-}
+#define inflate_chunk_init deflate_chunk_init
 
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
@@ -2012,8 +1963,8 @@ dispose:
 
     vrbout_t vo;
     _verbout_init(vo);
-    err = output_finaliser(ofd, &vo, 0);
     verbose_printout(&vo);
+    err = output_finaliser(ofd, &vo, 0);
 
 do_free_n_return:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2348,6 +2299,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 // =============================================================================
 
     pgunz_t *ptbl;
+    size_t buf_size = 0;
     uint8_t *ptr = NULL;
     uint32_t *list = NULL;
     uint32_t next_idx = 0, current = 0;
@@ -2358,26 +2310,20 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if (!opt_decompress)
         goto set_ptbl_list;
 
-#if 0 // -----------------------------------------------------------------------
-fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
-fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
-#endif // ----------------------------------------------------------------------
-
 // === sequential gunzip =======================================================
 
     /* stdin fallback, but table can be available on shorts files */
     int ret;
     uint16_t nbytes;
     uint32_t out_size, in_size = 0;
-    size_t w;
 
-    w = full_read(infd, _g_ptgz_header, PTGZ_HEADER_MAXSIZE);
-    if(w < PTGZ_HEADER_SIZE)
+    buf_size = full_read(infd, _g_ptgz_header, PTGZ_HEADER_MAXSIZE);
+    if(buf_size < PTGZ_HEADER_SIZE)
         goto set_default_values;
 
     //RAF: this can be elaborated with a full parallel approach
     ptr = ptgz_header_read(_g_ptgz_header, &nbytes, &in_size);
-//  fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
+//  fprintf(stderr, ">>> buf: %lu, ptr: %p, sze: %u\n", buf_size, ptr, in_size);
     if(!ptr)
         goto set_default_values;
 
@@ -2392,37 +2338,40 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
     ptbl->cur.size = nbytes;
     ptbl->cur.list = list;
 
-    w -= nbytes + PTGZ_HEADER_SIZE;
-    ptr = w ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - w] : NULL;
+    buf_size -= nbytes + PTGZ_HEADER_SIZE;
+    ptr = buf_size ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - buf_size] : NULL;
+
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
+fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, buf_size);
+#endif // ----------------------------------------------------------------------
 
     if (in_size  < MIN_CHUNK_SIZE) {
 set_default_values:
         ptr      = _g_ptgz_header;
         out_size = UNOUT_CHUNK_SIZE;
         in_size  = UNZIN_CHUNK_SIZE;
-    } else {
+        ret = _inflate_stream(infd, ofd, in_size,
+            out_size, ptr, buf_size, !max_out_size, ptbl);
+    } else
+    if (nbytes < sizeof(uint32_t)) {
+do_inflate_stream:
         in_size  = size_by_blocks(zread_max_size(in_size));
         out_size = size_by_blocks(in_size >> 2);
         if(out_size < UNOUT_CHUNK_SIZE)
            out_size = UNOUT_CHUNK_SIZE;
-    }
-
-do_inflate:
-    if(!_g_tot_chunks) {
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size, ptbl);
+            out_size, ptr, buf_size, !max_out_size, ptbl);
     } else {
-#if _DEBUG == 0xFF //RAF: code under development
-        ret = _inflate_parallel(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size, ptbl);
-#else
-        ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, w, !max_out_size, ptbl);
+#if _DEBUG != 0xFF
+        goto do_inflate_stream;
 #endif
+        ret = _inflate_parallel(infd, ofd, in_size,
+            out_size, ptr, buf_size, !max_out_size, ptbl);
+        buf_size = 0;
     }
 
-    if(!_g_tot_chunks || _DEBUG != 0xFF) {
-        size_t buf_size = w;
+    if(buf_size) {
         _verbout_init(vo);
         verbose_printout(&vo);
     }
@@ -2622,8 +2571,6 @@ dispose:
 // =============================================================================
 // Ending
 // =============================================================================
-
-    size_t buf_size = PTGZ_HEADER_CURSIZE;
 
     _verbout_init(vo);
     ret = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
