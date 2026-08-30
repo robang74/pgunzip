@@ -46,6 +46,7 @@
 #define MAX_CHUNK_SIZE       (1UL << 18)     /* max target size per segment */
 #define MIN_CHUNK_SIZE       (1UL << 16)     /* 2x min gzip compress window */
 #define PTGZ_HEADER_SIZE      30UL
+#define PTGZ_LIST_START_OFF   20UL
 #define PTGZ_LIST_MAX_WORDS   16380UL
 #define PTGZ_HEADER_CURSIZE  (PTGZ_HEADER_SIZE + _g_ptgz_list_size)
 #define PTGZ_HEADER_MAXSIZE  (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
@@ -340,7 +341,7 @@ if(strm.total_out)
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-    if (c->ofd != STDOUT_FILENO
+    if (c->ofd > STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
         if (c->sem_ptr){
@@ -443,7 +444,7 @@ if(strm.avail_out)
 endfnc:
     _inflate_end(&strm);
     c->state = 2;
-    if (c->ofd != STDOUT_FILENO
+    if (c->ofd > STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
         if (c->sem_ptr){
@@ -494,6 +495,24 @@ bool chunk_read(chunk_t *c)
     return 0;
 }
 
+static ALWAYS_INLINE
+size_t full_pwrite(int ofd, uint8_t *p, size_t size, off_t off)
+{
+    size_t len = size;
+    while (len > 0) {
+        ssize_t w = pwrite(ofd, p, len, off);
+        if (w <= 0) {
+            if (errno == EINTR) continue;
+            perror("p/write");
+            break;
+        }
+        p   += w;
+        off += w;
+        len -= w;
+    }
+    return size - len;
+}
+
 static
 bool chunk_write(chunk_t *c)
 {
@@ -513,22 +532,7 @@ bool chunk_write(chunk_t *c)
         uint8_t *dst = _g_out_mmap_base + c->out_off;
         return !__builtin_memcpy(dst, c->out, c->out_len);
     } else {
-        off_t off = c->out_off;
-        size_t len = c->out_len;
-        uint8_t *p = c->out;
-        while (len > 0) {
-            ssize_t w = pwrite(c->ofd, p, len, off);
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                perror("p/write");
-                break;
-            }
-            p   += w;
-            off += w;
-            len -= w;
-        }
-        c->in_len = c->out_len - len;
-        return !!len;
+        return !full_pwrite(c->ofd, c->out, c->out_len, c->out_off);
     }
 }
 
@@ -1744,7 +1748,7 @@ skip_do_new_thread:
         if(list) list[ c->idx ] = c->out_len;
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
-//if (ofd != STDOUT_FILENO || c->idx == next_idx)
+//if (ofd > STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, _g_tot_chunks, nthreads, c->idx, next_idx, ofd, cb->thr, cb->state);
 #endif // ----------------------------------------------------------------------
@@ -2384,6 +2388,16 @@ set_ptbl_list:
      * use time() output as-is without worrying too much about 2038.
      */
     time_t utc = time(NULL);
+    /* RAF
+     * When the data is read from STDIN the _g_tot_chunks is zero and
+     * the size of the PTGZ table into the header reaches the minimum
+     * to contain just the helpful value of the _g_chunk_size used.
+     * However, the list list of chunks can be appended, to be read
+     * when .gz is provided as a seekable file. Moreover, when the .gz
+     * is also writeable (or by a specific option) the appended table
+     * can be transferred into the header, like it happens during the
+     * creation from a seekable file as data input source.
+     */
     ptr = (void *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
     full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
 
@@ -2464,7 +2478,7 @@ do_another_loop:
 skip_do_new_thread:
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
-if (ofd != STDOUT_FILENO || c->idx == next_idx)
+if (ofd > STDOUT_FILENO || c->idx == next_idx)
 fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
     current, _g_tot_chunks, nthreads, c->idx, next_idx,
     ofd, c->thr, chunks[b][i].state);
@@ -2620,23 +2634,27 @@ write_table:
     ptbl->nwords = next_idx;
     ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
+
     if (_g_out_mmap_base) {
-#if !_DNT_MMAP // RAF: experimental workaround, requires mmap() enabled, so -D_DNT_MMAP=0
-        if(!__builtin_memmove(_g_out_mmap_base + 20,
-          (const void *)(ptbl->cur.list), ptbl->cur.size << 2)
-        ){
-            //outlen += len;
-        }
-#else
-        if(!__builtin_memmove(_g_out_mmap_base + outlen, (const void *)u, len))
+        if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
+            __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
+                (const void *)(ptbl->cur.list), ptbl->cur.size << 2);
+        } else { // append the full PTGZ table at the end of file
+            __builtin_memmove(_g_out_mmap_base + outlen,
+                (const void *)u, len);
             outlen += len;
-#endif
-    } else {
+        }
+    } else
+    if(ofd == STDOUT_FILENO) {
+        // append the full PTGZ table at the end of file
         outlen += full_write(ofd, (const void *)u, len);
+    } else { // write PTGZ list in the PTGZ header
+        full_pwrite(ofd, (void *)ptbl->cur.list,
+            ptbl->cur.size << 2, PTGZ_LIST_START_OFF);
     }
 
 #if _DEBUG & 0x80 // -----------------------------------------------------------
-    if(ofd != STDOUT_FILENO)
+    if(ofd > STDOUT_FILENO)
     {
         int err;
         pgunz_t *pz = read_pgunz_table(ofd, &err);
