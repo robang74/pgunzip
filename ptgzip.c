@@ -1315,7 +1315,8 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     uint8_t *u;
     uint32_t n, len;
 
-    if(!nwords) nwords = 1U << 14;
+    if(!nwords)
+        nwords = PTGZ_LIST_MAX_WORDS;
     n   = _mpceil(nwords << 2);
     len = sizeof(pgunz_t) + n;
     p   = malloc(len);
@@ -1577,7 +1578,7 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
           | ( ((uint32_t)buf[18]) << 16 )
           | ( ((uint32_t)buf[19]) << 24 );
 
-    return &buf[20];
+    return &buf[PTGZ_LIST_START_OFF];
 }
 
 // =============================================================================
@@ -1637,7 +1638,6 @@ fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, sem_t *sem_ptr)
 {
-//  size_t input_lenght = 0;
     size_t outlen = 0;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
@@ -1802,6 +1802,11 @@ dispose:
     // -----------------------------------------------------------
     // Ending
     // -----------------------------------------------------------
+
+    if(_g_tot_chunks && next_idx != _g_tot_chunks) {
+        _print2("ERROR: next_idx != _g_tot_chunks\n");
+        return 1;
+    }
 
     if (!ofd) goto do_verbose;
 
@@ -2251,8 +2256,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 // =============================================================================
 
     pgunz_t *ptbl;
-    uint32_t *list;
     uint8_t *ptr = NULL;
+    uint32_t *list = NULL;
 
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
@@ -2279,17 +2284,21 @@ fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, w);
 
     //RAF: this can be elaborated with a full parallel approach
     ptr = ptgz_header_read(_g_ptgz_header, &nbytes, &in_size);
-//  fprintf(stderr, "\n>>> w: %lu, ptr: %p, sze: %u -- ", w, ptr, in_size);
+//  fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
     if(!ptr)
         goto set_default_values;
 
+    list = (uint32_t *)ptr;
     _g_tot_chunks = nbytes >> 2;
     ptbl = create_pgunz_table(0);
     ptbl->cur.size = _g_tot_chunks;
-    ptbl->cur.list = (uint32_t *)ptr;
+    ptbl->nwords = _g_tot_chunks;
+    ptbl->bufsze = in_size;
+    ptbl->cur.size = nbytes;
+    ptbl->cur.list = list;
+
     w -= nbytes + PTGZ_HEADER_SIZE;
     ptr = w ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - w] : NULL;
-//  fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
 
     if (in_size  < MIN_CHUNK_SIZE) {
 set_default_values:
@@ -2302,6 +2311,8 @@ set_default_values:
         if(out_size < UNOUT_CHUNK_SIZE)
            out_size = UNOUT_CHUNK_SIZE;
     }
+
+//  fprintf(stderr, ">>> w: %lu, ptr: %p, sze: %u\n", w, ptr, in_size);
 
     /* ********************************************************************** */
     if(!opt_verbose)
@@ -2342,7 +2353,7 @@ set_default_values:
             if(val < cur) min++;
             if(val > cur) max++;
         }
-        _print2("  0x%08x: %6u %10u | <%10u >%10u\n",
+        _print2("  0x%08x: %8u %10u | <%10u >%10u\n",
             i, (val + 4095) >> 12, val, min, max)
     }
     /* ********************************************************************** */
@@ -2559,6 +2570,11 @@ dispose:
 // Ending
 // =============================================================================
 
+    if(_g_tot_chunks && next_idx != _g_tot_chunks) {
+        _print2("ERROR: next_idx != _g_tot_chunks\n");
+        return 1;
+    }
+
     if (!ofd) goto do_verbose;
 
     if (ofd == STDOUT_FILENO)
@@ -2576,7 +2592,7 @@ dispose:
     if(_g_out_mmap_base) {
         uint8_t *src = _g_out_mmap_base + PTGZ_HEADER_CURSIZE;
         uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
+        for (uint32_t i = 1; i < _g_tot_chunks; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -2588,7 +2604,7 @@ dispose:
         int i;
         off_t src = PTGZ_HEADER_CURSIZE;
         off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
+        for (uint32_t i = 1; i < _g_tot_chunks; i++) {
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
@@ -2631,14 +2647,14 @@ write_table:
     if(!list) goto do_verbose;
 
     size_t len = 0;
-    ptbl->nwords = next_idx;
+    ptbl->nwords = _g_tot_chunks;
     ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(ptbl, &len);
 
     if (_g_out_mmap_base) {
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
-                (const void *)(ptbl->cur.list), ptbl->cur.size << 2);
+                (const void *)list, _g_tot_chunks << 2);
         } else { // append the full PTGZ table at the end of file
             __builtin_memmove(_g_out_mmap_base + outlen,
                 (const void *)u, len);
@@ -2647,10 +2663,11 @@ write_table:
     } else
     if(ofd == STDOUT_FILENO) {
         // append the full PTGZ table at the end of file
-        outlen += full_write(ofd, (const void *)u, len);
+        full_write(ofd, (const void *)u, len);
+        outlen += len;
     } else { // write PTGZ list in the PTGZ header
-        full_pwrite(ofd, (void *)ptbl->cur.list,
-            ptbl->cur.size << 2, PTGZ_LIST_START_OFF);
+        full_pwrite(ofd, (void *)list,
+            _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
     }
 
 #if _DEBUG & 0x80 // -----------------------------------------------------------
@@ -2682,29 +2699,29 @@ do_verbose:
 
         float sum = 0;
         uint32_t min = -1, max = 0;
-        for(uint32_t i = 0; i < next_idx; i++) {
+        for(uint32_t i = 0; i < _g_tot_chunks; i++) {
             uint32_t val = list[i];
             if(val < min) min = val;
             if(val > max) max = val;
             sum += val;
         }
         _print2("ptbl> pages output: %u (%u), chunk: %u <%0.0f> %u (%u <%0.0f> %u)\n",
-            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum,
-            min >> 12, ((sum / next_idx) / 4096), (max + 4095) >> 12,
-            min, sum / next_idx, max);
+            ((uint32_t)sum + 4095) >> 12, (uint32_t)sum, min >> 12,
+            ((sum / _g_tot_chunks) / 4096), (max + 4095) >> 12,
+            min, sum / _g_tot_chunks, max);
 
         if(opt_verbose < 3 || !list)
             goto do_free;
-        for(uint32_t i = 0; i < next_idx; i++) {
+        for(uint32_t i = 0; i < _g_tot_chunks; i++) {
             min = 1;
             max = 0;
             uint32_t val = list[i];
-            for(uint32_t n = 0; n < next_idx; n++) {
+            for(uint32_t n = 0; n < _g_tot_chunks; n++) {
                 uint32_t cur = list[n];
                 if(val < cur) min++;
                 if(val > cur) max++;
             }
-            _print2("  0x%08x: %6u %10u | <%10u >%10u\n",
+            _print2("  0x%08x: %8u %10u | <%10u >%10u\n",
                 i, (val + 4095) >> 12, val, min, max)
         }
     }
