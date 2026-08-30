@@ -1797,12 +1797,45 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 
 #define inflate_chunk_init deflate_chunk_init
 
+static
+void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
+    size_t out_size, uint32_t in_len)
+{
+    static ALIGNED4 chunk_t m = {0};
+    static off_t out_offset = 0;
+    static off_t  in_offset = 0;
+    static unsigned idx     = 0;
+
+    if(m.state == 0) {
+        m.state = 1;
+        m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
+        m.out_cap = out_size ?: WBUF_MAX_SIZE;
+        m.infd = infd;
+        m.ofd = ofd;
+    }
+
+    __builtin_memcpy(c, &m, sizeof(m));
+
+    c->idx      = idx;
+    out_offset += c->out_cap;
+    c->out_off  = out_offset;
+
+    c->in_off  = in_offset;
+    c->in_len  = in_len;
+    in_offset += in_len;
+
+    idx++;
+}
+
+#define chunk_list_init(_c) \
+    _cinit(_c, ofd, infd, &sem, out_size, list[current])
+
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
 {
     sem_t sem;
     int err = 0;
-    size_t outlen = 0;
+    size_t outlen = 0, offset = 0;
     uint32_t *list = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
@@ -1815,7 +1848,7 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     {
         chunk_t *c = &chunks[0][i];
 
-        chunk_init(c, current, ofd, infd, &sem, out_size);
+        chunk_list_init(c);
         if (inflate_chunk_init(c)) {
             nthreads = i;
             break;
@@ -1873,7 +1906,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            chunk_init(cb, current, ofd, infd, &sem, out_size);
+            chunk_list_init(cb);
             if (inflate_chunk_init(cb)) {
                 c->thr = 0;
             } else {
