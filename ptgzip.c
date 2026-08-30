@@ -1515,6 +1515,12 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 {
     uint32_t *list = vo->ptbl->cur.list;
 
+    if(vo->nidx && _g_tot_chunks && vo->nidx != _g_tot_chunks) {
+        _print2("ERROR: next_idx != _g_tot_chunks, %u vs %u\n",
+            vo->nidx, _g_tot_chunks);
+        return 1;
+    }
+
     if (!ofd) return 0;
 
     if(vo->nidx < 2 || !list) {
@@ -1572,7 +1578,7 @@ skip_reorgnz:
         vo->olen = ((vo->olen + 3) >> 2) << 2;
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
-        return 1;
+        return -1;
     }
     if(lseek(ofd, 0, SEEK_END) < 0) {
         perror("lseek");
@@ -1594,6 +1600,7 @@ write_table:
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
                 (const void *)list, _g_tot_chunks << 2);
+            len = 0;
         } else { // append the full PTGZ table at the end of file
             __builtin_memmove(_g_out_mmap_base + vo->olen,
                 (const void *)u, len);
@@ -1607,10 +1614,11 @@ write_table:
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
+        len = 0;
     }
 
 #if _DEBUG & 0x80 // -----------------------------------------------------------
-    if(ofd > STDOUT_FILENO)
+    if(len)
     {
         int err;
         pgunz_t *pz = read_pgunz_table(ofd, &err);
@@ -1634,8 +1642,8 @@ write_table:
     _vo.nidx = next_idx;      \
     _vo.isze =  in_size;      \
     _vo.osze = out_size;      \
+    _vo.blen = buf_size;      \
     _vo.olen = outlen;        \
-    _vo.blen = w;             \
 }
 
 /* RAF
@@ -2002,87 +2010,14 @@ dispose:
     // Ending
     // -----------------------------------------------------------
 
-    if(_g_tot_chunks && next_idx != _g_tot_chunks) {
-        err = 1;
-        _print2("ERROR: next_idx != _g_tot_chunks\n");
-        goto do_free_n_return;
-    }
-
-    if (!ofd || ofd == STDOUT_FILENO)
-        goto do_free_n_return;
-
-    if(next_idx < 2) {
-        list = NULL;
-        goto skip_reorgnz;
-    }
-
-    /*
-     * In-place file reorganization using kernel-Level zero-copy
-     * Loop through all compressed chunk lengths stored in list[]
-     */
-    if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base;
-        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst, src, len);
-            dst += len;
-        }
-        outlen += dst - _g_out_mmap_base;
-    } else {
-        int i;
-        off_t src = 0;
-        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < next_idx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-
-            off_t off_in = src;
-            while (len > 0) {
-                ssize_t ret = copy_file_range(ofd,
-                    &off_in, ofd, &dst, len, 0);
-                if (!ret) break;
-                if (ret < 0) {
-                    if (errno == EINTR) continue;
-                    perror("copy_file_range");
-                    return 1;
-                }
-                len -= ret;
-            }
-        }
-        outlen = dst;
-    }
-//  outlen += PTGZ_HEADER_CURSIZE;
-
-skip_reorgnz:
-    /* Update outlen and truncate remaining sparse tail */
-    if(list)
-        outlen = ((outlen + 3) >> 2) << 2;
-    if (ftruncate(ofd, outlen) < 0) {
-        perror("ftruncate");
-        return 1;
-    }
-    if(lseek(ofd, 0, SEEK_END) < 0) {
-        perror("lseek");
-        return -1;
-    }
+    vrbout_t vo;
+    _verbout_init(vo);
+    err = output_finaliser(ofd, &vo, 0);
+    verbose_printout(&vo);
 
 do_free_n_return:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
-/*
-    if(_g_read_mmap_base)
-        munmap(_g_read_mmap_base, _g_read_filesize);
-    if(_g_out_mmap_base) {
-        msync(_g_out_mmap_base, outlen, MS_SYNC);
-        munmap(_g_out_mmap_base, max_out_size);
-    }
-    if(ofd) close(ofd);
-    free(ptbl);
-*/
     #endif
 
     return err;
@@ -2472,11 +2407,6 @@ set_default_values:
            out_size = UNOUT_CHUNK_SIZE;
     }
 
-    /* ********************************************************************** */
-    _verbout_init(vo);
-    verbose_printout(&vo);
-    /* ********************************************************************** */
-
 do_inflate:
     if(!_g_tot_chunks) {
         ret = _inflate_stream(infd, ofd, in_size,
@@ -2491,13 +2421,19 @@ do_inflate:
 #endif
     }
 
+    if(!_g_tot_chunks || _DEBUG != 0xFF) {
+        size_t buf_size = w;
+        _verbout_init(vo);
+        verbose_printout(&vo);
+    }
+
 //  fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
     if (!ret && !opt_keep && !opt_test && !opt_stdout) {
         if(unlink(filename))
             perror("unlink");
     }
 
-    return ret;
+    goto do_free;
 
 // =============================================================================
 // Threads
@@ -2687,10 +2623,7 @@ dispose:
 // Ending
 // =============================================================================
 
-    if(_g_tot_chunks && next_idx != _g_tot_chunks) {
-        _print2("ERROR: next_idx != _g_tot_chunks\n");
-        return 1;
-    }
+    size_t buf_size = PTGZ_HEADER_CURSIZE;
 
     _verbout_init(vo);
     ret = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
