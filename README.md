@@ -10,7 +10,7 @@ Simplicity is the ultimate sophistication (cit.)
 
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
-    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05) &dash; [Development](#development)
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -230,7 +230,7 @@ Finally, ptgzip -d w/o PTGZ is 3.0x faster than gzip, on i5-8365.
 
 ---
 
-### Development
+### Updates v0.6
 
 The main idea behind ptgz_header() is about using a standard GZIP header crafted on RFC-1952 specifications which can contains a table of chunks or when the input is from STDIN the size of the reading chunk which will be useful to efficiently find chunks by a just-in-time heuristic (STDIN).
 
