@@ -380,7 +380,7 @@ static void *thread_inflate(void *arg)
 
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
-        perror("inflateInit2");
+        fprintf(stderr, "inflateInit2 failed: %d\n", ret);
         c->error = -3;
         goto release;
     }
@@ -429,16 +429,16 @@ static void *thread_inflate(void *arg)
 
 #if _DEBUG & 0x01 // -----------------------------------------------------------
 if(strm.avail_out)
-    fprintf(stderr, ">>> out: %d, cap: %ld\n", strm.avail_out, c->out_cap);
+    fprintf(stderr, "ifl> in: %u / %lu out: %lu / %lu\n",
+        strm.avail_in,  c->in_len, strm.total_out, c->out_cap);
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END && ret != Z_BUF_ERROR
-    &&  ret != Z_DATA_ERROR && ret != Z_OK
+    if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
+    &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
     ){
-        perror("inflate");
-        //fprintf(stderr, "inflate returns: %d\n", ret);
-        c->error = ret; //RAF: rarely it returns Z_OK = 0
+        fprintf(stderr, "inflate failed: %d\n", ret);
+        c->error = ret;
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -501,7 +501,13 @@ bool chunk_read(chunk_t *c)
 static ALWAYS_INLINE
 size_t full_pwrite(int ofd, uint8_t *p, size_t size, off_t off)
 {
+#if 0 // -----------------------------------------------------------------------
+static unsigned idx = 0;
+fprintf(stderr, "fpw> call: %u, sze: %lu, off: %lu\n", idx++, size, off);
+#endif // ----------------------------------------------------------------------
+
     size_t len = size;
+
     while (len > 0) {
         ssize_t w = pwrite(ofd, p, len, off);
         if (w <= 0) {
@@ -513,12 +519,18 @@ size_t full_pwrite(int ofd, uint8_t *p, size_t size, off_t off)
         off += w;
         len -= w;
     }
+
     return size - len;
 }
 
 static
 bool chunk_write(chunk_t *c)
 {
+#if 0 // -----------------------------------------------------------------------
+fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
+    c->idx, c->out_len, c->out_off);
+#endif // ----------------------------------------------------------------------
+
     if(!c->ofd) return 0;
 
     if (c->ofd == STDOUT_FILENO)
@@ -667,7 +679,8 @@ int deflate_chunk_init(chunk_t *c)
         }
         c->error |= chunk_read(c) << 3;
 #if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, ">>> thr(%04d): read = %lu\n", c->idx, c->in_len);
+fprintf(stderr, "inp> thr(%04d): read = %lu, off: %lu, err: %d\n",
+    c->idx, c->in_len, c->in_off, c->error);
 #endif  // ---------------------------------------------------------------------
         if (!c->in_len) {
             chunk_dispose(c);
@@ -1810,6 +1823,7 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
         m.state = 1;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
         m.out_cap = out_size ?: WBUF_MAX_SIZE;
+        m.in_off = PTGZ_HEADER_CURSIZE;
         m.infd = infd;
         m.ofd = ofd;
     }
@@ -1817,10 +1831,10 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
     __builtin_memcpy(c, &m, sizeof(m));
 
     c->idx      = idx;
-    out_offset += c->out_cap;
     c->out_off  = out_offset;
+    out_offset += _g_chunk_size; // RAF: using out_cap requires file-reorganiz.
 
-    c->in_off  = in_offset;
+    c->in_off += in_offset;
     c->in_len  = in_len;
     in_offset += in_len;
 
@@ -1828,7 +1842,7 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 }
 
 #define chunk_list_init(_c) \
-    _cinit(_c, ofd, infd, &sem, out_size, list[current])
+    _cinit(_c, ofd, infd, &sem, out_size, ilst[current])
 
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
@@ -1836,7 +1850,7 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     sem_t sem;
     int err = 0;
     size_t outlen = 0, offset = 0;
-    uint32_t *list = ptbl->cur.list;
+    uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
     _g_chunk_size = in_size;
@@ -1881,7 +1895,8 @@ do_another_loop:
 
         if (c->error) {
             _print2("\nERROR: inflate failed on chunk %d,"
-                " size: %lu, err: %d\n", current + i, c->out_len, c->error);
+                " size: %lu -> %lu, state: %d, ofd: %d, error: %d\n",
+                c->idx, c->in_len, c->out_len, c->state, c->ofd, c->error);
             return c->error;
         }
 
@@ -1936,7 +1951,7 @@ skip_do_new_thread:
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
                 ;
-        if(list) list[ c->idx ] = c->out_len;
+        //if(list) list[ c->idx ] = c->out_len;
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
 //if (ofd > STDOUT_FILENO || c->idx == next_idx)
@@ -1997,7 +2012,16 @@ dispose:
     vrbout_t vo;
     _verbout_init(vo);
     verbose_printout(&vo);
+#if 0
     err = output_finaliser(ofd, &vo, 0);
+#else
+/*
+    if (ftruncate(ofd, outlen) < 0) {
+        perror("ftruncate");
+        return -1;
+    }
+*/
+#endif
 
 do_free_n_return:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2348,7 +2372,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     /* stdin fallback, but table can be available on shorts files */
     int ret;
     uint16_t nbytes;
-    uint32_t out_size, in_size = 0;
+    uint32_t out_size = 0, in_size = 0;
+    uint32_t *ilst = NULL;
 
     buf_size = full_read(infd, _g_ptgz_header, PTGZ_HEADER_MAXSIZE);
     if(buf_size < PTGZ_HEADER_SIZE)
@@ -2360,8 +2385,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if(!ptr)
         goto set_default_values;
 
-    list = (uint32_t *)ptr;
+    ilst = (uint32_t *)ptr;
     _g_tot_chunks = nbytes >> 2;
+    _g_ptgz_list_size = nbytes;
     next_idx = _g_tot_chunks;
 
     ptbl = create_pgunz_table(0);
@@ -2369,7 +2395,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     ptbl->nwords = _g_tot_chunks;
     ptbl->bufsze = in_size;
     ptbl->cur.size = nbytes;
-    ptbl->cur.list = list;
+    ptbl->cur.list = ilst;
 
     buf_size -= nbytes + PTGZ_HEADER_SIZE;
     ptr = buf_size ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - buf_size] : NULL;
@@ -2390,15 +2416,16 @@ set_default_values:
     if (nbytes < sizeof(uint32_t)) {
 do_inflate_stream:
         in_size  = size_by_blocks(zread_max_size(in_size));
-        out_size = size_by_blocks(in_size >> 2);
+        out_size = size_by_blocks(in_size >> 1);
         if(out_size < UNOUT_CHUNK_SIZE)
            out_size = UNOUT_CHUNK_SIZE;
         ret = _inflate_stream(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, ptbl);
     } else {
-#if _DEBUG != 0xFF
+#if 0 //_DEBUG != 0xFF
         goto do_inflate_stream;
 #endif
+        out_size = size_by_blocks(zread_max_size(in_size));
         ret = _inflate_parallel(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, ptbl);
         buf_size = 0;
@@ -2415,6 +2442,9 @@ do_inflate_stream:
             perror("unlink");
     }
 
+    #if _USE_FREE
+    free(ilst);
+    #endif
     goto do_free;
 
 // =============================================================================
@@ -2620,6 +2650,7 @@ do_free:
     }
     if(ofd) close(ofd);
     free(ptbl);
+    free(list);
     #endif
 
     return ret;
