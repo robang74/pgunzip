@@ -212,6 +212,7 @@ static size_t _g_chunk_size       = 0;
 static int _g_tot_chunks          = 0;
 static int _g_compression_level   = 6;
 static unsigned _g_cpu_procs      = 0;
+static off_t _g_first_offeset     = 0; // RAF: eq. to PTGZ_HEADER_CURSIZE
 
 static bool chunk_read(chunk_t *c);
 static bool chunk_write(chunk_t *c);
@@ -1331,7 +1332,7 @@ typedef struct ALIGNED4 {
     pgunz_link_t cur;  // pointer to the linked list
     uint32_t  chksum;  // the sum of all the words table records should be zero
     uint32_t  nwords;  // number of the words the list contains: 0,1 not useful
-    uint32_t  bufsze;  // the size of the read expressed 4KiB memory pages 2^12
+    uint32_t  bufsze;  // the input buffer (chunk) size expressed in bytes 2^32
     uint32_t  magicw;  // the magic word closing the format, but it can be 16_t
     /* list stats here */
 } __attribute__ ((packed)) pgunz_t;
@@ -1488,10 +1489,11 @@ void verbose_printout(vrbout_t *vo)
         return;
 
     fprintf(stderr,
-    "%s, nth:%u/%d, file: %d x %zu -> %ld, gz: %lu [%lu, %lu] (%0.1f%%, %d)\n",
-        _g_libz_name, vo->nthr, _g_tot_chunks, vo->nidx, _g_chunk_size,
-        _g_read_file_size, vo->olen, vo->isze, vo->osze,
-        (float) vo->olen * 100 / _g_read_file_size,
+    "%s, nth:%u/%d, file: %dx[%zu + %4ld] -> %ld, gz: %lu (%0.1f%%,-%d)\n",
+        _g_libz_name, vo->nthr, _g_cpu_procs, _g_tot_chunks, _g_chunk_size,
+        (ssize_t)vo->osze - vo->isze, _g_read_file_size, vo->olen,
+        opt_decompress ? (float) _g_read_file_size * 100 / vo->olen :
+                         (float) vo->olen * 100 / _g_read_file_size ,
         _g_compression_level
     );
 
@@ -1826,6 +1828,57 @@ uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
     return &buf[PTGZ_LIST_START_OFF];
 }
 
+static ALWAYS_INLINE
+size_t ptgz_header_init(int infd, pgunz_t *ptbl)
+{
+    void *ptr = NULL;
+    size_t len = 0, nwords = 0;
+    uint32_t in_size = 0;
+    uint16_t nbytes = 0;
+
+    if (_g_read_mmap_base && _USE_MMAP) {
+        ptr = _g_read_mmap_base;
+    } else {
+        if (_g_read_mmap_base) {
+            if(_g_read_file_size < PTGZ_HEADER_SIZE)
+                return _g_read_file_size;
+            __builtin_memcpy(_g_ptgz_header,
+                          _g_read_mmap_base, PTGZ_HEADER_SIZE);
+        } else {
+            len = full_read(infd, _g_ptgz_header, PTGZ_HEADER_SIZE);
+            if (len != PTGZ_HEADER_SIZE)
+                return len;
+        }
+        ptr = _g_ptgz_header;
+    }
+    ptr = ptgz_header_read(ptr, &nbytes, &in_size);
+    if (!ptr)
+        return PTGZ_HEADER_SIZE;
+
+    if (_g_read_mmap_base) {
+        if(_g_read_file_size < PTGZ_HEADER_SIZE + nbytes)
+            return _g_read_file_size;
+        __builtin_memcpy(&_g_ptgz_header[PTGZ_HEADER_SIZE],
+                      &_g_read_mmap_base[PTGZ_HEADER_SIZE], nbytes);
+    } else {
+        len += full_read(infd, &_g_ptgz_header[PTGZ_HEADER_SIZE], nbytes);
+        if (len != nbytes + PTGZ_HEADER_SIZE)
+            return len;
+    }
+
+    nwords = nbytes >> 2;
+    _g_tot_chunks = nwords;
+    _g_ptgz_list_size = nbytes;
+    _g_first_offeset = nbytes + PTGZ_HEADER_SIZE;
+    __builtin_memset(ptbl, 0, sizeof(pgunz_t));
+    ptbl->nwords = nwords;
+    ptbl->cur.size = nwords;
+    ptbl->cur.list = (uint32_t *)ptr;
+    ptbl->bufsze = in_size;
+
+    return 0;
+}
+
 // =============================================================================
 // Core
 // =============================================================================
@@ -1880,9 +1933,6 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
 fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
     in_size, out_size, buf_size, _g_tot_chunks);
 #endif
-
-    _verbout_init(vo);
-    verbose_printout(&vo);
 
     _g_chunk_size = in_size;
     chunk_t chunks[2][MAX_THREADS];
@@ -2072,6 +2122,40 @@ do_free_n_return:
 // =============================================================================
 // Main
 // =============================================================================
+
+static
+size_t do_output_mmap(int ofd)
+{
+    size_t max;
+
+    if (!ofd || opt_stdout)
+        return 0;
+
+    // RAF, TODO: the PTGZ determines the output file size
+    max  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * _g_tot_chunks;
+    max += PTGZ_HEADER_CURSIZE;
+
+    /* 1. Pre-allocate max size for output mmap */
+    if (ftruncate(ofd, max) < 0) {
+        perror("ftruncate");
+        return 0;
+    }
+
+    if(_DNT_MMAP || !max)
+        return 0;
+
+    /* 2. Map output file into virtual memory */
+    _g_out_mmap_base = mmap(NULL, max,
+        PROT_READ  | PROT_WRITE,
+        MAP_SHARED | MAP_POPULATE, ofd, 0);
+    if (_g_out_mmap_base == MAP_FAILED) {
+        _g_out_mmap_base = NULL;
+        perror("mmap");
+        return 0;
+    }
+
+    return max;
+}
 
 int main(int argc, char **argv)
 {
@@ -2317,7 +2401,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         }
     }
     else
-    while (ofd && !opt_stdout) {
+    if (ofd && !opt_stdout)
+    {
         ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
         char *str = malloc(len);
         if(!str) {
@@ -2345,31 +2430,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         free(str); //RAF: this can be left at the exit() as well
         str = NULL;
         #endif
-
-        // RAF, TODO: the PTGZ determines the output file size
-        max_out_size  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * _g_tot_chunks;
-        max_out_size += PTGZ_HEADER_CURSIZE;
-
-        /* 1. Pre-allocate max size for output mmap */
-        if (ftruncate(ofd, max_out_size) < 0) {
-            perror("ftruncate");
-            break;
-        }
-
-        if(_DNT_MMAP || !max_out_size)
-            break;
-
-        /* 2. Map output file into virtual memory */
-        _g_out_mmap_base = mmap(NULL, max_out_size,
-            PROT_READ  | PROT_WRITE,
-            MAP_SHARED | MAP_POPULATE, ofd, 0);
-        if (_g_out_mmap_base == MAP_FAILED) {
-            _g_out_mmap_base = NULL;
-            perror("mmap");
-            break;
-        }
-
-        break;
     }
 
     if (ofd == STDOUT_FILENO)
@@ -2391,7 +2451,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
 // =============================================================================
 
-    pgunz_t *ptbl;
+    pgunz_t tbl, *ptbl = &tbl;
     size_t buf_size = 0;
     uint8_t *ptr = NULL;
     uint32_t *list = NULL;
@@ -2405,39 +2465,33 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
 // === gunzip ==================================================================
 
-    /* stdin fallback, but table can be available on shorts files */
-    int ret;
-    uint16_t nbytes;
-    uint32_t out_size = 0, in_size = 0;
+    int ret = 0;
     uint32_t *ilst = NULL;
+    uint32_t out_size = 0, in_size = 0;
+    uint16_t nbytes = 0;
 
-    buf_size = full_read(infd, _g_ptgz_header, PTGZ_HEADER_MAXSIZE);
-    if(buf_size < PTGZ_HEADER_SIZE)
+    buf_size = ptgz_header_init(infd, &tbl);
+    if(buf_size && buf_size < PTGZ_HEADER_SIZE)
+        return 1; // nothing to do
+
+    if(buf_size && infd == STDIN_FILENO) {
+        // what has been read should from STDIN be passed to the first chunk
         goto set_default_values;
-
-    //RAF: this can be elaborated with a full parallel approach
-    ptr = ptgz_header_read(_g_ptgz_header, &nbytes, &in_size);
-//  fprintf(stderr, ">>> buf: %lu, ptr: %p, sze: %u\n", buf_size, ptr, in_size);
-    if(!ptr)
-        goto set_default_values;
-
-    ilst = (uint32_t *)ptr;
-    _g_tot_chunks = nbytes >> 2;
-    _g_ptgz_list_size = nbytes;
-    next_idx = nbytes >> 2;
-
-    ptbl = create_pgunz_table(0);
-    ptbl->cur.size = next_idx;
-    ptbl->nwords = next_idx;
-    ptbl->bufsze = in_size;
-    ptbl->cur.list = ilst;
-
-    buf_size -= nbytes + PTGZ_HEADER_SIZE;
-    ptr = buf_size ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - buf_size] : NULL;
+    } else {
+        // at this point, tbl and the first chunk offset are initialisated
+        next_idx = tbl.nwords;
+        in_size = tbl.bufsze;
+        ilst = tbl.cur.list;
+        buf_size = 0;
+    }
+    
+    max_out_size = do_output_mmap(ofd);
 
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, in_size, nbytes);
-fprintf(stderr, "      ilst: 0x%08x 0x%08x 0x%08x\n", ilst[0], ilst[1], ilst[2]);
+fprintf(stderr, "PTGZ1> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
+fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
+    ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
 #endif // ----------------------------------------------------------------------
 
     if (in_size  < MIN_CHUNK_SIZE) {
@@ -2446,23 +2500,20 @@ set_default_values:
         out_size = UNOUT_CHUNK_SIZE;
         in_size  = UNZIN_CHUNK_SIZE;
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, ptbl);
+            out_size, ptr, buf_size, !max_out_size, &tbl);
     } else
-    if (nbytes < sizeof(uint32_t) || !ilst[0]) {
+    if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst[0]) {
 do_inflate_stream:
         in_size  = size_by_blocks(zread_max_size(in_size));
         out_size = size_by_blocks(in_size >> 1);
         if(out_size < UNOUT_CHUNK_SIZE)
            out_size = UNOUT_CHUNK_SIZE;
         ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, ptbl);
+            out_size, ptr, buf_size, !max_out_size, &tbl);
     } else {
-#if 0 //_DEBUG != 0xFF
-        goto do_inflate_stream;
-#endif
         out_size = size_by_blocks(zread_max_size(in_size));
         ret = _inflate_parallel(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, ptbl);
+            out_size, ptr, buf_size, !max_out_size, &tbl);
         buf_size = 0;
     }
 
@@ -2477,9 +2528,6 @@ do_inflate_stream:
             perror("unlink");
     }
 
-    #if _USE_FREE
-    free(ilst);
-    #endif
     goto do_free;
 
 // =============================================================================
@@ -2487,6 +2535,7 @@ do_inflate_stream:
 // =============================================================================
 
 set_ptbl_list:
+    max_out_size = do_output_mmap(ofd);
     ptbl = create_pgunz_table(_g_tot_chunks);
     list = ptbl->cur.list;
 
@@ -2515,7 +2564,7 @@ set_ptbl_list:
     full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
-_print2("PTGZ> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
+_print2("PTGZ2> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
     *(uint32_t *)&ptr[0], _g_tot_chunks, _g_chunk_size, PTGZ_HEADER_CURSIZE);
 #endif // ----------------------------------------------------------------------
 
