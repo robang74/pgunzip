@@ -110,7 +110,7 @@ enum {
 #define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
 #endif              // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
-#define _THR_WAIT 1 // 1: wait for any of threads completes, 0: polling
+#define _THR_WAIT 0 // 1: wait for any of threads completes, 0: polling
 #endif
 #ifndef _USE_MMAP   // mmap() is performed by default, but it can fail
 #define _USE_MMAP !_DNT_MMAP
@@ -1330,6 +1330,7 @@ typedef struct ALIGNED4 {
     size_t olen;
     size_t blen;
     int vlvl;
+    int infd;
 } __attribute__ ((packed)) vrbout_t;
 
 const uint8_t ptgz_magic_str[4] = { "ptgz" };
@@ -1656,6 +1657,7 @@ write_table:
     _vo.osze = out_size;      \
     _vo.blen = buf_size;      \
     _vo.olen = outlen;        \
+    _vo.infd = infd;          \
 }
 
 /* RAF
@@ -2388,11 +2390,11 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     ilst = (uint32_t *)ptr;
     _g_tot_chunks = nbytes >> 2;
     _g_ptgz_list_size = nbytes;
-    next_idx = _g_tot_chunks;
+    next_idx = nbytes >> 2;
 
     ptbl = create_pgunz_table(0);
-    ptbl->cur.size = _g_tot_chunks;
-    ptbl->nwords = _g_tot_chunks;
+    ptbl->cur.size = next_idx;
+    ptbl->nwords = next_idx;
     ptbl->bufsze = in_size;
     ptbl->cur.size = nbytes;
     ptbl->cur.list = ilst;
