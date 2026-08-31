@@ -10,7 +10,8 @@ Simplicity is the ultimate sophistication (cit.)
 
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
-    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04) &dash; [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06)
+    - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
+    - [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06) &dash; [Planning](#planning)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -314,6 +315,18 @@ real  0m0.368s
 ```
 
 Despite its early phase of development and the pipe I/O parallelism yet to optimise, speed tests indicate a sustained speed supported by a low-degree of variance when considered the average over 30 runs as a subset.
+
+---
+
+### Planning
+
+La cosa interessante è che quando scrive su stdout, imposta comunque il campo `FEXTRA` nella lunghezza corretta anche se pieno di zero (perché non ha i dati) e appende in fondo la PTGZ table. Dall'altra parte dello stream può riassemblare le informazioni (o opzione `-R` oppure `--rebuild`) con una copy_range() e ftruncate(). Non è poca cosa, anche se poi la tabella in fondo sarà per motivi di standard rimpiazzata con un header RFC-1972 con contenuto vuoto e tabella piena.
+
+Quando ptgzip legge da file calcola il numero dei chunks, quello che non può calcolare è la loro dimensione in output, e sono quelle che finiscono in tabella. Se invece i dati arrivano da `STDIN` allora c'è un solo campo che è la dimensione del buffer di lettura, che serve come finestra massima entro cui cercare il successivo header GZIP, che in AVX2 è un'operazione abbastanza veloce e permette di paralellelizzare il lavoro perché ogni thread riceve un chunk intero e l'unico elemento eventuale di sincronizzazione è la scrittura se deve essere sequenziale.
+
+Al momento la ricerca è impostata su tre bytes `1f 8b 08` per efficienza potrebbe semplificarsi in quattro (32bit, con AVX2) e in tal caso `00` è il campo supportato da ptgzip. Al momento lo `04` è solo in testa ed eventualmente poi sarà in coda. Ma è irrilevante per l'ultimo thread che insieme al resto ci finisca anche l'eventuale header finale.
+
+Le finestre di lettura sono dimensionate, conoscendo la dimensione della finestra iniziale di lavoro in anticipo, per leggere almeno 30 bytes (un header di servizio) + 8 bytes per la certezza di avere un chunk start. Comunque anche se non fosse data per certa la finestra di lavoro è sufficiente fare delle letture per le quali gli ultimi 64 bytes non vengano mai consumati ma sempre poi spostati in testa al buffer al successivo atto di lettura.
 
 <br>
 
