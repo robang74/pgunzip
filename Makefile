@@ -6,22 +6,24 @@
 #   make distclean # remove binary, libz/ source tree and tarball
 
 VERSION  ?= 2.3.3
-ARCHIVE   = $(VERSION).tar.gz
+ZARCHIVE  = $(VERSION).tar.gz
 TARBALL   = zlib-ng-$(VERSION).tar.gz
-REPOURL   = https://github.com/robang74/zlib-ng/archive/refs/tags
-URL       = $(REPOURL)/$(ARCHIVE)
+REPOURL   = https://github.com/robang74
+ZURL      = $(REPOURL)/zlib-ng/archive/refs/tags/$(ZARCHIVE)
+BARCHIVE  = uchaosys.zip
+BURL      = $(REPOURL)/busybox/archive/refs/heads/$(BARCHIVE)
 LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGET    = ptgzip
-TARGETS   = $(TARGET) pxgzip plgzip pmgzip
+TARGETS   = pxgzip plgzip bbox/gzip pmgzip pugzip $(TARGET)
 GZCMD     = $(shell command -v pigz gzip | head -n1)
 SRC       = ptgzip.c
 NTS      ?= 30
 
 CC       ?= gcc
-CFLAGS   ?= -g0 -O2 -s -falign-functions=32 $(EXTRA_CFLAGS)
+CFLAGS   ?= -g0 -O2 -s -falign-functions=32 -flto -mavx2 $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
@@ -34,6 +36,7 @@ MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 all: $(TARGETS)
 	@echo
 	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
+	@du -k libzall.a && printf "\t%s\n\n" "$$(file libzall.a)"
 
 # -----------------------------------------------------------------------------
 # source target: download tarball, extract, rename to libz/, build static lib
@@ -41,9 +44,14 @@ all: $(TARGETS)
 source: $(LIBZ_A)
 
 $(TARBALL):
-	@echo ">>> Downloading $(TARBALL) ..."
-	wget -O $@ $(URL) || curl -Lo $@ $(URL) || \
-		{ echo "Error: install wget or curl"; rm -f $(TARBALL); exit 1; }
+	@echo ">>> Downloading $@ ..."
+	wget -O $@ $(ZURL) || curl -Lo $@ $(ZURL) || \
+		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
+
+busybox.zip:
+	@echo ">>> Downloading $@ ..."
+	wget -O $@ $(BURL) || curl -Lo $@ $(BURL) || \
+		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
 
 $(LIBZ_DIR): $(TARBALL)
 	@echo ">>> Extracting $(TARBALL) -> $(LIBZ_DIR)/"
@@ -73,11 +81,21 @@ $(LIBZ_A): $(LIBZ_DIR)
 	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
+# cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
+# cmake --build build
+
+bbox: busybox.zip
+	unzip -q $^ && mv -f busybox-uchaosys/ $@/
+	cp -f $@/ubuntu/config.gzip $@/.config
+
+bbox/gzip: bbox/.config | bbox
+	cd bbox && make -j && mv busybox gzip
+
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
-$(TARGET): $(SRC) $(LIBZ_A)
-	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) $(LIBZ_A) \
+$(TARGET): $(SRC) libzall.a
+	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) libzall.a \
 	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
 
 pxgzip: pxgzip.c
@@ -88,13 +106,45 @@ plgzip: ptgzip.c
 
 minz/.sync:
 	git submodule update --init --recursive
-	touch minz/.sync
+	touch $@
 
-$(MINZ_DIR)/miniz.c: minz/.sync
-	cd minz && sh amalgamate.sh
+updateminz: | minz/.sync
+	@echo "Updating miniz at the rfc1952 branch HEAD"
+	cd minz && git fetch origin rfc1952 \
+	  && git checkout --force FETCH_HEAD
+	cd minz/ && cat 00*.patch 2>&- | patch -p1
+	cd minz/ && git status | grep modified ||:
+	rm -rf libzall.a minz/amalgamation/
 
-pmgzip: ptgzip.c $(MINZ_DIR)/miniz.c
+ungz/.sync:
+	git submodule update --init --recursive
+	touch $@
+
+$(MINZ_DIR)/miniz.c: | minz/.sync
+	cd minz && SKIPTESTS=1 sh amalgamate.sh
+
+$(MINZ_DIR)/miniz.c.o: $(MINZ_DIR)/miniz.c
+	$(CC) $(CFLAGS) -c $< -o $<.o
+
+minz/libminz.a: $(MINZ_DIR)/miniz.c.o
+	$(AR) rcs $@ $<
+
+ungz/libungz.a: | ungz/.sync
+	make -C ungz libungz.a
+
+libmerge.mri: $(LIBZ_A) minz/libminz.a ungz/libungz.a
+	@echo "CREATE libzall.a" > $@
+	@for i in $^; do echo "ADDLIB $$i"; done >> $@
+	@printf "SAVE\nEND\n" >> $@
+
+libzall.a: libmerge.mri
+	@$(AR) -M < $^
+
+pmgzip: ptgzip.c libzall.a
 	$(CC) $(CFLAGS) -o $@ $^ -I$(MINZ_DIR) -lpthread -D_USE_MNZ=1
+
+pugzip: ptgzip.c libzall.a
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread -D_USE_UNGZ=1
 
 # -----------------------------------------------------------------------------
 # Tests
@@ -121,11 +171,10 @@ CMDVC  =
 endif
 
 libz.tar: /bin/tar
-	@/bin/tar cf libz.tar libz
+	/bin/tar cf libz.tar libz
 
-libz.tar.gz: libz.tar ptgzip
-#	$(GZCMD) -nk libz.tar
-	./ptgzip -nk libz.tar
+libz.tar.gz: libz.tar | ptgzip
+	./ptgzip -nkf libz.tar
 
 blkline:
 	@echo
@@ -178,7 +227,7 @@ stress: libz.tar $(CMD2T)
 	@echo
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
+	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(CMDVC)" && sync && \
     eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd 2>&-"; done | dd bs=1M of=$$nl
@@ -186,7 +235,7 @@ _speed-gunzp: libz.tar.gz $(CMD2T)
 speed-gunzp: _speed-gunzp blkline
 
 _speef-gunzp: libz.tar.gz $(CMD2T)
-	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
+	@printf "\n=== $(CMD2T) '-dk' speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(NP)" && sync && \
     eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done; sync
@@ -253,6 +302,19 @@ _test-basic: libz.tar $(CMD2T) ptgzip
 
 test-basic: _test-basic blkline
 
+_test-ptgz:
+	@printf "\n=== ./ptgzip PTGZ sanity check ===\n\n"
+	rm -f libz.tar libz.tar.gz
+	make -j libz.tar ptgzip >/dev/null
+	@echo
+	./ptgzip libz.tar -kv
+	head -c64 libz.tar.gz | hexdump -C
+	@echo
+	./ptgzip -dt libz.tar.gz
+	zcat libz.tar.gz | wc -c; echo ret=$$?
+
+test-ptgz: _test-ptgz blkline
+
 _test-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) gunzp sanity check ===\n\n"
 	cat libz.tar.gz | $(CMD2T) -dkfv $(CMDVC) | tee test.dz | wc -c
@@ -261,9 +323,15 @@ _test-gunzp: libz.tar.gz $(CMD2T)
 
 test-gunzp: _test-gunzp blkline
 
-_test-inout: libz.tar $(CMD2T)
-	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="cat libz.tar | $(CMD2T) $(CMDVC)" && sync && \
+_test-inout: libz.tar libz.tar.gz $(CMD2T)
+	@printf "\n=== $(CMD2T) I/O speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="dd if=libz.tar bs=1M status=none |\
+	    $(CMD2T) $(CMDVC)" && sync && \
+    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$$nl
+	@printf "\n=== $(CMD2T) -d I/O speed test x$(NTS) ===\n\n"
+	nl=/dev/null && cmd="dd if=libz.tar.gz bs=1M status=none |\
+	    $(CMD2T) -d $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
@@ -354,7 +422,7 @@ clean:
 	rm -f $(TARGETS) libz.tar libz.tar.gz test.dz
 
 veryclean: clean
-	rm -rf libz minz/.sync
+	rm -rf libz minz/.sync minz/amalgamation libzall.a
 
 distclean: veryclean
 	rm -f $(TARBALL)

@@ -1,3 +1,6 @@
 [submodule "minz"]
 	path = minz
 	url = https://github.com/robang74/miniz.git
+[submodule "ungz"]
+	path = ungz
+	url = https://github.com/robang74/ungz.git

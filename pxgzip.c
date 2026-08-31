@@ -17,6 +17,12 @@
 
 //#include <linux/fs.h>
 
+#ifndef _BBOX_GZIP
+#define GZIP_PATH "/bin/gzip"
+#else
+#define GZIP_PATH "bbox/gzip"
+#endif
+
 #define MAX_SEGMENTS    6
 #define MAX_TARGET     (1UL << 20)     /* max target size per segment */
 
@@ -197,7 +203,7 @@ static int spawn_gzip(int infd, chunk_t *c)
             _exit(126);
         close(c->pout);
 
-        execlp("/bin/gzip", "gzip", "-nc", (char *)NULL);
+        execlp(GZIP_PATH, "gzip", "-nc", (char *)NULL);
         _exit(127);
     }
 
