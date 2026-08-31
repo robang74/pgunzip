@@ -2448,7 +2448,7 @@ set_default_values:
         ret = _inflate_stream(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, ptbl);
     } else
-    if (nbytes < sizeof(uint32_t)) {
+    if (nbytes < sizeof(uint32_t) || !ilst[0]) {
 do_inflate_stream:
         in_size  = size_by_blocks(zread_max_size(in_size));
         out_size = size_by_blocks(in_size >> 1);
