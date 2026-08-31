@@ -295,6 +295,26 @@ A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. Th
 
 Reducing to 28 bytes is possible by integrating the PTGZ format in the first chunk header but at the cost of recalculating the CRC32 which takes time in compression while having a separate header allows to strip it away easily.
 
+```txt
+$ make ptgzip libz.tar.gz _speed-gunzp speef-gunzp
+
+=== ./ptgzip '-dc' speed test x30 ===
+
+278937600 bytes (279 MB, 266 MiB) copied, 0.270056 s, 1.0 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.268440 s, 1.0 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.266577 s, 1.0 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.271185 s, 1.0 GB/s
+
+=== ./ptgzip '-dk' speed test x30 ===
+
+real  0m0.369s
+real  0m0.369s
+real  0m0.375s
+real  0m0.368s
+```
+
+Despite its early phase of development and the pipe I/O parallelism yet to optimise, speed tests indicate a sustained speed supported by a low-degree of variance when considered the average over 30 runs as a subset.
+
 <br>
 
 ## Deflating

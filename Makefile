@@ -171,11 +171,10 @@ CMDVC  =
 endif
 
 libz.tar: /bin/tar
-	@/bin/tar cf libz.tar libz
+	/bin/tar cf libz.tar libz
 
 libz.tar.gz: libz.tar | ptgzip
-#	$(GZCMD) -nk libz.tar
-	./ptgzip -nk libz.tar
+	./ptgzip -nkf libz.tar
 
 blkline:
 	@echo
