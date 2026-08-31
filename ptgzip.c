@@ -206,7 +206,7 @@ enum {
 
 static uint8_t *_g_read_mmap_base = NULL;
 static uint8_t *_g_out_mmap_base  = NULL;
-static off_t _g_read_filesize     = 0;
+static off_t _g_read_file_size    = 0;
 static size_t _g_ptgz_list_size   = 0;
 static size_t _g_chunk_size       = 0;
 static int _g_tot_chunks          = 0;
@@ -627,7 +627,7 @@ void chunk_init(chunk_t *c, int idx, int ofd,
     c->in_off = _g_chunk_size * idx;
 
     if (infd != STDIN_FILENO && idx + 1 == _g_tot_chunks)
-        c->in_len = (size_t)_g_read_filesize - c->in_off;
+        c->in_len = (size_t)_g_read_file_size - c->in_off;
 }
 
 static ALWAYS_INLINE
@@ -1368,6 +1368,7 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     }
 
     memset(p, 0, len);
+    p->nwords = nwords;
     p->cur.size = nwords;
     u = (uint8_t *)p;
     p->cur.list = (uint32_t *)(u + sizeof(pgunz_t));
@@ -1489,8 +1490,8 @@ void verbose_printout(vrbout_t *vo)
     fprintf(stderr,
     "%s, nth:%u/%d, file: %d x %zu -> %ld, gz: %lu [%lu, %lu] (%0.1f%%, %d)\n",
         _g_libz_name, vo->nthr, _g_tot_chunks, vo->nidx, _g_chunk_size,
-        _g_read_filesize, vo->olen, vo->isze, vo->osze,
-        (float) vo->olen * 100 / _g_read_filesize,
+        _g_read_file_size, vo->olen, vo->isze, vo->osze,
+        (float) vo->olen * 100 / _g_read_file_size,
         _g_compression_level
     );
 
@@ -1733,7 +1734,7 @@ head -c64 libz.tar.gz | hexdump -C
  *******************************************************************************
 */
 
-static
+static ALWAYS_INLINE
 const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
     uint8_t *buf = _g_ptgz_header;
@@ -1796,7 +1797,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     return buf; // return a local value but it is fine
 }
 
-static
+static ALWAYS_INLINE
 uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 {
     uint16_t plen;
@@ -1982,7 +1983,7 @@ skip_do_new_thread:
         /* granting the correct order */
         next_idx++;
         if(infd == STDIN_FILENO)
-            _g_read_filesize += c->in_len;
+            _g_read_file_size += c->in_len;
         outlen += (ofd == STDOUT_FILENO)
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
@@ -2215,18 +2216,18 @@ int main(int argc, char **argv)
             _print2("warning: zero lenght file\n");
             return 0;
         }
-        _g_read_filesize = st.st_size;
+        _g_read_file_size = st.st_size;
 
         #if 1 //RAF: optional code
         posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
         posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
         #endif
 
-        if(_DNT_MMAP || !_g_read_filesize)
+        if(_DNT_MMAP || !_g_read_file_size)
             break;
 
         // mmap entire file (zero-copy input for all threads)
-        _g_read_mmap_base = mmap(NULL, _g_read_filesize,
+        _g_read_mmap_base = mmap(NULL, _g_read_file_size,
             PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
         if (_g_read_mmap_base == MAP_FAILED) {
             _g_read_mmap_base = NULL;
@@ -2246,18 +2247,18 @@ int main(int argc, char **argv)
     size_t outlen = 0;
     _g_tot_chunks = 0;
 
-    if (!_g_read_filesize) {
+    if (!_g_read_file_size) {
         // RAF, TODO: other values are failing
         _g_chunk_size = MAX_CHUNK_SIZE;
     }
     else
-    if (_g_read_filesize <= MIN_CHUNK_SIZE) {
+    if (_g_read_file_size <= MIN_CHUNK_SIZE) {
         nthreads = 1;
         _g_tot_chunks = 1;
-        _g_chunk_size = _g_read_filesize;
+        _g_chunk_size = _g_read_file_size;
     } else {
         for(int i = nthreads; i > 1; i--) {
-            _g_chunk_size = _int_div(_g_read_filesize, i);
+            _g_chunk_size = _int_div(_g_read_file_size, i);
             if (_g_chunk_size >  MAX_CHUNK_SIZE) {
                 break; // multi rounds
             }
@@ -2268,7 +2269,7 @@ int main(int argc, char **argv)
         }
 
         /* Target: split evenly across all CPUs */
-        _g_chunk_size = _int_div(_g_read_filesize, nthreads);
+        _g_chunk_size = _int_div(_g_read_file_size, nthreads);
 
         /* Clamp to the design limits */
         if (_g_chunk_size < MIN_CHUNK_SIZE)
@@ -2279,17 +2280,17 @@ int main(int argc, char **argv)
 
         /* Page-align for I/O efficiency */
         _g_chunk_size = _mpceil(_g_chunk_size) << 12;
-        _g_tot_chunks = _int_div(_g_read_filesize, _g_chunk_size);
+        _g_tot_chunks = _int_div(_g_read_file_size, _g_chunk_size);
 
 #if _DO_WRST
         if (_DO_WRST > 1
         || (_g_cpu_procs << 1) > _g_tot_chunks) {
-            size_t wrst = _g_read_filesize % _g_chunk_size;
+            size_t wrst = _g_read_file_size % _g_chunk_size;
             if(wrst > (_g_tot_chunks << 1))
                 _g_chunk_size -= (_g_chunk_size - wrst) / _g_tot_chunks;
             // RAF: below 64-bit alignment isn't convenient
             _g_chunk_size = ((_g_chunk_size + 7) >> 3) << 3;
-            _g_tot_chunks = _int_div(_g_read_filesize, _g_chunk_size);
+            _g_tot_chunks = _int_div(_g_read_file_size, _g_chunk_size);
         }
 #endif
 
@@ -2299,7 +2300,7 @@ int main(int argc, char **argv)
     }
 
 #if _DEBUG & 0x10 // -----------------------------------------------------------
-float x = ((float)100*(_g_read_filesize%_g_chunk_size))/_g_chunk_size;
+float x = ((float)100*(_g_read_file_size%_g_chunk_size))/_g_chunk_size;
 if(x && x < 50)
 fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     x, infd, filename?:"(NULL)");
@@ -2429,7 +2430,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     ptbl->cur.size = next_idx;
     ptbl->nwords = next_idx;
     ptbl->bufsze = in_size;
-    ptbl->cur.size = nbytes;
     ptbl->cur.list = ilst;
 
     buf_size -= nbytes + PTGZ_HEADER_SIZE;
@@ -2614,7 +2614,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
         /* granting the correct order */
         next_idx++;
         if(infd == STDIN_FILENO)
-            _g_read_filesize += c->in_len;
+            _g_read_file_size += c->in_len;
         outlen += (ofd == STDOUT_FILENO)
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
@@ -2678,7 +2678,7 @@ do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
     if(_g_read_mmap_base)
-        munmap(_g_read_mmap_base, _g_read_filesize);
+        munmap(_g_read_mmap_base, _g_read_file_size);
     if(_g_out_mmap_base) {
         msync(_g_out_mmap_base, outlen, MS_SYNC);
         munmap(_g_out_mmap_base, max_out_size);
