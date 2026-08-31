@@ -73,20 +73,22 @@ typedef struct {
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
-    size_t   out_cap;
-    int      infd;
-    int      ofd;
-    uint8_t  map;
+    size_t    out_cap;
+    int       infd;
+    int       ofd;
+    uint8_t   map;
+    size_t    read_len;
+    uint8_t  *read;
 //RAF: part that requires to be completely reset //
-    int      idx;                                //
-    uint8_t  state;                              //
-    char     error;                              //
-    size_t   in_len;                             //
-    size_t   out_len;                            //
-    off_t    out_off;                            //
-    off_t    in_off;                             //
+    int       idx;                               //
+    uint8_t   state;                             //
+    char      error;                             //
+    size_t    in_len;                            //
+    size_t    out_len;                           //
+    off_t     out_off;                           //
+    off_t     in_off;                            //
 //RAF: part that requires to be completely reset //
-    uint8_t  end;
+    uint8_t   end;
 } chunk_t ALIGNED4;
 
 enum {
@@ -468,10 +470,19 @@ release:
 static
 bool chunk_read(chunk_t *c)
 {
-   if(!c->in_len) return 0;
+    if(!c->in_len) return 0;
 
     if (c->infd == STDIN_FILENO) {
-        c->in_len = full_read(c->infd, c->in, c->in_len);
+        size_t len = c->read_len;
+        if (len > c->in_len)
+            return 1;
+        if (len) {
+            __builtin_memcpy(c->in, c->read, len);
+            len += full_read(c->infd, &c->in[len], c->in_len - len);
+            c->in_len = len;
+        } else {
+            c->in_len = full_read(c->infd, c->in, c->in_len);
+        }
     } else // The operations below can be post-poned w/ a thread
     if(_g_out_mmap_base) {
         uint8_t *src = _g_read_mmap_base + c->in_off;
@@ -677,9 +688,13 @@ int deflate_chunk_init(chunk_t *c)
             perror("posix_memalign");
             exit(-1);
         }
+#if _DEBUG & 0x02 // -----------------------------------------------------------
+fprintf(stderr, "inp1> thr(%04d): read = %lu, off: %lu, err: %d\n",
+    c->idx, c->in_len, c->in_off, c->error);
+#endif  // ---------------------------------------------------------------------
         c->error |= chunk_read(c) << 3;
 #if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, "inp> thr(%04d): read = %lu, off: %lu, err: %d\n",
+fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     c->idx, c->in_len, c->in_off, c->error);
 #endif  // ---------------------------------------------------------------------
         if (!c->in_len) {
@@ -1411,8 +1426,11 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     size_t len;
 
     *err = 0;
+    
+    if (fd <= STDOUT_FILENO)
+        return NULL;
 
-    if(lseek(fd, -16, SEEK_END) < 0) {
+    if (lseek(fd, -16, SEEK_END) < 0) {
         *err = -16;
         perror("lseek");
         return NULL;
@@ -1423,7 +1441,7 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     for (i = 0; i < 4; i++)
         if(u[i] != ptgz_magic_str[i])
             break;
-    if(i != 4) {
+    if (i != 4) {
         *err = -4;
         return NULL;
     }
@@ -1431,13 +1449,13 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     nwords = *(uint32_t *)&buf[4];
 
     ptbl = create_pgunz_table(nwords);
-    if(!ptbl) {
+    if (!ptbl) {
         *err = -2;
         return NULL;
     }
 
     len = ((nwords + 4) << 2);
-    if(lseek(fd, -len, SEEK_END) < 0) {
+    if (lseek(fd, -len, SEEK_END) < 0) {
         *err = -1;
         perror("lseek");
         return NULL;
@@ -1447,9 +1465,9 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     full_read(fd, list, len); //RAF, TODO: better return -1 in case of error
 
     sum = 0;
-    for(i = 0; i < nwords + 4; i++)
+    for (i = 0; i < nwords + 4; i++)
         sum += list[i];
-    if(sum) {
+    if (sum) {
         *err = 1;
         free(ptbl);
         return NULL;
@@ -1624,6 +1642,7 @@ write_table:
         // append the full PTGZ table at the end of file
         full_write(ofd, (const void *)u, len);
         vo->olen += len;
+        len = 0;
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
@@ -1851,9 +1870,18 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
 {
     sem_t sem;
     int err = 0;
+    vrbout_t vo;
     size_t outlen = 0, offset = 0;
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
+
+#if _DEBUG
+fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
+    in_size, out_size, buf_size, _g_tot_chunks);
+#endif
+
+    _verbout_init(vo);
+    verbose_printout(&vo);
 
     _g_chunk_size = in_size;
     chunk_t chunks[2][MAX_THREADS];
@@ -1865,6 +1893,11 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
         chunk_t *c = &chunks[0][i];
 
         chunk_list_init(c);
+        if (buf_size && buf) {
+            c->read = buf;
+            c->read_len = buf_size;
+            buf_size = 0;
+        }
         if (inflate_chunk_init(c)) {
             nthreads = i;
             break;
@@ -1887,7 +1920,8 @@ do_a_thread_wait:
 #else
     _cpu_relax();
 #endif
-//  fprintf(stderr, "o\n");
+    //fprintf(stderr, "o\n");
+
 do_another_loop:
     for(uint32_t a = 0; a < 2; a++)
     for(uint32_t i = 0, b = !a; i < nthreads; i++)
@@ -2011,7 +2045,6 @@ dispose:
     // Ending
     // -----------------------------------------------------------
 
-    vrbout_t vo;
     _verbout_init(vo);
     verbose_printout(&vo);
 #if 0
@@ -2402,9 +2435,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     buf_size -= nbytes + PTGZ_HEADER_SIZE;
     ptr = buf_size ? &_g_ptgz_header[PTGZ_HEADER_MAXSIZE - buf_size] : NULL;
 
-#if 0 // -----------------------------------------------------------------------
-fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, size, nbytes);
-fprintf(stderr, "ptr: %p, size: %u / %lu, read: %lu\n", ptr, in_size, r, buf_size);
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, nbytes: %u\n", ptr, in_size, nbytes);
+fprintf(stderr, "      ilst: 0x%08x 0x%08x 0x%08x\n", ilst[0], ilst[1], ilst[2]);
 #endif // ----------------------------------------------------------------------
 
     if (in_size  < MIN_CHUNK_SIZE) {
