@@ -1,7 +1,7 @@
 /*
  * (c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2
  *  Just-in-time pushable, delta + varint 32-bit, de/compression example
- *  Algorithm family and class: ZigZag LEB128, O(1) 
+ *  Algorithm family and class: ZigZag LEB128, O(1)
  */
 
 #include <stdint.h>
@@ -54,7 +54,7 @@ typedef struct {
 static inline size_t ptgz_predict_record_size(ptgz_delta_writer_t *w, uint32_t value) {
     int32_t delta = (int32_t)value - (int32_t)w->prev_value;
     uint32_t zz = zigzag_encode32(delta);
-    
+
     // Conteggio rapido dei byte occupati dal varint
     if (zz < (1U << 7))  return 1;
     if (zz < (1U << 14)) return 2;
@@ -66,7 +66,7 @@ static inline size_t ptgz_predict_record_size(ptgz_delta_writer_t *w, uint32_t v
 // Inserisce il record nel buffer se c'è spazio sufficiente
 int ptgz_push_record(ptgz_delta_writer_t *w, uint32_t value) {
     size_t needed_bytes = ptgz_predict_record_size(w, value);
-    
+
     // Verifico che il record entri nel limite (es. 65504 byte per l'header PTGZ)
     if (w->current_offset + needed_bytes > w->max_size) {
         return 0; // Buffer pieno, sfora il blocco
@@ -74,12 +74,12 @@ int ptgz_push_record(ptgz_delta_writer_t *w, uint32_t value) {
 
     int32_t delta = (int32_t)value - (int32_t)w->prev_value;
     uint32_t zz = zigzag_encode32(delta);
-    
+
     // Scrittura effettiva
     w->current_offset += varint_encode32(w->buf + w->current_offset, zz);
     w->prev_value = value;
     w->record_count++;
-    
+
     return 1; // Record aggiunto con successo
 }
 
@@ -90,10 +90,10 @@ void ptgz_read_records(const uint8_t *buf, size_t buf_len, uint32_t *out_records
     for (size_t i = 0; i < count && offset < buf_len; i++) {
         uint32_t zz;
         offset += varint_decode32(buf + offset, &zz);
-        
+
         int32_t delta = zigzag_decode32(zz);
         uint32_t current_val = last_val + delta;
-        
+
         out_records[i] = current_val;
         last_val = current_val;
     }

@@ -1428,7 +1428,7 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     size_t len;
 
     *err = 0;
-    
+
     if (fd <= STDOUT_FILENO)
         return NULL;
 
@@ -2484,7 +2484,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         ilst = tbl.cur.list;
         buf_size = 0;
     }
-    
+
     max_out_size = do_output_mmap(ofd);
 
 #if _DEBUG // ------------------------------------------------------------------
