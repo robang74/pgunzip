@@ -320,7 +320,31 @@ Despite its early phase of development and the pipe I/O parallelism yet to optim
 
 ### Planning
 
-Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` field with its target length zero-filled, while appending the actual PTGZ index table to the end of the stream. The receiving end can then rebuild the file (via `-R` / `--rebuild`) using just a combo of a `copy_range()` and a `ftruncate()`. For standard compliance, the trailing `PTGZ` table will be replaced by the populated RFC-1952 compliant header.
+Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` field with its target length zero-filled, while appending the actual PTGZ index table to the end of the stream. The receiving end can then rebuild the file (via `-R` aka `--rebuild`) using just a combo of a `copy_range()` and a `ftruncate()`. For standard compliance, the trailing `PTGZ` table will be replaced by the populated RFC-1952 compliant header.
+
+```
+                   stdout
+                     │
+                     ▼
+      ┌──────────────────────────────┐
+      │ RFC-1952 header zero-filled  │
+      ├──────────────────────────────┤
+      │ gzip members                 │
+      ├──────────────────────────────┤
+      │ RFC-1952 + PTGZ index table  │
+      └──────────────────────────────┘
+                     │
+                     ▼
+                    -R
+        copy_range() + ftruncate()
+                     │
+                     ▼
+      ┌──────────────────────────────┐
+      │ RFC-1952 header + real table │
+      ├──────────────────────────────┤
+      │ gzip members                 │
+      └──────────────────────────────┘
+```
 
 When reading from a file, `ptgzip` calculates the total chunk count upfront, recording dynamic output chunk sizes into the table. From `STDIN`, it uses the read buffer size as a sliding window to scan for the next GZIP header. Accelerated via AVX2, this scan quickly isolates complete chunks for parallel processing, leaving sequential writing as the only potential synchronization point.
 
