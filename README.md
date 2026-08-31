@@ -346,6 +346,8 @@ Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` fie
       └──────────────────────────────┘
 ```
 
+In its simplicity the PTGZ format is so effective that what remains isn't achieving the excellence in parallelism (even if it would be great to have and probably also significative in performance) but the I/O orchestration which, in ultimate terms, strongly depends by four main cases created by the combinations of these two double-options pairs: pipe vs file on input / output.
+
 When reading from a file, `ptgzip` calculates the total chunk count upfront, recording dynamic output chunk sizes into the table. From `STDIN`, it uses the read buffer size as a sliding window to scan for the next GZIP header. Accelerated via AVX2, this scan quickly isolates complete chunks for parallel processing, leaving sequential writing as the only potential synchronization point.
 
 The header search currently matches the 3-byte sequence `1f 8b 08`, which could be further optimized into a 4-byte (32-bit AVX2) lookup by a trailing `00`. In fact, the flag `04` (`FEXTRA`), and every other possible flag, presently exists only in the lead header. Regardless, any trailing headers captured by the final thread do not disrupt decompression. The chunks can be all `00` plain flagged.
