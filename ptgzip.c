@@ -281,7 +281,7 @@ static void *thread_deflate(void *arg)
     ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) {
-        perror("deflate_init2");
+        fprintf(stderr, "deflate_init2 failed: %d\n", ret);
         c->error = -3;
         goto endfnc;
     }
@@ -334,8 +334,8 @@ if(strm.total_out)
 
     c->out_len = strm.total_out;
     if (ret != Z_STREAM_END /* && ret != Z_BUF_ERROR && ret != Z_OK */) {
-        perror("deflate");
-        c->error = ret; //RAF: rarely it returns Z_OK = 0
+        fprintf(stderr, "deflate failed: %d\n", ret);
+        c->error = ret;
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
@@ -344,7 +344,7 @@ if(strm.total_out)
 endfnc:
     _deflate_end(&strm);
     c->state = 2;
-    if (c->ofd > STDOUT_FILENO
+    if (c->ofd != STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
         if (c->sem_ptr){
@@ -447,7 +447,7 @@ if(strm.avail_out)
 endfnc:
     _inflate_end(&strm);
     c->state = 2;
-    if (c->ofd > STDOUT_FILENO
+    if (c->ofd != STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
         if (c->sem_ptr){
@@ -470,7 +470,7 @@ bool chunk_read(chunk_t *c)
 {
    if(!c->in_len) return 0;
 
-    if (c->ofd == STDOUT_FILENO) {
+    if (c->infd == STDIN_FILENO) {
         c->in_len = full_read(c->infd, c->in, c->in_len);
     } else // The operations below can be post-poned w/ a thread
     if(_g_out_mmap_base) {
@@ -531,7 +531,7 @@ fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
     c->idx, c->out_len, c->out_off);
 #endif // ----------------------------------------------------------------------
 
-    if(!c->ofd) return 0;
+    if (!c->ofd) return 0;
 
     if (c->ofd == STDOUT_FILENO)
         return (full_write(c->ofd, c->out, c->out_len) < 0);
