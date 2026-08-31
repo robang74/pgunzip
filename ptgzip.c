@@ -2474,7 +2474,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if(buf_size && buf_size < PTGZ_HEADER_SIZE)
         return 1; // nothing to do
 
-    if(buf_size && infd == STDIN_FILENO) {
+    if(buf_size || infd == STDIN_FILENO) {
         // what has been read should from STDIN be passed to the first chunk
         goto set_default_values;
     } else {
