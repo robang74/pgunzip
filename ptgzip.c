@@ -110,6 +110,9 @@ enum {
 #ifndef _USE_CPUM
 #define _USE_CPUM 0 //RAF: cpu migration stabilise performance but slower
 #endif              //     =0 to disable, =1 immediate, =2 before CPU workload
+#ifndef _DO_OPTL
+#define _DO_OPTL  7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
+#endif
 
 #ifndef _DO_WRST
 #define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
@@ -2189,7 +2192,7 @@ int main(int argc, char **argv)
 
     sem_init(&sem, 0, 0);
 
-    #if 1 //RAF: optional code
+    #if (_DO_OPTL & 1) //RAF: optional code
     struct rlimit lim;
     // Get current CPU limit (in seconds)
     prlimit(0, RLIMIT_CPU, NULL, &lim);
@@ -2322,7 +2325,7 @@ int main(int argc, char **argv)
         }
         _g_read_file_size = st.st_size;
 
-        #if 1 //RAF: optional code
+        #if (_DO_OPTL & 2) //RAF: optional code
         posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
         posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
         #endif
@@ -2454,18 +2457,16 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     if (ofd == STDOUT_FILENO)
     {
-    #if 1 //RAF: optional code
-        #if 0  //RAF: alternative code
-        static char stdout_buf[1 << 20];  // 1MB buffer
-        setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
-        #else
+    #if (_DO_OPTL & 4) //RAF: optional code
         int pipesz = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
         if (pipesz > 0 && pipesz < (1 << 20)) {
             for (int target = 1 << 20; target >= pipesz; target >>= 1)
                 if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, target) == target)
                     break;
         }
-        #endif
+    #elif (_DO_OPTL & 8) //RAF: optional code
+        static char stdout_buf[1 << 20];  // 1MB buffer
+        setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
     #endif
     }
 
