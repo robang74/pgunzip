@@ -76,7 +76,7 @@ typedef struct {
     size_t    out_cap;
     int       infd;
     int       ofd;
-    uint8_t   map;
+    uint8_t   flags;
     size_t    read_len;
     uint8_t  *read;
 //RAF: part that requires to be completely reset //
@@ -95,6 +95,7 @@ enum {
     b_mmap_none = 0,
     b_mmap_out  = 1,
     b_mmap_in   = 2,
+    b_mmap_read = 4,
     b_mmap_seek = 8,
 };
 
@@ -203,8 +204,8 @@ enum {
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
 #define WBUF_MAX_SIZE zbuf_max_size(_g_chunk_size)
 
-#define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
-#define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
+#define is_outbuf_freeable(_c) (_c->out && !(_c->flags & b_mmap_out))
+#define  is_inbuf_freeable(_c) (_c->in  && !(_c->flags & b_mmap_in ))
 
 #define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
@@ -284,11 +285,18 @@ static void *thread_deflate(void *arg)
 
 #if _USE_CPUM == 1
     setcpu(c->idx);
+#else
+    /*_cpu_relax();*/
 #endif
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
         goto release;
+    }
+
+    if (c->infd  != STDIN_FILENO) {
+        c->error |= chunk_read(c) << 3;
+        c->flags |= b_mmap_read;
     }
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
@@ -391,11 +399,18 @@ static void *thread_inflate(void *arg)
 
 #if _USE_CPUM == 1
     setcpu(c->idx);
+#else
+    /*_cpu_relax();*/
 #endif
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
         goto release;
+    }
+
+    if (c->infd  != STDIN_FILENO) {
+        c->error |= chunk_read(c) << 3;
+        c->flags |= b_mmap_read;
     }
 
     ret = _inflate_init2(&strm, 15 + 16);
@@ -569,7 +584,7 @@ fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
     if (c->ofd == STDOUT_FILENO)
         return (full_write(c->ofd, c->out, c->out_len) < 0);
 
-    if(0 && c->map & b_mmap_seek) {
+    if(0 && c->flags & b_mmap_seek) {
         if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
             perror("ftruncate wr");
             return 1;
@@ -680,7 +695,7 @@ int deflate_chunk_init(chunk_t *c)
     /* Assign output pointer inside mapped output file space */
     if (_g_out_mmap_base) {
         c->out = _g_out_mmap_base + c->out_off;
-        c->map |= b_mmap_out;
+        c->flags |= b_mmap_out;
     }
     else
 #endif
@@ -699,7 +714,7 @@ int deflate_chunk_init(chunk_t *c)
 #if _USE_MMAP
     if (_g_read_mmap_base) {
         c->in = _g_read_mmap_base + c->in_off;
-        c->map |= b_mmap_in;
+        c->flags |= b_mmap_in;
     } else
 #endif
     {
@@ -710,11 +725,10 @@ int deflate_chunk_init(chunk_t *c)
             perror("posix_memalign");
             exit(-1);
         }
-#if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, "inp1> thr(%04d): read = %lu, off: %lu, err: %d\n",
-    c->idx, c->in_len, c->in_off, c->error);
-#endif  // ---------------------------------------------------------------------
-        c->error |= chunk_read(c) << 3;
+        if (c->infd  == STDIN_FILENO) {
+            c->error |= chunk_read(c) << 3;
+            c->flags |= b_mmap_read;
+        }
 #if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     c->idx, c->in_len, c->in_off, c->error);
@@ -903,8 +917,8 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         __builtin_memcpy(inbuf, buf, buf_size);
 
     /* Initialize chunk configuration */
-    c.map = b_mmap_out | b_mmap_in;
-    if (!seek) c.map |= b_mmap_seek;
+    c->flags = b_mmap_out | b_mmap_in;
+    if (!seek) c->flags |= b_mmap_seek;
     c.out = outbuf;
     c.ofd = ofd;
 
@@ -1082,8 +1096,8 @@ fprintf(stderr, " buf: %p, buf_size: %lu, w: %lu\n", buf, buf_size, w);
         goto endfunc;
     }
 
-    c.map = b_mmap_out | b_mmap_in;
-    if(seek) c.map |= b_mmap_seek;
+    c.flags = b_mmap_out | b_mmap_in;
+    if(seek) c.flags |= b_mmap_seek;
     strm.next_in  = inbuf;
     strm.avail_in = w;
     c.ofd = ofd;
