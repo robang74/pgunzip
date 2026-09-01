@@ -281,6 +281,28 @@ void setcpu(unsigned idx)
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 }
 
+static ALWAYS_INLINE
+void chunk_dispose(chunk_t *c)
+{
+#if _USE_FREE
+    if (is_outbuf_freeable(c))
+    {
+        free(c->out);
+        c->out = NULL;
+    }
+    if (is_inbuf_freeable(c))
+    {
+        free(c->in);
+        c->in = NULL;
+    }
+    memset(c, 0, sizeof(chunk_t));
+#else
+    c->thr = 0;
+    c->state = 0;
+    //cb->in_len = 0;
+#endif
+}
+
 #define thread_inflate thread_zxflate
 #define thread_deflate thread_zxflate
 
@@ -313,11 +335,12 @@ static void *thread_zxflate(void *arg)
      *    be concatenated into a valid .gz file.
      */
     if(dflt)
-        ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
-                    15 + 16, 7, Z_DEFAULT_STRATEGY);
+        ret = _deflate_init2(&strm, _g_compression_level,
+            Z_DEFLATED, 15 + 16, 7, Z_DEFAULT_STRATEGY);
     else
         ret = _inflate_init2(&strm, 15 + 16);
-    if (ret != Z_OK) {
+    if (ret != Z_OK)
+    {
         fprintf(stderr, "%s_init2 failed: %d\n", c->action, ret);
         c->error = -3;
         goto release;
@@ -328,7 +351,8 @@ static void *thread_zxflate(void *arg)
      *    Incompressible data EXPANDS by 0.1% + headers, circa. Hence,
      *    c->in_len alone guarantees a buffer overrun on random bytes.
      */
-    if (!c->out) {
+    if (!c->out)
+    {
         /*
         * RAF: potentially the bound could be larger than the WBUF_MAX_SIZE
         *      in case the library differs from the current ones tested and
@@ -427,7 +451,12 @@ bool chunk_read(chunk_t *c)
     if (c->infd == STDIN_FILENO) {
         size_t len = c->read_len;
         if (len > c->in_len)
+        {
+            fprintf(stderr,
+                "BUG: c->read_len > c->in_len: %lu vs %lu\n",
+                    c->read_len, c->in_len);
             return 1;
+        }
         if (len) {
             __builtin_memcpy(c->in, c->read, len);
             len += full_read(c->infd, &c->in[len], c->in_len - len);
@@ -449,7 +478,7 @@ bool chunk_read(chunk_t *c)
             if (w < 0) {
                 if (errno == EINTR) continue;
                 perror("p/read");
-                return 1;
+                return -1;
             }
             p   += w;
             off += w;
@@ -581,21 +610,6 @@ void chunk_init(chunk_t *c, int idx, int ofd,
     if (infd != STDIN_FILENO && idx + 1 == _g_tot_chunks)
         c->in_len = (size_t)_g_read_file_size - c->in_off;
 }
-
-static ALWAYS_INLINE
-void chunk_dispose(chunk_t *c)
-{
-#if _USE_FREE
-    if(is_outbuf_freeable(c)) free(c->out);
-    if( is_inbuf_freeable(c)) free(c->in);
-    memset(c, 0, sizeof(chunk_t));
-#else
-    c->thr = 0;
-    c->state = 0;
-    //cb->in_len = 0;
-#endif
-}
-
 
 #define inflate_chunk_init zxflate_chunk_init
 #define deflate_chunk_init zxflate_chunk_init
