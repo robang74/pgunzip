@@ -316,6 +316,21 @@ real  0m0.368s
 
 Despite its early phase of development and the pipe I/O parallelism yet to optimise, speed tests indicate a sustained speed supported by a low-degree of variance when considered the average over 30 runs as a subset.
 
+#### After release note
+
+Disabling the CPU migration at each thread starts to improve performances and variance, from 2% to  20%, but all the outcomes are faster and 16% faster on average despite the larger variance.
+
+```
+278937600 bytes (279 MB, 266 MiB) copied, 0.265496 s, 1.1 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.235117 s, 1.2 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.220789 s, 1.3 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.222180 s, 1.3 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.222892 s, 1.3 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.223649 s, 1.2 GB/s
+```
+
+Therefore, enforcing threads CPU migration is very useful during development when a single test (30x subset) is used to check the performance change within a smaller 2% variance range.
+
 ---
 
 ### Planning

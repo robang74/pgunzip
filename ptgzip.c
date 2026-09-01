@@ -98,15 +98,18 @@ enum {
     b_mmap_seek = 8,
 };
 
-//#ifndef _DEBUG
+#ifndef _DEBUG
 #define _DEBUG    0 //xFF
-//#endif
+#endif
 #ifndef _USE_OPT
 #define _USE_OPT  1 //RAF: no difference in gz speed
 #endif
 #ifndef _DNT_MMAP
 #define _DNT_MMAP 1 //RAF: =1 to test mmap() failure, also file faster
 #endif
+#ifndef _USE_CPUM
+#define _USE_CPUM 0 //RAF: cpu migration stabilise performance but slower
+#endif              //     =0 to disable, =1 immediate, =2 before CPU workload
 
 #ifndef _DO_WRST
 #define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
@@ -261,16 +264,24 @@ int full_sem_wait(sem_t *sem_ptr)
 // Thread workers: elaborate a chunk directly to its output buffer
 // -----------------------------------------------------------------------------
 
+static ALWAYS_INLINE
+void setcpu(unsigned idx)
+{
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(idx % _g_cpu_procs, &cpuset);
+    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+}
+
 static void *thread_deflate(void *arg)
 {
     int ret;
     chunk_t *c = arg;
     _stream_t strm = {0};
 
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
-    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+#if _USE_CPUM == 1
+    setcpu(c->idx);
+#endif
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
@@ -316,6 +327,10 @@ static void *thread_deflate(void *arg)
     strm.avail_in  = c->in_len;
     strm.next_out  = c->out;
     strm.avail_out = c->out_cap;
+
+#if _USE_CPUM == 2
+    setcpu(c->idx);
+#endif
 
     /* 3. COMPRESSION LOOP:
      *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
@@ -371,10 +386,9 @@ static void *thread_inflate(void *arg)
     chunk_t *c = arg;
     _stream_t strm = {0};
 
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(c->idx % _g_cpu_procs, &cpuset);
-    sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+#if _USE_CPUM == 1
+    setcpu(c->idx);
+#endif
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
@@ -416,6 +430,10 @@ static void *thread_inflate(void *arg)
     strm.avail_in  = c->in_len;
     strm.next_out  = c->out;
     strm.avail_out = c->out_cap;
+
+#if _USE_CPUM == 2
+    setcpu(c->idx);
+#endif
 
     /* 3. COMPRESSION LOOP:
      *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
@@ -730,12 +748,14 @@ void chunk_inflate_start(pthread_t *p, chunk_t *c)
 static void *thread_chunk_write(void *arg)
 {
     chunk_t *c = arg;
-    #if 0 // RAF: slower in this specific corner case
+
+    #if 0 // _USE_CPUM // RAF: slower in this specific corner case
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(c->idx % _g_cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
     #endif
+
     c->error |= chunk_write(c);
     return NULL;
 }
