@@ -83,7 +83,7 @@ typedef struct {
 //RAF: part that requires to be completely reset //
     int       idx;                               //
     uint8_t   state;                             //
-    char      error;                             //
+    uint8_t   error;                             //
     size_t    in_len;                            //
     size_t    out_len;                           //
     off_t     out_off;                           //
@@ -96,11 +96,12 @@ typedef struct {
 #define act_inflt "inflate"
 
 enum {
-    b_flag_none = 0,
-    b_flag_out  = 1,
-    b_flag_in   = 2,
-    b_flag_read = 4,
-    b_flag_seek = 8,
+    b_flag_none = 0x00,
+    b_flag_out  = 0x01,
+    b_flag_in   = 0x02,
+    b_flag_read = 0x04,
+    b_flag_seek = 0x08,
+    b_flag_free = 0x10,
 };
 
 #ifndef _DEBUG
@@ -282,25 +283,26 @@ void setcpu(unsigned idx)
 }
 
 static ALWAYS_INLINE
-void chunk_dispose(chunk_t *c)
+void chunk_dispose(chunk_t *c, uint8_t err)
 {
-#if _USE_FREE
-    if (is_outbuf_freeable(c))
+    if (c->flags & b_flag_free)
     {
-        free(c->out);
-        c->out = NULL;
+        if (is_outbuf_freeable(c))
+        {
+            free(c->out);
+            c->out = NULL;
+        }
+        if (is_inbuf_freeable(c))
+        {
+            free(c->in);
+            c->in = NULL;
+        }
+        memset(c, 0, sizeof(chunk_t));
+    } else {
+        c->thr = 0;
+        c->state = 0;
     }
-    if (is_inbuf_freeable(c))
-    {
-        free(c->in);
-        c->in = NULL;
-    }
-    memset(c, 0, sizeof(chunk_t));
-#else
-    c->thr = 0;
-    c->state = 0;
-    //cb->in_len = 0;
-#endif
+    c->error = err;
 }
 
 #define thread_inflate thread_zxflate
@@ -327,8 +329,11 @@ static void *thread_zxflate(void *arg)
     {
         if(chunk_read(c))
         {
-            chunk_dispose(c);
-            c->error |= 8;
+            if (!c->in_len) {
+                //RAF: potentially useful but ending or aborting
+                //c->flags |= b_flag_free;
+                chunk_dispose(c, 8);
+            }
             return NULL;
         }
         c->flags |= b_flag_read;
@@ -599,6 +604,7 @@ void chunk_init(chunk_t *c, int idx, int ofd,
 
     if(m.state == 0) {
         m.state = 1;
+        if (_USE_FREE) m.flags = b_flag_free;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
         m.out_cap = out_size ?: WBUF_MAX_SIZE;
         m.out_off = out_size ? 0 : PTGZ_HEADER_CURSIZE;
@@ -676,7 +682,9 @@ fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     c->idx, c->in_len, c->in_off, c->error);
 #endif  // ---------------------------------------------------------------------
         if (!c->in_len) {
-            chunk_dispose(c);
+            //RAF: much probably EOF, free() is irrelevant here
+            //c->flags |= b_flag_free;
+            chunk_dispose(c, c->error);
             return 1;
         }
     }
@@ -1874,6 +1882,7 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 
     if(m.state == 0) {
         m.state = 1;
+        if (_USE_FREE) m.flags = b_flag_free;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
         m.out_cap = out_size ?: WBUF_MAX_SIZE;
         m.in_off = PTGZ_HEADER_CURSIZE;
@@ -2027,7 +2036,7 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
 #endif // ----------------------------------------------------------------------
 
 dispose:
-        chunk_dispose(c);
+        chunk_dispose(c, 0);
 
         // RAF: another pending work-done might be available
         goto do_another_loop;
@@ -2613,7 +2622,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
         if(list) list[ c->idx ] = c->out_len;
 
 dispose:
-        chunk_dispose(c);
+        chunk_dispose(c, 0);
 
         // RAF: another pending work-done might be available
         goto do_another_loop;
