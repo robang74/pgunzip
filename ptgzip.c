@@ -419,7 +419,7 @@ release:
     return NULL;
 }
 
-static
+static ALWAYS_INLINE
 bool chunk_read(chunk_t *c)
 {
     if(!c->in_len) return 0;
@@ -486,7 +486,7 @@ fprintf(stderr, "fpw> call: %u, sze: %lu, off: %lu\n", idx++, size, off);
     return size - len;
 }
 
-static
+static ALWAYS_INLINE
 bool chunk_write(chunk_t *c)
 {
 #if 0 // -----------------------------------------------------------------------
@@ -1555,19 +1555,9 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
-
-            off_t off_in = src;
-            while (len > 0) {
-                ssize_t ret = copy_file_range(ofd,
-                    &off_in, ofd, &dst, len, 0);
-                if (!ret) break;
-                if (ret < 0) {
-                    if (errno == EINTR) continue;
-                    perror("copy_file_range");
-                    return 1;
-                }
-                len -= ret;
-            }
+            if (full_rcopy(ofd, dst, src, len) != len)
+                return 1;
+            dst += len;
         }
         vo->olen = dst;
     }
