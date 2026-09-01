@@ -323,8 +323,14 @@ static void *thread_zxflate(void *arg)
         goto release;
     }
 
-    if (c->infd  != STDIN_FILENO) {
-        c->error |= chunk_read(c) << 3;
+    if (c->infd != STDIN_FILENO)
+    {
+        if(chunk_read(c))
+        {
+            chunk_dispose(c);
+            c->error |= 8;
+            return NULL;
+        }
         c->flags |= b_flag_read;
     }
 
@@ -658,9 +664,12 @@ int zxflate_chunk_init(chunk_t *c)
             perror("posix_memalign");
             exit(-1);
         }
-        if (c->infd  == STDIN_FILENO) {
-            c->error |= chunk_read(c) << 3;
-            c->flags |= b_flag_read;
+        if (c->infd == STDIN_FILENO)
+        {
+            if (chunk_read(c))
+                c->error |= 8;
+            else
+                c->flags |= b_flag_read;
         }
 #if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
@@ -2018,40 +2027,7 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
 #endif // ----------------------------------------------------------------------
 
 dispose:
-        #if _USE_FREE
-        /* disposing the chunk and its buffer */
-        if (is_outbuf_freeable(c)) {
-            free(c->out);
-            c->out = NULL;
-        }
-        if (is_inbuf_freeable(c)) {
-            free(c->in);
-            c->in = NULL;
-        }
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        #else
-        c->state = 0;
-        //c->in_len = 0;
-        #endif
-
-#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
-       *            under this circumstances is better to keep them into
-       *            the current chuck which will be reused only by large
-       *            files while the smaller wouldn't.
-       */
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        chunk_t *cb; //RAF: it will be the next one, if any
-        if (i+1 < nthreads)
-            cb = &chunks[b][i+1];
-        else
-            cb = &chunks[a][ 0 ];
-        if(!cb->state)
-            __builtin_memcpy(cb, c, sizeof(chunk_t));
-#endif
-
-        /* disposing the thread */
-//      pthread_join(c->thr, NULL);
-        c->thr = 0;
+        chunk_dispose(c);
 
         // RAF: another pending work-done might be available
         goto do_another_loop;
@@ -2637,40 +2613,7 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
         if(list) list[ c->idx ] = c->out_len;
 
 dispose:
-        #if _USE_FREE
-        /* disposing the chunk and its buffer */
-        if (is_outbuf_freeable(c)) {
-            free(c->out);
-            c->out = NULL;
-        }
-        if (is_inbuf_freeable(c)) {
-            free(c->in);
-            c->in = NULL;
-        }
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        #else
-        c->state = 0;
-        //c->in_len = 0;
-        #endif
-
-#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
-       *            under this circumstances is better to keep them into
-       *            the current chuck which will be reused only by large
-       *            files while the smaller wouldn't.
-       */
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        chunk_t *cb; //RAF: it will be the next one, if any
-        if (i+1 < nthreads)
-            cb = &chunks[b][i+1];
-        else
-            cb = &chunks[a][ 0 ];
-        if(!cb->state)
-            __builtin_memcpy(cb, c, sizeof(chunk_t));
-#endif
-
-        /* disposing the thread */
-//      pthread_join(c->thr, NULL);
-        c->thr = 0;
+        chunk_dispose(c);
 
         // RAF: another pending work-done might be available
         goto do_another_loop;
