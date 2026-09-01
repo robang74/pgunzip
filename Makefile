@@ -285,8 +285,14 @@ test-clean: _test-clean blkline
 
 WZCAT := { ./ptgzip -kdc | tee test.dz | wc -c; }
 
-_test-basic: libz.tar $(CMD2T) ptgzip
+_test-basic: libz.tar ptgzip $(CMD2T) $(GZCMD)
+	@printf "\n=== $(CMD2T) compatibility check ===\n\n"
+	rm -f libz.tar.gz; $(GZCMD) -kf libz.tar
+	cat libz.tar.gz | ./ptgzip -dc | sha1sum
+	$(CMD2T) -dc libz.tar.gz | sha1sum
+	$(GZCMD) -dc libz.tar.gz | sha1sum
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
+	@rm -f libz.tar.gz
 	$(CMD2T) libz.tar -kfv $(CMDVC) | $(WZCAT)
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz

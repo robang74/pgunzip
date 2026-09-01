@@ -70,6 +70,7 @@ static int opt_decompress = 0;    /* -d, --decompress */
 
 typedef struct {
     pthread_t thr;
+    const char *action;
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
@@ -90,6 +91,9 @@ typedef struct {
 //RAF: part that requires to be completely reset //
     uint8_t   end;
 } chunk_t ALIGNED4;
+
+#define act_deflt "deflate"
+#define act_inflt "inflate"
 
 enum {
     b_mmap_none = 0,
@@ -277,7 +281,10 @@ void setcpu(unsigned idx)
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 }
 
-static void *thread_deflate(void *arg)
+#define thread_inflate thread_zxflate
+#define thread_deflate thread_zxflate
+
+static void *thread_zxflate(void *arg)
 {
     int ret;
     chunk_t *c = arg;
@@ -299,130 +306,19 @@ static void *thread_deflate(void *arg)
         c->flags |= b_mmap_read;
     }
 
+    const bool dflt = (c->action[0] == 'd');
+
     /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
      *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
      *    be concatenated into a valid .gz file.
      */
-    ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
+    if(dflt)
+        ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
                     15 + 16, 7, Z_DEFAULT_STRATEGY);
+    else
+        ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
-        fprintf(stderr, "deflate_init2 failed: %d\n", ret);
-        c->error = -3;
-        goto release;
-    }
-
-#if _ZLIB_MEM
-    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
-     *    Incompressible data EXPANDS by ~0.1 % + headers.
-     *    c->in_len alone guarantees a buffer overrun on random bytes.
-     */
-    if (!c->out) {
-        /*
-        * RAF: potentially the bound could be larger than the WBUF_MAX_SIZE
-        *      in case the library differs from the current ones tested and
-        *      in such a case there is a good canche that USE_MMAP would fail
-        *      silently, in some corner cases when writing out of bond will
-        *      corrupt data and thus creating a corrupted gzip archive or when
-        *      the ending bound would be violated and thus the kernel SEGVDEF.
-        */
-        c->out_cap = _deflate_bound(&strm, c->in_len);
-        if (posix_memalign((void **)&c->out, 64, c->out_cap))
-            c->out = NULL;
-        if (!c->out) {
-            perror("malloc");
-            c->error = -2;
-            return NULL;
-        }
-    }
-#endif
-    strm.next_in   = c->in;
-    strm.avail_in  = c->in_len;
-    strm.next_out  = c->out;
-    strm.avail_out = c->out_cap;
-
-#if _USE_CPUM == 2
-    setcpu(c->idx);
-#endif
-
-    /* 3. COMPRESSION LOOP:
-     *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
-     *    - Then Z_FINISH until deflate returns Z_STREAM_END.
-     */
-#if _ONE_ZDF
-#else
-    do {
-        ret = _deflate(&strm, Z_NO_FLUSH);
-    } while (ret == Z_OK);
-    if (ret != Z_STREAM_END)
-#endif
-    ret = _deflate(&strm, Z_FINISH);
-
-#if _DEBUG & 0x01 // -----------------------------------------------------------
-if(strm.total_out)
-    fprintf(stderr, ">>> tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
-#endif // ----------------------------------------------------------------------
-
-    c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
-    &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
-    ){
-        fprintf(stderr, "deflate failed: %d\n", ret);
-        c->error = ret;
-    }
-
-    /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
-     *             Skipping to call it leaks several KiB per chunk.
-     */
-endfnc:
-    _deflate_end(&strm);
-    c->state = 2;
-    if (c->ofd != STDOUT_FILENO
-    && (!_g_out_mmap_base || !_USE_MMAP)
-    ){
-        if (c->sem_ptr){
-            sem_post(c->sem_ptr);
-            c->sem_ptr = NULL;
-        }
-        c->error |= chunk_write(c);
-    }
-    c->state = 3;
-release:
-    if (c->sem_ptr) {
-        sem_post(c->sem_ptr);
-        c->sem_ptr = NULL; // Always NULL at the end of the work
-    }
-    return NULL;
-}
-
-static void *thread_inflate(void *arg)
-{
-    int ret;
-    chunk_t *c = arg;
-    _stream_t strm = {0};
-
-#if _USE_CPUM == 1
-    setcpu(c->idx);
-#else
-    /*_cpu_relax();*/
-#endif
-
-    if(!c->in_len) {
-        c->state = 3; // no data, task completed as void
-        goto release;
-    }
-
-    if (c->infd  != STDIN_FILENO) {
-        c->error |= chunk_read(c) << 3;
-        c->flags |= b_mmap_read;
-    }
-
-    /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
-     *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
-     *    be concatenated into a valid .gz file.
-     */
-    ret = _inflate_init2(&strm, 15 + 16);
-    if (ret != Z_OK) {
-        fprintf(stderr, "inflateInit2 failed: %d\n", ret);
+        fprintf(stderr, "%s_init2 failed: %d\n", c->action, ret);
         c->error = -3;
         goto release;
     }
@@ -441,7 +337,10 @@ static void *thread_inflate(void *arg)
         *      corrupt data and thus creating a corrupted gzip archive or when
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
-        c->out_cap = _inflate_bound(&strm, c->in_len);
+        if(dflt)
+            c->out_cap = _deflate_bound(&strm, c->in_len);
+        else
+            c->out_cap = _inflate_bound(&strm, c->in_len);
         if (posix_memalign((void **)&c->out, 64, c->out_cap))
             c->out = NULL;
         if (!c->out) {
@@ -467,15 +366,21 @@ static void *thread_inflate(void *arg)
 #if _ONE_ZDF
 #else
     do {
-        ret = _inflate(&strm, Z_NO_FLUSH);
+        if(dflt)
+            ret = _deflate(&strm, Z_NO_FLUSH);
+        else
+            ret = _inflate(&strm, Z_NO_FLUSH);
     } while (ret == Z_OK);
     if (ret != Z_STREAM_END)
 #endif
-    ret = _inflate(&strm, Z_FINISH);
+    if(dflt)
+        ret = _deflate(&strm, Z_FINISH);
+    else
+        ret = _inflate(&strm, Z_FINISH);
 
 #if _DEBUG & 0x01 // -----------------------------------------------------------
-if(strm.avail_out)
-    fprintf(stderr, "ifl> in: %u / %lu out: %lu / %lu\n",
+if(strm.total_out)
+    fprintf(stderr, "%s> in: %u / %lu out: %lu / %lu\n", c->action,
         strm.avail_in,  c->in_len, strm.total_out, c->out_cap);
 #endif // ----------------------------------------------------------------------
 
@@ -483,7 +388,7 @@ if(strm.avail_out)
     if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
     &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
     ){
-        fprintf(stderr, "inflate failed: %d\n", ret);
+        fprintf(stderr, "%s failed: %d\n", c->action, ret);
         c->error = ret;
     }
 
@@ -491,7 +396,10 @@ if(strm.avail_out)
      *             Skipping to call it leaks several KiB per chunk.
      */
 endfnc:
-    _inflate_end(&strm);
+    if(dflt)
+        _deflate_end(&strm);
+    else
+        _inflate_end(&strm);
     c->state = 2;
     if (c->ofd != STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
@@ -688,6 +596,10 @@ void chunk_dispose(chunk_t *c)
 #endif
 }
 
+
+#define inflate_chunk_init zxflate_chunk_init
+#define deflate_chunk_init zxflate_chunk_init
+
 /*
  * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
  *      makes the .out_cap redundant while _g_out_mmap_base would be likely
@@ -696,7 +608,7 @@ void chunk_dispose(chunk_t *c)
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static
-int deflate_chunk_init(chunk_t *c)
+int zxflate_chunk_init(chunk_t *c)
 {
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
@@ -752,6 +664,7 @@ fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
 static ALWAYS_INLINE
 void chunk_deflate_start(pthread_t *p, chunk_t *c)
 {
+    c->action = act_deflt;
     if (!pthread_create(p, NULL, thread_deflate, c))
         return;
 
@@ -762,6 +675,7 @@ void chunk_deflate_start(pthread_t *p, chunk_t *c)
 static ALWAYS_INLINE
 void chunk_inflate_start(pthread_t *p, chunk_t *c)
 {
+    c->action = act_inflt;
     if (!pthread_create(p, NULL, thread_inflate, c))
         return;
 
@@ -781,6 +695,7 @@ static void *thread_chunk_write(void *arg)
     #endif
 
     c->error |= chunk_write(c);
+    c->state = 3;
     return NULL;
 }
 
@@ -906,9 +821,9 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
     int ret = 0;
     uint8_t *inbuf = NULL;
     uint8_t *outbuf = NULL;
-    chunk_t c = {0};
-    pigz_state state;
     reader_ctx_t reader_ctx;
+    pigz_state state;
+    chunk_t c = {0};
 
     if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE) ||
         posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
@@ -973,6 +888,8 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
                    for multi-threaded processing */
                 __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
                 c.out_len = chunk_len;
+                // RAF, TODO: check if __thread works as supposed
+                //      otherwise create a duplicate of chunk_t c
                 if (pthread_create(&c.thr, NULL,
                     thread_chunk_write, &c)
                 ){
@@ -1084,6 +1001,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
+
 
     r = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
     if (posix_memalign((void **)&inbuf,  64, r)
@@ -1274,6 +1192,8 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
             if(w) {
                 c.out_len = w;
                 c.out = outbuf;
+                // RAF, TODO: check if __thread works as supposed
+                //      otherwise create a duplicate of chunk_t c
                 if (pthread_create(&c.thr, NULL,
                     thread_chunk_write, &c)
                 ){
@@ -1930,8 +1850,6 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
 // Core
 // =============================================================================
 
-#define inflate_chunk_init deflate_chunk_init
-
 static
 void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
     size_t out_size, uint32_t in_len)
@@ -1965,6 +1883,8 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 
 #define chunk_list_init(_c) \
     _cinit(_c, ofd, infd, &sem, out_size, ilst[current])
+
+#define _inflate_parallel zlib_inflate_parallel
 
 static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
@@ -2093,7 +2013,6 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
     current, _g_tot_chunks, nthreads, c->idx, next_idx, ofd, cb->thr, cb->state);
 #endif // ----------------------------------------------------------------------
 
-
 dispose:
         #if _USE_FREE
         /* disposing the chunk and its buffer */
@@ -2163,8 +2082,6 @@ do_free_n_return:
 
     return err;
 }
-
-#define _inflate_parallel zlib_inflate_parallel
 
 // =============================================================================
 // Main
