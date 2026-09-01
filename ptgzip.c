@@ -308,8 +308,9 @@ static void *thread_deflate(void *arg)
     if (ret != Z_OK) {
         fprintf(stderr, "deflate_init2 failed: %d\n", ret);
         c->error = -3;
-        goto endfnc;
+        goto release;
     }
+
 #if _ZLIB_MEM
     /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
      *    Incompressible data EXPANDS by ~0.1 % + headers.
@@ -362,13 +363,15 @@ if(strm.total_out)
 #endif // ----------------------------------------------------------------------
 
     c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END /* && ret != Z_BUF_ERROR && ret != Z_OK */) {
+    if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
+    &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
+    ){
         fprintf(stderr, "deflate failed: %d\n", ret);
         c->error = ret;
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
-     *    Skipping it leaks several KiB per chunk.
+     *             Skipping to call it leaks several KiB per chunk.
      */
 endfnc:
     _deflate_end(&strm);
@@ -413,6 +416,10 @@ static void *thread_inflate(void *arg)
         c->flags |= b_mmap_read;
     }
 
+    /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
+     *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
+     *    be concatenated into a valid .gz file.
+     */
     ret = _inflate_init2(&strm, 15 + 16);
     if (ret != Z_OK) {
         fprintf(stderr, "inflateInit2 failed: %d\n", ret);
@@ -420,9 +427,9 @@ static void *thread_inflate(void *arg)
         goto release;
     }
 
-#if _ZLIB_MEM //RAF: to check, it might not work for inflate_bound()
-    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
-     *    Incompressible data EXPANDS by ~0.1 % + headers.
+#if _ZLIB_MEM
+    /* 2. OUTPUT BUFFER: must be deflateBound(), never just c->in_len.
+     *    Incompressible data EXPANDS by 0.1% + headers, circa. Hence,
      *    c->in_len alone guarantees a buffer overrun on random bytes.
      */
     if (!c->out) {
@@ -481,7 +488,7 @@ if(strm.avail_out)
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
-     *    Skipping it leaks several KiB per chunk.
+     *             Skipping to call it leaks several KiB per chunk.
      */
 endfnc:
     _inflate_end(&strm);
@@ -683,8 +690,8 @@ void chunk_dispose(chunk_t *c)
 
 /*
  * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
- *      makes the .out_cap redundant while _g_out_mmap_base would be likely a
- *      more usful member of the chunk_t structure. A revision is needed
+ *      makes the .out_cap redundant while _g_out_mmap_base would be likely
+ *      a more usful member of the chunk_t structure. A revision is needed
  *      after the development is completed to get rid off of global variables
  *      in favor of a data structure that can refers also to its own thread_t.
  */
@@ -917,15 +924,16 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         __builtin_memcpy(inbuf, buf, buf_size);
 
     /* Initialize chunk configuration */
-    c->flags = b_mmap_out | b_mmap_in;
-    if (!seek) c->flags |= b_mmap_seek;
+    c.flags = b_mmap_out | b_mmap_in;
+    if (!seek) c.flags |= b_mmap_seek;
     c.out = outbuf;
     c.ofd = ofd;
 
     pigz_init(&state, &reader_ctx, ungz_file_reader);
 
     while (1) {
-        /* Determine how many decompressed bytes are currently available */
+        /* Determine how many decompressed
+           bytes are currently available */
         uint64_t avail = pigz_available(&state);
 
         if (state.status == PIGZ_STATUS_EOF)
@@ -943,7 +951,8 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         uint64_t chunk_len = (avail > UNOUT_CHUNK_SIZE)
                            ?  UNOUT_CHUNK_SIZE : avail;
 
-        /* Retrieve pointer to decompressed data directly from ungz internal state */
+        /* Retrieve pointer to decompressed data
+           directly from ungz internal state */
         const char *decomp_ptr = pigz_consume(&state, chunk_len);
         if (!decomp_ptr) {
             ret = chunk_len;
@@ -960,7 +969,8 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
                 c.thr = 0;
             }
             if(chunk_len) {
-                /* Copy available output to chunk buffer for multi-threaded processing */
+                /* Copy available output to chunk buffer
+                   for multi-threaded processing */
                 __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
                 c.out_len = chunk_len;
                 if (pthread_create(&c.thr, NULL,
