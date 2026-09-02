@@ -1413,7 +1413,8 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     sum = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
-fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n", *p, sum, *len);
+fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
+    ptbl->chksum, sum, *len);
 #endif // ----------------------------------------------------------------------
 
     return u;
@@ -1470,15 +1471,15 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     sum = 0;
     for (i = 0; i < nwords + 4; i++)
         sum += list[i];
+#if _DEBUG & 0x08 // -----------------------------------------------------------
+fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n",
+    sum, ptbl->chksum, len);
+#endif // ----------------------------------------------------------------------
     if (sum) {
         *err = 1;
         free(ptbl);
         return NULL;
     }
-
-#if _DEBUG & 0x08 // -----------------------------------------------------------
-fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0], len);
-#endif // ----------------------------------------------------------------------
 
     return ptbl;
 }
@@ -1545,6 +1546,8 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+#define align_len_for_tbl(_v) { if(list) _v->olen = (((_v->olen + 3) >> 2) << 2); }
+
 static
 int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 {
@@ -1558,8 +1561,10 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 
     if (!ofd) return 0;
 
-    if (ofd == STDOUT_FILENO)
+    if (ofd == STDOUT_FILENO) {
+        align_len_for_tbl(vo);
         goto write_table;
+    }
 
     if(vo->nidx < 2 || !list) {
         list = NULL;
@@ -1600,10 +1605,9 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
     }
     vo->olen += offset;
 
-    /* Update vo->olen and truncate remaining sparse tail */
-    if(list)
-        vo->olen = ((vo->olen + 3) >> 2) << 2;
 skip_reorgnz:
+    /* Update vo->olen and truncate remaining sparse tail */
+    align_len_for_tbl(vo);
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
         return -1;
@@ -1615,7 +1619,7 @@ skip_reorgnz:
 
 write_table:
     if(vo->nidx < 2 || !list)
-        return 0;
+        return  0;
 
     /*
      * Append metadata table as initially described at this link
@@ -1988,7 +1992,8 @@ do_another_loop:
             _print2("\nERROR: %s failed on chunk %d, size: %lu -> %lu,"
                 " state: %d, ofd: %d, error: %d\n", c->action, c->idx,
                 c->in_len, c->out_len, c->state, c->ofd, c->error);
-            return c->error;
+            err = c->error;
+            goto do_free_n_return;
         }
 
         if (c->state < 2)
@@ -2085,12 +2090,11 @@ dispose:
 // === Ending ==================================================================
 
     _verbout_init(vo);
-    verbose_printout(&vo);
-if (cmpr) {
-    err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
-}
+    if (cmpr)
+        err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
 
 do_free_n_return:
+    verbose_printout(&vo);
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
     #endif
