@@ -105,51 +105,54 @@ enum {
 };
 
 #ifndef _DEBUG
-#define _DEBUG    0 //xFF
+#define _DEBUG     0 //xFF
 #endif
 #ifndef _USE_OPT
-#define _USE_OPT  1 //RAF: no difference in gz speed
+#define _USE_OPT   1 //RAF: no difference in gz speed
 #endif
 #ifndef _DNT_MMAP
-#define _DNT_MMAP 1 //RAF: =1 to test mmap() failure, also file faster
+#define _DNT_MMAP  1 //RAF: =1 to test mmap() failure, also file faster
+#endif
+#ifndef _DNT_REOR
+#define _DNT_REOR  0 //RAF: =1 use write() to avoid copy_range() on file
 #endif
 #ifndef _USE_CPUM
-#define _USE_CPUM 0 //RAF: cpu migration stabilise performance but slower
-#endif              //     =0 to disable, =1 immediate, =2 before CPU workload
+#define _USE_CPUM  0 //RAF: cpu migration stabilise performance but slower
+#endif               //     =0 to disable, =1 immediate, =2 before CPU workload
 #ifndef _DO_OPTL
-#define _DO_OPTL  7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
+#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
 #endif
 
 #ifndef _DO_WRST
-#define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
-#endif              // 2: impose the same rule also to 2+ cycles runs
+#define _DO_WRST   2 // 0: last run can be shorter than 1/2 _g_chunk_size
+#endif               // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
-#define _THR_WAIT 0 // 1: wait for any of threads completes, 0: polling
+#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling
 #endif
-#ifndef _USE_MMAP   // mmap() is performed by default, but it can fail
-#define _USE_MMAP !_DNT_MMAP
+#ifndef _USE_MMAP    // mmap() is performed by default, but it can fail
+#define _USE_MMAP (0 && !_DNT_MMAP)
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE 0 // free() isn't strictly necessary, but do testing
+#define _USE_FREE  0 // free() isn't strictly necessary, but do testing
 #endif
 #ifndef _ONE_ZDF
-#define _ONE_ZDF  1 //RAF: no difference in .gz size
+#define _ONE_ZDF   1 //RAF: no difference in .gz size
 #endif
 
 #ifndef _ZLIB_MEM
-#define _ZLIB_MEM 0 //RAF: =1 for zlib full agnosticy
+#define _ZLIB_MEM  0 //RAF: =1 for zlib full agnosticy
 #endif
 #ifndef _USE_ZNG
-#define _USE_ZNG  0 //RAF: just API, same speed/size
+#define _USE_ZNG   0 //RAF: just API, same speed/size
 #else
 #define _g_libz_name "zlib-ng"
 #endif
 #ifndef _USE_MNZ
-#define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
+#define _USE_MNZ   0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
 
 #ifndef _USE_UNGZ
-#define _USE_UNGZ 0
+#define _USE_UNGZ  0
 #endif
 
 #if   _USE_ZNG
@@ -436,6 +439,8 @@ endfnc:
     else
         _inflate_end(&strm);
     c->state = 2;
+    if (cmpr && _DNT_REOR) {}
+    else
     if (c->ofd != STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
@@ -1558,6 +1563,9 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
         goto skip_reorgnz;
     }
 
+    if(!opt_decompress && _DNT_REOR)
+        goto skip_reorgnz;
+
     if (ofd == STDOUT_FILENO)
         goto write_table;
 
@@ -2028,7 +2036,7 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             continue;
 
         /* ordered writing on STDOUT, only */
-        if (ofd == STDOUT_FILENO
+        if ((ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
         &&  c->idx != next_idx
         ){
             continue;
@@ -2038,10 +2046,18 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
         next_idx++;
         if(infd == STDIN_FILENO)
             _g_read_file_size += c->in_len;
-        outlen += (ofd == STDOUT_FILENO)
-                ? full_write(ofd, c->out, c->out_len)
-                : c->out_len
-                ;
+
+        if (ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
+        {
+            if (_g_out_mmap_base)
+                __builtin_memcpy(_g_out_mmap_base
+                    + outlen, c->out, c->out_len);
+            else
+                c->out_len = full_write(ofd,
+                              c->out, c->out_len);
+        }
+        outlen += c->out_len;
+
         if(cmpr && ptbl->cur.list)
             ptbl->cur.list[ c->idx ] = c->out_len;
 
@@ -2067,7 +2083,7 @@ dispose:
 
     _verbout_init(vo);
     verbose_printout(&vo);
-if (cmpr && ofd != STDOUT_FILENO) {
+if (cmpr) {
     err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
 }
 
