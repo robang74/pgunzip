@@ -16,10 +16,9 @@ LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
-TARGET    = ptgzip
-TARGETS   = pxgzip plgzip bbox/gzip pmgzip pugzip $(TARGET)
+TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
 GZCMD     = $(shell command -v pigz gzip | head -n1)
-SRC       = ptgzip.c
+ZCATCMD  ?= ./ptgzip -dc
 NTS      ?= 30
 
 CC       ?= gcc
@@ -33,7 +32,7 @@ MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 
 .PHONY: all clean distclean source
 
-all: $(TARGETS)
+all: libzall.a $(TARGETS)
 	@echo
 	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
 	@du -k libzall.a && printf "\t%s\n\n" "$$(file libzall.a)"
@@ -94,8 +93,8 @@ bbox/gzip: bbox/.config | bbox
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
-$(TARGET): $(SRC) libzall.a
-	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) libzall.a \
+ptgzip: ptgzip.c libzall.a
+	$(CC) -o $@ $^ -I$(BUILD_DIR) -I$(LIBZ_DIR) \
 	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
 
 pxgzip: pxgzip.c
@@ -204,26 +203,39 @@ devel: $(LIBZ_A)
 	@make test-basic  || printf "\n>>> ERR=$$?\n"
 	@echo
 
-speed:
-	@make _test-speed _test-speef CMD2T=$(CMD2T) blkline
-	@echo
+speed: $(CMD2T) _test-speed _test-speef blkline
 
-speed-stress: libz.tar $(CMD2T)
+_speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" | dd bs=1M of=$$nl
-	@echo
 
-stress-speed: speed-stress
+_stress-speed: _speed-stress
 
-stress: libz.tar $(CMD2T)
+speed-stress: stress-speed
+
+stress-speed: _speed-stress blkline
+
+STRCMD := $(CMD2T) $$i $(CMDVC) -1 | { $(ZCATCMD) || echo $$i >&2; }
+
+_test-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do $(STRCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
+
+stress-test: test-stress
+
+_stress-test: _test-stress
+
+test-stress: _test-stress blkline
+
+stress: $(CMD2T) _speed-stress _test-stress
+	@echo
+	@make ZCATCMD="$(GZCMD) -dc" test-stress
 	@echo
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
@@ -246,19 +258,20 @@ crash:
 	@printf "\n=== iocat build w/ CRASH_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"
 
-iocat:
+ioway:
 	@printf "\n=== iocat build w/ IOWAY_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(IOWAY_FLAGS)"
 
+SIOCMD := dd if=$$i bs=1M status=none | $(CMD2T) $(CMDVC) -1 | $(ZCATCMD)
+
 _stress-iocat:
 	@printf "\n=== iocat stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do cat $$i | $(CMD2T) $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do $(SIOCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
-	@echo
 
-stress-iocat: iocat _stress-iocat blkline
+stress-iocat: $(CMD2T) _stress-iocat blkline
 
 iocat-stress: stress-iocat
 
@@ -285,8 +298,14 @@ test-clean: _test-clean blkline
 
 WZCAT := { ./ptgzip -kdc | tee test.dz | wc -c; }
 
-_test-basic: libz.tar $(CMD2T) ptgzip
+_test-basic: libz.tar ptgzip $(CMD2T) $(GZCMD)
+	@printf "\n=== $(CMD2T) compatibility check ===\n\n"
+	rm -f libz.tar.gz; $(GZCMD) -kf libz.tar
+	cat libz.tar.gz | ./ptgzip -dc | sha1sum
+	$(CMD2T) -dc libz.tar.gz | sha1sum
+	$(GZCMD) -dc libz.tar.gz | sha1sum
 	@printf "\n=== $(CMD2T) '-c' sanity check ===\n\n"
+	@rm -f libz.tar.gz
 	$(CMD2T) libz.tar -kfv $(CMDVC) | $(WZCAT)
 	@diff test.dz libz.tar && echo ">>> Result: OK"
 	@rm -f test.dz

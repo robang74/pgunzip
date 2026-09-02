@@ -52,9 +52,6 @@
 #define PTGZ_LIST_START_OFF   20UL
 #define PTGZ_LIST_MAX_WORDS   16380UL
 #define PTGZ_HEADER_CURSIZE  (PTGZ_HEADER_SIZE + _g_ptgz_list_size)
-#define PTGZ_HEADER_MAXSIZE  (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
-
-static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
 
 static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help       = 0;    /* -h, --help */
@@ -70,19 +67,20 @@ static int opt_decompress = 0;    /* -d, --decompress */
 
 typedef struct {
     pthread_t thr;
+    const char *action;
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
     uint8_t  *out;
     size_t    out_cap;
     int       infd;
     int       ofd;
-    uint8_t   map;
+    uint8_t   flags;
     size_t    read_len;
     uint8_t  *read;
 //RAF: part that requires to be completely reset //
     int       idx;                               //
     uint8_t   state;                             //
-    char      error;                             //
+    uint8_t   error;                             //
     size_t    in_len;                            //
     size_t    out_len;                           //
     off_t     out_off;                           //
@@ -91,59 +89,77 @@ typedef struct {
     uint8_t   end;
 } chunk_t ALIGNED4;
 
+#if 0
+#define MAX_SIZE(_a,_b) ((_a > _b) ? _a : _b)
+#define PTGZ_HEADAT_MAXSIZE (MAX_SIZE(PTGZ_HEADER_SIZE, sizeof(pgunz_t)))
+#define PTGZ_HEADER_MAXSIZE (PTGZ_HEADAT_MAXSIZE + (PTGZ_LIST_MAX_WORDS << 2))
+#else
+#define PTGZ_HEADER_MAXSIZE (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
+#endif
+
+static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
+
+#define act_deflt "deflate"
+#define act_inflt "inflate"
+
 enum {
-    b_mmap_none = 0,
-    b_mmap_out  = 1,
-    b_mmap_in   = 2,
-    b_mmap_seek = 8,
+    b_flag_none = 0x00,
+    b_flag_out  = 0x01,
+    b_flag_in   = 0x02,
+    b_flag_read = 0x04,
+    b_flag_seek = 0x08,
+    b_flag_free = 0x10,
 };
 
 #ifndef _DEBUG
-#define _DEBUG    0 //xFF
+#define _DEBUG     0 //xFF
 #endif
 #ifndef _USE_OPT
-#define _USE_OPT  1 //RAF: no difference in gz speed
+#define _USE_OPT   1 //RAF: no difference in gz speed
 #endif
 #ifndef _DNT_MMAP
-#define _DNT_MMAP 1 //RAF: =1 to test mmap() failure, also file faster
+#define _DNT_MMAP  1 //RAF: =1 to test mmap() failure, also file faster
+#endif
+#ifndef _DNT_REOR
+#define _DNT_REOR  0 //RAF: =1 use write() to avoid copy_range() on file
 #endif
 #ifndef _USE_CPUM
-#define _USE_CPUM 0 //RAF: cpu migration stabilise performance but slower
-#endif              //     =0 to disable, =1 immediate, =2 before CPU workload
+#define _USE_CPUM  0 //RAF: cpu migration stabilise performance but slower
+#endif               //     =0 to disable, =1 immediate, =2 before CPU workload
 #ifndef _DO_OPTL
-#define _DO_OPTL  7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
+#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
 #endif
 
 #ifndef _DO_WRST
-#define _DO_WRST  2 // 0: last run can be shorter than 1/2 _g_chunk_size
-#endif              // 2: impose the same rule also to 2+ cycles runs
+#define _DO_WRST   2 // 0: last run can be shorter than 1/2 _g_chunk_size
+#endif               // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
-#define _THR_WAIT 0 // 1: wait for any of threads completes, 0: polling
+#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling
 #endif
-#ifndef _USE_MMAP   // mmap() is performed by default, but it can fail
-#define _USE_MMAP !_DNT_MMAP
+#ifndef _USE_MMAP    // mmap() is performed by default, but it can fail
+#define _USE_MMAP (0 && !_DNT_MMAP)
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE 0 // free() isn't strictly necessary, but do testing
+#define _USE_FREE  0 // free() isn't strictly necessary, but do testing
 #endif
 #ifndef _ONE_ZDF
-#define _ONE_ZDF  1 //RAF: no difference in .gz size
+#define _ONE_ZDF   1 //RAF: no difference in .gz size
 #endif
 
 #ifndef _ZLIB_MEM
-#define _ZLIB_MEM 0 //RAF: =1 for zlib full agnosticy
+#define _ZLIB_MEM  0 //RAF: =1 for zlib full agnosticy
 #endif
 #ifndef _USE_ZNG
-#define _USE_ZNG  0 //RAF: just API, same speed/size
+#define _USE_ZNG   0 //RAF: just API, same speed/size
 #else
 #define _g_libz_name "zlib-ng"
 #endif
 #ifndef _USE_MNZ
-#define _USE_MNZ  0 //RAF: libz/-ng by linker, miniz by compiler also
+#define _USE_MNZ   0 //RAF: libz/-ng by linker, miniz by compiler also
 #endif
 
 #ifndef _USE_UNGZ
-#define _USE_UNGZ 0
+#define _USE_UNGZ  0
 #endif
 
 #if   _USE_ZNG
@@ -203,8 +219,8 @@ enum {
 #define zbuf_max_size(_len) ((size_t)(_len) + ((_len) >> 9) + 256)
 #define WBUF_MAX_SIZE zbuf_max_size(_g_chunk_size)
 
-#define is_outbuf_freeable(_c) (_c->out && !(_c->map & b_mmap_out))
-#define  is_inbuf_freeable(_c) (_c->in  && !(_c->map & b_mmap_in ))
+#define is_outbuf_freeable(_c) (_c->out && !(_c->flags & b_flag_out))
+#define  is_inbuf_freeable(_c) (_c->in  && !(_c->flags & b_flag_in ))
 
 #define _print2(fmt...) while(!opt_quiet) { fprintf(stderr, fmt); break; }
 #define _cpu_relax() do { if(sched_yield()) usleep(1); } while(0)
@@ -224,7 +240,7 @@ static bool chunk_read(chunk_t *c);
 static bool chunk_write(chunk_t *c);
 static size_t full_write(int ofd, const void *buf, size_t len);
 static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
-static const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
+static void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
 
 // =============================================================================
 
@@ -276,7 +292,33 @@ void setcpu(unsigned idx)
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 }
 
-static void *thread_deflate(void *arg)
+static ALWAYS_INLINE
+void chunk_dispose(chunk_t *c, uint8_t err)
+{
+    if (c->flags & b_flag_free)
+    {
+        if (is_outbuf_freeable(c))
+        {
+            free(c->out);
+            c->out = NULL;
+        }
+        if (is_inbuf_freeable(c))
+        {
+            free(c->in);
+            c->in = NULL;
+        }
+        memset(c, 0, sizeof(chunk_t));
+    } else {
+        c->thr = 0;
+        c->state = 0;
+    }
+    c->error = err;
+}
+
+#define thread_inflate thread_zxflate
+#define thread_deflate thread_zxflate
+
+static void *thread_zxflate(void *arg)
 {
     int ret;
     chunk_t *c = arg;
@@ -284,30 +326,54 @@ static void *thread_deflate(void *arg)
 
 #if _USE_CPUM == 1
     setcpu(c->idx);
+#else
+    /*_cpu_relax();*/
 #endif
 
     if(!c->in_len) {
         c->state = 3; // no data, task completed as void
         goto release;
     }
+
+    if (c->infd != STDIN_FILENO)
+    {
+        if(chunk_read(c))
+        {
+            if (!c->in_len) {
+                //RAF: potentially useful but ending or aborting
+                //c->flags |= b_flag_free;
+                chunk_dispose(c, 8);
+            }
+            return NULL;
+        }
+        c->flags |= b_flag_read;
+    }
+
+    const bool cmpr = !opt_decompress;
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
      *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
      *    be concatenated into a valid .gz file.
      */
-    ret = _deflate_init2(&strm, _g_compression_level, Z_DEFLATED,
-                    15 + 16, 7, Z_DEFAULT_STRATEGY);
-    if (ret != Z_OK) {
-        fprintf(stderr, "deflate_init2 failed: %d\n", ret);
+    if(cmpr)
+        ret = _deflate_init2(&strm, _g_compression_level,
+            Z_DEFLATED, 15 + 16, 7, Z_DEFAULT_STRATEGY);
+    else
+        ret = _inflate_init2(&strm, 15 + 16);
+    if (ret != Z_OK)
+    {
+        fprintf(stderr, "%s_init2 failed: %d\n", c->action, ret);
         c->error = -3;
-        goto endfnc;
+        goto release;
     }
+
 #if _ZLIB_MEM
-    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
-     *    Incompressible data EXPANDS by ~0.1 % + headers.
+    /* 2. OUTPUT BUFFER: must be deflateBound(), never just c->in_len.
+     *    Incompressible data EXPANDS by 0.1% + headers, circa. Hence,
      *    c->in_len alone guarantees a buffer overrun on random bytes.
      */
-    if (!c->out) {
+    if (!c->out)
+    {
         /*
         * RAF: potentially the bound could be larger than the WBUF_MAX_SIZE
         *      in case the library differs from the current ones tested and
@@ -316,7 +382,10 @@ static void *thread_deflate(void *arg)
         *      corrupt data and thus creating a corrupted gzip archive or when
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
-        c->out_cap = _deflate_bound(&strm, c->in_len);
+        if(cmpr)
+            c->out_cap = _deflate_bound(&strm, c->in_len);
+        else
+            c->out_cap = _inflate_bound(&strm, c->in_len);
         if (posix_memalign((void **)&c->out, 64, c->out_cap))
             c->out = NULL;
         if (!c->out) {
@@ -342,118 +411,21 @@ static void *thread_deflate(void *arg)
 #if _ONE_ZDF
 #else
     do {
-        ret = _deflate(&strm, Z_NO_FLUSH);
+        if(cmpr)
+            ret = _deflate(&strm, Z_NO_FLUSH);
+        else
+            ret = _inflate(&strm, Z_NO_FLUSH);
     } while (ret == Z_OK);
     if (ret != Z_STREAM_END)
 #endif
-    ret = _deflate(&strm, Z_FINISH);
+    if(cmpr)
+        ret = _deflate(&strm, Z_FINISH);
+    else
+        ret = _inflate(&strm, Z_FINISH);
 
 #if _DEBUG & 0x01 // -----------------------------------------------------------
 if(strm.total_out)
-    fprintf(stderr, ">>> tot: %ld, max: %ld\n", strm.total_out, WBUF_MAX_SIZE);
-#endif // ----------------------------------------------------------------------
-
-    c->out_len = strm.total_out;
-    if (ret != Z_STREAM_END /* && ret != Z_BUF_ERROR && ret != Z_OK */) {
-        fprintf(stderr, "deflate failed: %d\n", ret);
-        c->error = ret;
-    }
-
-    /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
-     *    Skipping it leaks several KiB per chunk.
-     */
-endfnc:
-    _deflate_end(&strm);
-    c->state = 2;
-    if (c->ofd != STDOUT_FILENO
-    && (!_g_out_mmap_base || !_USE_MMAP)
-    ){
-        if (c->sem_ptr){
-            sem_post(c->sem_ptr);
-            c->sem_ptr = NULL;
-        }
-        c->error |= chunk_write(c);
-    }
-    c->state = 3;
-release:
-    if (c->sem_ptr) {
-        sem_post(c->sem_ptr);
-        c->sem_ptr = NULL; // Always NULL at the end of the work
-    }
-    return NULL;
-}
-
-static void *thread_inflate(void *arg)
-{
-    int ret;
-    chunk_t *c = arg;
-    _stream_t strm = {0};
-
-#if _USE_CPUM == 1
-    setcpu(c->idx);
-#endif
-
-    if(!c->in_len) {
-        c->state = 3; // no data, task completed as void
-        goto release;
-    }
-
-    ret = _inflate_init2(&strm, 15 + 16);
-    if (ret != Z_OK) {
-        fprintf(stderr, "inflateInit2 failed: %d\n", ret);
-        c->error = -3;
-        goto release;
-    }
-
-#if _ZLIB_MEM //RAF: to check, it might not work for inflate_bound()
-    /* 2. OUTPUT BUFFER: must be deflateBound(), never c->in_len.
-     *    Incompressible data EXPANDS by ~0.1 % + headers.
-     *    c->in_len alone guarantees a buffer overrun on random bytes.
-     */
-    if (!c->out) {
-        /*
-        * RAF: potentially the bound could be larger than the WBUF_MAX_SIZE
-        *      in case the library differs from the current ones tested and
-        *      in such a case there is a good canche that USE_MMAP would fail
-        *      silently, in some corner cases when writing out of bond will
-        *      corrupt data and thus creating a corrupted gzip archive or when
-        *      the ending bound would be violated and thus the kernel SEGVDEF.
-        */
-        c->out_cap = _inflate_bound(&strm, c->in_len);
-        if (posix_memalign((void **)&c->out, 64, c->out_cap))
-            c->out = NULL;
-        if (!c->out) {
-            perror("malloc");
-            c->error = -2;
-            return NULL;
-        }
-    }
-#endif
-    strm.next_in   = c->in;
-    strm.avail_in  = c->in_len;
-    strm.next_out  = c->out;
-    strm.avail_out = c->out_cap;
-
-#if _USE_CPUM == 2
-    setcpu(c->idx);
-#endif
-
-    /* 3. COMPRESSION LOOP:
-     *    - Feed all input with Z_NO_FLUSH until avail_in == 0.
-     *    - Then Z_FINISH until deflate returns Z_STREAM_END.
-     */
-#if _ONE_ZDF
-#else
-    do {
-        ret = _inflate(&strm, Z_NO_FLUSH);
-    } while (ret == Z_OK);
-    if (ret != Z_STREAM_END)
-#endif
-    ret = _inflate(&strm, Z_FINISH);
-
-#if _DEBUG & 0x01 // -----------------------------------------------------------
-if(strm.avail_out)
-    fprintf(stderr, "ifl> in: %u / %lu out: %lu / %lu\n",
+    fprintf(stderr, "%s> in: %u / %lu out: %lu / %lu\n", c->action,
         strm.avail_in,  c->in_len, strm.total_out, c->out_cap);
 #endif // ----------------------------------------------------------------------
 
@@ -461,16 +433,21 @@ if(strm.avail_out)
     if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
     &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
     ){
-        fprintf(stderr, "inflate failed: %d\n", ret);
+        fprintf(stderr, "%s failed: %d\n", c->action, ret);
         c->error = ret;
     }
 
     /* 4. CLEANUP: always call deflateEnd() to free internal buffers.
-     *    Skipping it leaks several KiB per chunk.
+     *             Skipping to call it leaks several KiB per chunk.
      */
 endfnc:
-    _inflate_end(&strm);
+    if(cmpr)
+        _deflate_end(&strm);
+    else
+        _inflate_end(&strm);
     c->state = 2;
+    if (cmpr && _DNT_REOR) {}
+    else
     if (c->ofd != STDOUT_FILENO
     && (!_g_out_mmap_base || !_USE_MMAP)
     ){
@@ -481,6 +458,7 @@ endfnc:
         c->error |= chunk_write(c);
     }
     c->state = 3;
+
 release:
     if (c->sem_ptr) {
         sem_post(c->sem_ptr);
@@ -489,7 +467,7 @@ release:
     return NULL;
 }
 
-static
+static ALWAYS_INLINE
 bool chunk_read(chunk_t *c)
 {
     if(!c->in_len) return 0;
@@ -497,7 +475,12 @@ bool chunk_read(chunk_t *c)
     if (c->infd == STDIN_FILENO) {
         size_t len = c->read_len;
         if (len > c->in_len)
+        {
+            fprintf(stderr,
+                "BUG: c->read_len > c->in_len: %lu vs %lu\n",
+                    c->read_len, c->in_len);
             return 1;
+        }
         if (len) {
             __builtin_memcpy(c->in, c->read, len);
             len += full_read(c->infd, &c->in[len], c->in_len - len);
@@ -519,7 +502,7 @@ bool chunk_read(chunk_t *c)
             if (w < 0) {
                 if (errno == EINTR) continue;
                 perror("p/read");
-                return 1;
+                return -1;
             }
             p   += w;
             off += w;
@@ -556,7 +539,7 @@ fprintf(stderr, "fpw> call: %u, sze: %lu, off: %lu\n", idx++, size, off);
     return size - len;
 }
 
-static
+static ALWAYS_INLINE
 bool chunk_write(chunk_t *c)
 {
 #if 0 // -----------------------------------------------------------------------
@@ -569,7 +552,7 @@ fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
     if (c->ofd == STDOUT_FILENO)
         return (full_write(c->ofd, c->out, c->out_len) < 0);
 
-    if(0 && c->map & b_mmap_seek) {
+    if(0 && c->flags & b_flag_seek) {
         if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
             perror("ftruncate wr");
             return 1;
@@ -627,16 +610,19 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 }
 
 static
-void chunk_init(chunk_t *c, int idx, int ofd,
-    int infd, sem_t *sem_ptr, size_t out_size)
+void _chunk_init_fast(chunk_t *c, int ofd, int infd, sem_t *sem_ptr)
 {
     static ALIGNED4 chunk_t m = {0};
+    static off_t out_offset = 0;
+    static off_t  in_offset = 0;
+    static unsigned idx = 0;
 
     if(m.state == 0) {
         m.state = 1;
+        if (_USE_FREE) m.flags = b_flag_free;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
-        m.out_cap = out_size ?: WBUF_MAX_SIZE;
-        m.out_off = out_size ? 0 : PTGZ_HEADER_CURSIZE;
+        m.out_off = PTGZ_HEADER_CURSIZE;
+        m.out_cap = WBUF_MAX_SIZE;
         m.in_len = _g_chunk_size;
         m.infd = infd;
         m.ofd = ofd;
@@ -644,43 +630,38 @@ void chunk_init(chunk_t *c, int idx, int ofd,
 
     __builtin_memcpy(c, &m, sizeof(m));
 
-    c->idx = idx;
-    c->out_off += c->out_cap  * idx;
-    c->in_off = _g_chunk_size * idx;
+    c->idx = idx++;
 
-    if (infd != STDIN_FILENO && idx + 1 == _g_tot_chunks)
-        c->in_len = (size_t)_g_read_file_size - c->in_off;
+    c->out_off += out_offset;
+    out_offset += m.out_cap;
+
+    c->in_off += in_offset;
+    in_offset += m.in_len;
+
+    if (infd != STDIN_FILENO && idx == _g_tot_chunks)
+        c->in_len = _g_read_file_size - c->in_off;
 }
 
-static ALWAYS_INLINE
-void chunk_dispose(chunk_t *c)
-{
-#if _USE_FREE
-    if(is_outbuf_freeable(c)) free(c->out);
-    if( is_inbuf_freeable(c)) free(c->in);
-    memset(c, 0, sizeof(chunk_t));
-#else
-    c->thr = 0;
-    c->state = 0;
-    //cb->in_len = 0;
-#endif
-}
+#define chunk_init_fast(_c) _chunk_init_fast(_c, ofd, infd, &sem)
+
+#define inflate_chunk_init zxflate_chunk_init
+#define deflate_chunk_init zxflate_chunk_init
 
 /*
  * RAF: currently the .out_cap exists but always set to WBUF_MAX_SIZE, which
- *      makes the .out_cap redundant while _g_out_mmap_base would be likely a
- *      more usful member of the chunk_t structure. A revision is needed
+ *      makes the .out_cap redundant while _g_out_mmap_base would be likely
+ *      a more usful member of the chunk_t structure. A revision is needed
  *      after the development is completed to get rid off of global variables
  *      in favor of a data structure that can refers also to its own thread_t.
  */
 static
-int deflate_chunk_init(chunk_t *c)
+int zxflate_chunk_init(chunk_t *c)
 {
 #if _USE_MMAP
     /* Assign output pointer inside mapped output file space */
     if (_g_out_mmap_base) {
         c->out = _g_out_mmap_base + c->out_off;
-        c->map |= b_mmap_out;
+        c->flags |= b_flag_out;
     }
     else
 #endif
@@ -699,7 +680,7 @@ int deflate_chunk_init(chunk_t *c)
 #if _USE_MMAP
     if (_g_read_mmap_base) {
         c->in = _g_read_mmap_base + c->in_off;
-        c->map |= b_mmap_in;
+        c->flags |= b_flag_in;
     } else
 #endif
     {
@@ -710,17 +691,21 @@ int deflate_chunk_init(chunk_t *c)
             perror("posix_memalign");
             exit(-1);
         }
-#if _DEBUG & 0x02 // -----------------------------------------------------------
-fprintf(stderr, "inp1> thr(%04d): read = %lu, off: %lu, err: %d\n",
-    c->idx, c->in_len, c->in_off, c->error);
-#endif  // ---------------------------------------------------------------------
-        c->error |= chunk_read(c) << 3;
+        if (c->infd == STDIN_FILENO)
+        {
+            if (chunk_read(c))
+                c->error |= 8;
+            else
+                c->flags |= b_flag_read;
+        }
 #if _DEBUG & 0x02 // -----------------------------------------------------------
 fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     c->idx, c->in_len, c->in_off, c->error);
 #endif  // ---------------------------------------------------------------------
         if (!c->in_len) {
-            chunk_dispose(c);
+            //RAF: much probably EOF, free() is irrelevant here
+            //c->flags |= b_flag_free;
+            chunk_dispose(c, c->error);
             return 1;
         }
     }
@@ -728,20 +713,11 @@ fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     return 0;
 }
 
-static ALWAYS_INLINE
-void chunk_deflate_start(pthread_t *p, chunk_t *c)
+static inline
+void chunk_zxflate_start(pthread_t *p, chunk_t *c)
 {
-    if (!pthread_create(p, NULL, thread_deflate, c))
-        return;
-
-    perror("pthread_create");
-    exit(1);
-}
-
-static ALWAYS_INLINE
-void chunk_inflate_start(pthread_t *p, chunk_t *c)
-{
-    if (!pthread_create(p, NULL, thread_inflate, c))
+    c->action = opt_decompress ? act_inflt : act_deflt;
+    if (!pthread_create(p, NULL, thread_zxflate, c))
         return;
 
     perror("pthread_create");
@@ -760,6 +736,7 @@ static void *thread_chunk_write(void *arg)
     #endif
 
     c->error |= chunk_write(c);
+    c->state = 3;
     return NULL;
 }
 
@@ -885,9 +862,9 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
     int ret = 0;
     uint8_t *inbuf = NULL;
     uint8_t *outbuf = NULL;
-    chunk_t c = {0};
-    pigz_state state;
     reader_ctx_t reader_ctx;
+    pigz_state state;
+    chunk_t c = {0};
 
     if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE) ||
         posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
@@ -903,15 +880,16 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         __builtin_memcpy(inbuf, buf, buf_size);
 
     /* Initialize chunk configuration */
-    c.map = b_mmap_out | b_mmap_in;
-    if (!seek) c.map |= b_mmap_seek;
+    c.flags = b_flag_out | b_flag_in;
+    if (!seek) c.flags |= b_flag_seek;
     c.out = outbuf;
     c.ofd = ofd;
 
     pigz_init(&state, &reader_ctx, ungz_file_reader);
 
     while (1) {
-        /* Determine how many decompressed bytes are currently available */
+        /* Determine how many decompressed
+           bytes are currently available */
         uint64_t avail = pigz_available(&state);
 
         if (state.status == PIGZ_STATUS_EOF)
@@ -929,7 +907,8 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         uint64_t chunk_len = (avail > UNOUT_CHUNK_SIZE)
                            ?  UNOUT_CHUNK_SIZE : avail;
 
-        /* Retrieve pointer to decompressed data directly from ungz internal state */
+        /* Retrieve pointer to decompressed data
+           directly from ungz internal state */
         const char *decomp_ptr = pigz_consume(&state, chunk_len);
         if (!decomp_ptr) {
             ret = chunk_len;
@@ -946,9 +925,12 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
                 c.thr = 0;
             }
             if(chunk_len) {
-                /* Copy available output to chunk buffer for multi-threaded processing */
+                /* Copy available output to chunk buffer
+                   for multi-threaded processing */
                 __builtin_memcpy(outbuf, decomp_ptr, chunk_len);
                 c.out_len = chunk_len;
+                // RAF, TODO: check if __thread works as supposed
+                //      otherwise create a duplicate of chunk_t c
                 if (pthread_create(&c.thr, NULL,
                     thread_chunk_write, &c)
                 ){
@@ -977,6 +959,14 @@ endfunc:
 
 #else //////////////////////////////////////////////////////////////////////////
 
+#if 1 //_USE_MNZ
+#define _SEEKER_FUNC  6
+#define _READ_AHEAD   1
+#else
+#define _SEEKER_FUNC  0
+#define _READ_AHEAD   0
+#endif
+
 #include <endian.h>
 
 static ALWAYS_INLINE
@@ -999,6 +989,8 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
  * Searches for sequence: 0x1F 0x8B 0x08 starting from offset 1 up to 'r - 3'.
  * Returns offset 'n' if found, otherwise 0.
  */
+
+#if _SEEKER_FUNC == 5
 
 static ALWAYS_INLINE __attribute__((target("avx2")))
 uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
@@ -1043,12 +1035,54 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#if 0 //_USE_MNZ
-#define _SEEKER_FUNC  5
-#define _READ_AHEAD   1
-#else
-#define _SEEKER_FUNC  0
-#define _READ_AHEAD   0
+#elif _SEEKER_FUNC == 6
+
+static ALWAYS_INLINE __attribute__((target("avx2")))
+uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;   /* need n+3 valid for 4-byte match */
+    uint32_t n = 1;
+
+    /* 1. PROLOGUE: scalar until 32-byte alignment */
+    for (; n < maxn && (((uintptr_t)(p + n)) & 31) != 0; n++)
+        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    /* 2. VECTOR SCAN: four overlapping loads for 4-byte signature */
+    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
+    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
+    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+    const __m256i v_b3 = _mm256_set1_epi8(0x00);
+
+    for (; n + 31 < maxn; n += 32) {
+        __m256i chunk0 = _mm256_load_si256 ((const __m256i *)(p + n    ));
+        __m256i chunk1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
+        __m256i chunk2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
+        __m256i chunk3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
+
+        __m256i m0 = _mm256_cmpeq_epi8(chunk0, v_b0);
+        __m256i m1 = _mm256_cmpeq_epi8(chunk1, v_b1);
+        __m256i m2 = _mm256_cmpeq_epi8(chunk2, v_b2);
+        __m256i m3 = _mm256_cmpeq_epi8(chunk3, v_b3);
+
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
+                                         _mm256_and_si256(m2, m3));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
+
+        if (mask != 0) return n + __builtin_ctz(mask);
+    }
+
+    /* 3. EPILOGUE: scalar tail */
+    for (; n < maxn; n++)
+        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    return 0;
+}
+
 #endif
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
@@ -1060,6 +1094,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
+
 
     r = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
     if (posix_memalign((void **)&inbuf,  64, r)
@@ -1082,8 +1117,8 @@ fprintf(stderr, " buf: %p, buf_size: %lu, w: %lu\n", buf, buf_size, w);
         goto endfunc;
     }
 
-    c.map = b_mmap_out | b_mmap_in;
-    if(seek) c.map |= b_mmap_seek;
+    c.flags = b_flag_out | b_flag_in;
+    if(seek) c.flags |= b_flag_seek;
     strm.next_in  = inbuf;
     strm.avail_in = w;
     c.ofd = ofd;
@@ -1187,7 +1222,7 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 rmn = r - f;
                 set = f;
             }
-            #elif _SEEKER_FUNC == 5
+            #elif _SEEKER_FUNC == 5 || _SEEKER_FUNC == 6
             /* RAF
              * The results indicate that AVX2 chuck seeker makes inflate 2%
              * slower compared to do not seek at all and process everything
@@ -1250,6 +1285,8 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
             if(w) {
                 c.out_len = w;
                 c.out = outbuf;
+                // RAF, TODO: check if __thread works as supposed
+                //      otherwise create a duplicate of chunk_t c
                 if (pthread_create(&c.thr, NULL,
                     thread_chunk_write, &c)
                 ){
@@ -1390,8 +1427,8 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
         perror("malloc");
         return p;
     }
-
     memset(p, 0, len);
+
     p->nwords = nwords;
     p->cur.size = nwords;
     u = (uint8_t *)p;
@@ -1431,11 +1468,12 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     *len = (nwords + 4) << 2;
 #endif
 
-#if _DEBUG & 0x04 // -----------------------------------------------------------
+#if 1 //_DEBUG & 0x04 // -----------------------------------------------------------
     sum = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
-fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n", *p, sum, *len);
+fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
+    ptbl->chksum, sum, *len);
 #endif // ----------------------------------------------------------------------
 
     return u;
@@ -1492,15 +1530,15 @@ pgunz_t *read_pgunz_table(int fd, int *err)
     sum = 0;
     for (i = 0; i < nwords + 4; i++)
         sum += list[i];
+#if _DEBUG & 0x08 // -----------------------------------------------------------
+fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n",
+    sum, ptbl->chksum, len);
+#endif // ----------------------------------------------------------------------
     if (sum) {
         *err = 1;
         free(ptbl);
         return NULL;
     }
-
-#if _DEBUG & 0x08 // -----------------------------------------------------------
-fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n", sum, list[0], len);
-#endif // ----------------------------------------------------------------------
 
     return ptbl;
 }
@@ -1567,6 +1605,8 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+#define align_len_for_tbl(_v) { if(list) _v->olen = (((_v->olen + 3) >> 2) << 2); }
+
 static
 int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 {
@@ -1580,13 +1620,18 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 
     if (!ofd) return 0;
 
-    if (ofd == STDOUT_FILENO)
+    if (ofd == STDOUT_FILENO) {
+        align_len_for_tbl(vo);
         goto write_table;
+    }
 
     if(vo->nidx < 2 || !list) {
         list = NULL;
         goto skip_reorgnz;
     }
+
+    if(!opt_decompress && _DNT_REOR)
+        goto skip_reorgnz;
 
     /*
      * In-place file reorganization using kernel-Level zero-copy
@@ -1611,28 +1656,17 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
             size_t len = list[i];
             src += WBUF_MAX_SIZE;
             if (!len) continue; //RAF: it should never happens, by design
-
-            off_t off_in = src;
-            while (len > 0) {
-                ssize_t ret = copy_file_range(ofd,
-                    &off_in, ofd, &dst, len, 0);
-                if (!ret) break;
-                if (ret < 0) {
-                    if (errno == EINTR) continue;
-                    perror("copy_file_range");
-                    return 1;
-                }
-                len -= ret;
-            }
+            if (full_rcopy(ofd, dst, src, len) != len)
+                return 1;
+            dst += len;
         }
         vo->olen = dst;
     }
     vo->olen += offset;
 
-    /* Update vo->olen and truncate remaining sparse tail */
-    if(list)
-        vo->olen = ((vo->olen + 3) >> 2) << 2;
 skip_reorgnz:
+    /* Update vo->olen and truncate remaining sparse tail */
+    align_len_for_tbl(vo);
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
         return -1;
@@ -1644,7 +1678,7 @@ skip_reorgnz:
 
 write_table:
     if(vo->nidx < 2 || !list)
-        return 0;
+        return  0;
 
     /*
      * Append metadata table as initially described at this link
@@ -1654,24 +1688,42 @@ write_table:
     size_t len = 0;
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
+    #define _WRT_PTBL 0
+    #if _WRT_PTBL
     uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
+    #else
+    len = _g_tot_chunks << 2;
+    #endif
 
     if (_g_out_mmap_base) {
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
-                (const void *)list, _g_tot_chunks << 2);
+                (const void *)list, len);
             len = 0;
-        } else { // append the full PTGZ table at the end of file
+        } else { // append the full PTGZ header at the end of file
+        #if _WRT_PTBL
             __builtin_memmove(_g_out_mmap_base + vo->olen,
                 (const void *)u, len);
             vo->olen += len;
+        #else
+            len = PTGZ_HEADER_CURSIZE;
+            __builtin_memcpy(_g_out_mmap_base + vo->olen,
+                _g_ptgz_header, len);
+            vo->olen += len;
+        #endif
         }
     } else
     if(ofd == STDOUT_FILENO) {
-        // append the full PTGZ table at the end of file
+    // append the full PTGZ header at the end of file
+    #if _WRT_PTBL
         full_write(ofd, (const void *)u, len);
         vo->olen += len;
         len = 0;
+    #else
+        len = PTGZ_HEADER_CURSIZE;
+        full_write(ofd, _g_ptgz_header, len);
+        vo->olen += len;
+    #endif
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
@@ -1679,7 +1731,8 @@ write_table:
     }
 
 #if _DEBUG & 0x80 // -----------------------------------------------------------
-    if(len)
+    #if _WRT_PTBL
+    if (len)
     {
         int err;
         pgunz_t *pz = read_pgunz_table(ofd, &err);
@@ -1691,6 +1744,7 @@ write_table:
         }
         return err;
     }
+    #endif
 #endif // ----------------------------------------------------------------------
 
     return 0;
@@ -1763,7 +1817,7 @@ head -c64 libz.tar.gz | hexdump -C
 */
 
 static ALWAYS_INLINE
-const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
+void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
     uint8_t *buf = _g_ptgz_header;
 
@@ -1812,7 +1866,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     buf[19] = (uint8_t)(in_len >> 24);
 
     // Termination 10 bytes from buf[20]
-    buf[20 + size] = 0x03;        // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    buf[20 + size] = 0x03; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
 #if 0
     buf[21] = 0x00;
     buf[22] = 0x00; buf[23] = 0x00; buf[24] = 0x00; buf[25] = 0x00; // CRC32
@@ -1822,7 +1876,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     //__builtin_memset(&buf[21], 0, PTGZ_HEADER_MAXSIZE - 21);
 #endif
 
-    return buf; // return a local value but it is fine
+    return &buf[PTGZ_LIST_START_OFF]; // return a local value but it is fine
 }
 
 static ALWAYS_INLINE
@@ -1909,11 +1963,9 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
 // Core
 // =============================================================================
 
-#define inflate_chunk_init deflate_chunk_init
-
 static
-void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
-    size_t out_size, uint32_t in_len)
+void _chunk_list_init(chunk_t *c, int ofd, int infd,
+    sem_t *sem_ptr, size_t out_size, uint32_t in_len)
 {
     static ALIGNED4 chunk_t m = {0};
     static off_t out_offset = 0;
@@ -1922,6 +1974,7 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 
     if(m.state == 0) {
         m.state = 1;
+        if (_USE_FREE) m.flags = b_flag_free;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
         m.out_cap = out_size ?: WBUF_MAX_SIZE;
         m.in_off = PTGZ_HEADER_CURSIZE;
@@ -1931,21 +1984,22 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 
     __builtin_memcpy(c, &m, sizeof(m));
 
-    c->idx      = idx;
+    c->idx      = idx++;
     c->out_off  = out_offset;
     out_offset += _g_chunk_size; // RAF: using out_cap requires file-reorganiz.
 
     c->in_off += in_offset;
     c->in_len  = in_len;
     in_offset += in_len;
-
-    idx++;
 }
 
 #define chunk_list_init(_c) \
-    _cinit(_c, ofd, infd, &sem, out_size, ilst[current])
+    _chunk_list_init(_c, ofd, infd, &sem, out_size, ilst[current])
 
-static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
+#define inflate_parallel zxflate_parallel
+#define deflate_parallel zxflate_parallel
+
+static int zxflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
 {
     sem_t sem;
@@ -1954,6 +2008,8 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t outlen = 0, offset = 0;
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
+
+    const bool cmpr = !opt_decompress;
 
 #if _DEBUG
 fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
@@ -1965,21 +2021,26 @@ fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
     memset(chunks, 0, sizeof(chunks));
     sem_init(&sem, 0, 0);
 
+    /* setup chunk descriptors and output buffers, spawn worker threads */
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
 
-        chunk_list_init(c);
-        if (buf_size && buf) {
-            c->read = buf;
-            c->read_len = buf_size;
-            buf_size = 0;
+        if (cmpr) {
+            chunk_init_fast(c);
+        } else {
+            chunk_list_init(c);
+            if (buf_size && buf) {
+                c->read = buf;
+                c->read_len = buf_size;
+                buf_size = 0;
+            }
         }
-        if (inflate_chunk_init(c)) {
+        if (zxflate_chunk_init(c)) {
             nthreads = i;
             break;
         }
-        chunk_inflate_start(&c->thr, c);
+        chunk_zxflate_start(&c->thr, c);
 //      pthread_detach(c->thr);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
@@ -2007,10 +2068,11 @@ do_another_loop:
         chunk_t *cb = &chunks[b][i];
 
         if (c->error) {
-            _print2("\nERROR: inflate failed on chunk %d,"
-                " size: %lu -> %lu, state: %d, ofd: %d, error: %d\n",
-                c->idx, c->in_len, c->out_len, c->state, c->ofd, c->error);
-            return c->error;
+            _print2("\nERROR: %s failed on chunk %d, size: %lu -> %lu,"
+                " state: %d, ofd: %d, error: %d\n", c->action, c->idx,
+                c->in_len, c->out_len, c->state, c->ofd, c->error);
+            err = c->error;
+            goto do_free_n_return;
         }
 
         if (c->state < 2)
@@ -2019,12 +2081,12 @@ do_another_loop:
         if (!c->thr)
             goto skip_do_new_thread;
 
-#if _DEBUG & 0x40 // -----------------------------------------------------------
-fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n",
-    c->thr, ofd, c->idx, next_idx, _g_tot_chunks, c->out_len, outlen);
+#if _DEBUG & 0x20 // -----------------------------------------------------------
+fprintf(stderr, "%s> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n",
+    c->action, c->thr, ofd, c->idx, next_idx, _g_tot_chunks, c->out_len, outlen);
 #endif // ----------------------------------------------------------------------
 
-        if (!c->out_len && c->state == 3)
+        if (!c->in_len && c->state == 3)
         {
             current--;
             goto dispose;
@@ -2034,23 +2096,34 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            chunk_list_init(cb);
-            if (inflate_chunk_init(cb)) {
+            if (cmpr)
+                chunk_init_fast(cb);
+            else
+                chunk_list_init(cb);
+            if (zxflate_chunk_init(cb)) {
                 c->thr = 0;
             } else {
                 current++;
-                chunk_inflate_start(&cb->thr, cb);
+                chunk_zxflate_start(&cb->thr, cb);
 //              pthread_detach(cb->thr);
             }
         }
+
 skip_do_new_thread:
+
+#if _DEBUG & 0x40 // -----------------------------------------------------------
+if (ofd > STDOUT_FILENO || c->idx == next_idx)
+fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    c->action, current, _g_tot_chunks, nthreads, c->idx, next_idx,
+    ofd, c->thr, chunks[b][i].state);
+#endif // ----------------------------------------------------------------------
 
         /* thread write done or ready to */
         if (c->state != 3)
             continue;
 
         /* ordered writing on STDOUT, only */
-        if (ofd == STDOUT_FILENO
+        if ((ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
         &&  c->idx != next_idx
         ){
             continue;
@@ -2060,11 +2133,20 @@ skip_do_new_thread:
         next_idx++;
         if(infd == STDIN_FILENO)
             _g_read_file_size += c->in_len;
-        outlen += (ofd == STDOUT_FILENO)
-                ? full_write(ofd, c->out, c->out_len)
-                : c->out_len
-                ;
-        //if(list) list[ c->idx ] = c->out_len;
+
+        if (ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
+        {
+            if (_g_out_mmap_base)
+                __builtin_memcpy(_g_out_mmap_base
+                    + outlen, c->out, c->out_len);
+            else
+                c->out_len = full_write(ofd,
+                              c->out, c->out_len);
+        }
+        outlen += c->out_len;
+
+        if(cmpr && ptbl->cur.list)
+            ptbl->cur.list[ c->idx ] = c->out_len;
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
 //if (ofd > STDOUT_FILENO || c->idx == next_idx)
@@ -2072,42 +2154,8 @@ fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
     current, _g_tot_chunks, nthreads, c->idx, next_idx, ofd, cb->thr, cb->state);
 #endif // ----------------------------------------------------------------------
 
-
 dispose:
-        #if _USE_FREE
-        /* disposing the chunk and its buffer */
-        if (is_outbuf_freeable(c)) {
-            free(c->out);
-            c->out = NULL;
-        }
-        if (is_inbuf_freeable(c)) {
-            free(c->in);
-            c->in = NULL;
-        }
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        #else
-        c->state = 0;
-        //c->in_len = 0;
-        #endif
-
-#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
-       *            under this circumstances is better to keep them into
-       *            the current chuck which will be reused only by large
-       *            files while the smaller wouldn't.
-       */
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        chunk_t *cb; //RAF: it will be the next one, if any
-        if (i+1 < nthreads)
-            cb = &chunks[b][i+1];
-        else
-            cb = &chunks[a][ 0 ];
-        if(!cb->state)
-            __builtin_memcpy(cb, c, sizeof(chunk_t));
-#endif
-
-        /* disposing the thread */
-//      pthread_join(c->thr, NULL);
-        c->thr = 0;
+        chunk_dispose(c, 0);
 
         // RAF: another pending work-done might be available
         goto do_another_loop;
@@ -2118,32 +2166,20 @@ dispose:
     if (next_idx < current)
         goto do_a_thread_wait;
 
-    // -----------------------------------------------------------
-    // Ending
-    // -----------------------------------------------------------
+// === Ending ==================================================================
 
     _verbout_init(vo);
-    verbose_printout(&vo);
-#if 0
-    err = output_finaliser(ofd, &vo, 0);
-#else
-/*
-    if (ftruncate(ofd, outlen) < 0) {
-        perror("ftruncate");
-        return -1;
-    }
-*/
-#endif
+    if (cmpr)
+        err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
 
 do_free_n_return:
+    verbose_printout(&vo);
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
     sem_destroy(&sem);
     #endif
 
     return err;
 }
-
-#define _inflate_parallel zlib_inflate_parallel
 
 // =============================================================================
 // Main
@@ -2478,7 +2514,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     pgunz_t tbl, *ptbl = &tbl;
     size_t buf_size = 0;
     uint8_t *ptr = NULL;
-    uint32_t *list = NULL;
     uint32_t next_idx = 0, current = 0;
 
     chunk_t chunks[2][MAX_THREADS];
@@ -2487,7 +2522,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if (!opt_decompress)
         goto set_ptbl_list;
 
-// === gunzip ==================================================================
+// === inflate =================================================================
 
     int ret = 0;
     uint32_t *ilst = NULL;
@@ -2497,11 +2532,20 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     buf_size = ptgz_header_init(infd, &tbl);
     if(buf_size && buf_size < PTGZ_HEADER_SIZE)
         return 1; // nothing to do
+ 
+    max_out_size = do_output_mmap(ofd);
 
-    if(buf_size || infd == STDIN_FILENO) {
-        // what has been read should from STDIN be passed to the first chunk
+    if(buf_size) {
         goto set_default_values;
-    } else {
+    } else
+#if 0 // RAF: 'make test-inout' is 3x faster with full parallelisation
+    if (infd == STDIN_FILENO) {
+      // what has been read should from STDIN be passed to the 1st chunk
+      //goto do_inflate_stream;
+      //goto set_default_values;
+    } else
+#endif
+    {
         // at this point, tbl and the first chunk offset are initialisated
         next_idx = tbl.nwords;
         in_size = tbl.bufsze;
@@ -2509,10 +2553,8 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         buf_size = 0;
     }
 
-    max_out_size = do_output_mmap(ofd);
-
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ1> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
     ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
 fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
     ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
@@ -2536,7 +2578,7 @@ do_inflate_stream:
             out_size, ptr, buf_size, !max_out_size, &tbl);
     } else {
         out_size = size_by_blocks(zread_max_size(in_size));
-        ret = _inflate_parallel(infd, ofd, in_size,
+        ret = inflate_parallel(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
         buf_size = 0;
     }
@@ -2554,14 +2596,11 @@ do_inflate_stream:
 
     goto do_free;
 
-// =============================================================================
-// Threads
-// =============================================================================
+// === deflate =================================================================
 
 set_ptbl_list:
     max_out_size = do_output_mmap(ofd);
     ptbl = create_pgunz_table(_g_tot_chunks);
-    list = ptbl->cur.list;
 
     _g_ptgz_list_size = _g_tot_chunks;
     if(_g_ptgz_list_size > PTGZ_LIST_MAX_WORDS)
@@ -2584,168 +2623,18 @@ set_ptbl_list:
      * can be transferred into the header, like it happens during the
      * creation from a seekable file as data input source.
      */
-    ptr = (void *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
-    full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
+    ptbl->cur.list = ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
+    full_write(ofd, _g_ptgz_header, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
-_print2("PTGZ2> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
-    *(uint32_t *)&ptr[0], _g_tot_chunks, _g_chunk_size, PTGZ_HEADER_CURSIZE);
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
+fprintf(stderr, "      list: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
+    ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
 #endif // ----------------------------------------------------------------------
 
-// =============================================================================
-
-    /* setup chunk descriptors and output buffers, spawn worker threads */
-    for (uint32_t i = 0; i < nthreads; i++, current++)
-    {
-        chunk_t *c = &chunks[0][i];
-        chunk_init(c, current, ofd, infd, &sem, 0);
-        if (deflate_chunk_init(c)) {
-            nthreads = i;
-            break;
-        }
-        chunk_deflate_start(&c->thr, c);
-//      pthread_detach(c->thr);
-        //RAF: the bottleneck is the next one in the ordered list
-        //     since after the first the father starts to write
-        //     then the bottleneck is the first one, let it go!
-        if(!i) _cpu_relax();
-    }
-
-do_a_thread_wait:
-#if _THR_WAIT
-//RAF: one thread completed, at least as
-// long as, at least, one thread exists.
-    if (current != _g_tot_chunks)
-        if (full_sem_wait(&sem))
-            return -1;
-#else
-    _cpu_relax();
-#endif
-do_another_loop:
-    for(uint32_t a = 0; a < 2; a++)
-    for(uint32_t i = 0, b = !a; i < nthreads; i++)
-    {
-        chunk_t *c  = &chunks[a][i];
-        chunk_t *cb = &chunks[b][i];
-
-        if (c->error) {
-            _print2("file: '%s'\n    compression failed on chunk %d,"
-                " size: %lu, err: %d\n", filename, current + i,
-                    c->out_len, c->error);
-            return c->error;
-        }
-        if (c->state < 2)
-            continue;
-
-        if (!c->thr)
-            goto skip_do_new_thread;
-
-        if (!c->in_len && c->state == 3)
-        {
-            current--;
-            goto dispose;
-        }
-
-        /* create another thread to do work */
-        if (!cb->thr && !cb->state
-        && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
-        ){
-            chunk_init(cb, current, ofd, infd, &sem, 0);
-            if (deflate_chunk_init(cb)) {
-                c->thr = 0;
-            } else {
-                current++;
-                chunk_deflate_start(&cb->thr, cb);
-//              pthread_detach(cb->thr);
-            }
-        }
-skip_do_new_thread:
-
-#if _DEBUG & 0x20 // -----------------------------------------------------------
-if (ofd > STDOUT_FILENO || c->idx == next_idx)
-fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, _g_tot_chunks, nthreads, c->idx, next_idx,
-    ofd, c->thr, chunks[b][i].state);
-#endif // ----------------------------------------------------------------------
-
-        /* thread write done or ready to */
-        if (c->state != 3)
-            continue;
-
-        /* ordered writing on STDOUT, only */
-        if (ofd == STDOUT_FILENO
-        &&  c->idx != next_idx
-        ){
-            continue;
-        }
-
-#if _DEBUG & 0x40 // -----------------------------------------------------------
-fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    c->thr, ofd, next_idx, _g_tot_chunks);
-#endif // ----------------------------------------------------------------------
-
-        /* granting the correct order */
-        next_idx++;
-        if(infd == STDIN_FILENO)
-            _g_read_file_size += c->in_len;
-        outlen += (ofd == STDOUT_FILENO)
-                ? full_write(ofd, c->out, c->out_len)
-                : c->out_len
-                ;
-        if(list) list[ c->idx ] = c->out_len;
-
-dispose:
-        #if _USE_FREE
-        /* disposing the chunk and its buffer */
-        if (is_outbuf_freeable(c)) {
-            free(c->out);
-            c->out = NULL;
-        }
-        if (is_inbuf_freeable(c)) {
-            free(c->in);
-            c->in = NULL;
-        }
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        #else
-        c->state = 0;
-        //c->in_len = 0;
-        #endif
-
-#if 0 /* RAF, TODO: moving resources on the next one doesn't work properly
-       *            under this circumstances is better to keep them into
-       *            the current chuck which will be reused only by large
-       *            files while the smaller wouldn't.
-       */
-        memset(&c->idx, 0, (size_t)&(c->end) - (size_t)&(c->idx));
-        chunk_t *cb; //RAF: it will be the next one, if any
-        if (i+1 < nthreads)
-            cb = &chunks[b][i+1];
-        else
-            cb = &chunks[a][ 0 ];
-        if(!cb->state)
-            __builtin_memcpy(cb, c, sizeof(chunk_t));
-#endif
-
-        /* disposing the thread */
-//      pthread_join(c->thr, NULL);
-        c->thr = 0;
-
-        // RAF: another pending work-done might be available
-        goto do_another_loop;
-    }
-
-    // RAF: no pending work-done available
-    // is there something else to wait for?
-    if (next_idx < current)
-        goto do_a_thread_wait;
-
-// =============================================================================
-// Ending
-// =============================================================================
-
-    _verbout_init(vo);
-    ret = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
-    verbose_printout(&vo);
+    ret = deflate_parallel(infd, ofd, _g_chunk_size,
+        WBUF_MAX_SIZE, 0, 0, !max_out_size, ptbl);
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2758,7 +2647,6 @@ do_free:
     }
     if(ofd) close(ofd);
     free(ptbl);
-    free(list);
     #endif
 
     return ret;
