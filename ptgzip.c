@@ -1630,23 +1630,45 @@ write_table:
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
     uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
+    #define _WRT_PTBL 0
+    #if _WRT_PTBL
+    #else
+    len = _g_tot_chunks << 2;
+    #endif
 
     if (_g_out_mmap_base) {
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
-                (const void *)list, _g_tot_chunks << 2);
+                (const void *)list, len);
             len = 0;
-        } else { // append the full PTGZ table at the end of file
+        } else { // append the full PTGZ header at the end of file
+        #if _WRT_PTBL
             __builtin_memmove(_g_out_mmap_base + vo->olen,
                 (const void *)u, len);
             vo->olen += len;
+        #else
+            __builtin_memcpy(&_g_ptgz_header[PTGZ_LIST_START_OFF],
+                (const void *)list, len);
+            len = PTGZ_HEADER_CURSIZE;
+            __builtin_memcpy(_g_out_mmap_base + vo->olen,
+                _g_ptgz_header, len);
+            vo->olen += len;
+        #endif
         }
     } else
     if(ofd == STDOUT_FILENO) {
-        // append the full PTGZ table at the end of file
+    // append the full PTGZ header at the end of file
+    #if _WRT_PTBL
         full_write(ofd, (const void *)u, len);
         vo->olen += len;
         len = 0;
+    #else
+        __builtin_memcpy(&_g_ptgz_header[PTGZ_LIST_START_OFF],
+            (const void *)list, len);
+        len = PTGZ_HEADER_CURSIZE;
+        full_write(ofd, _g_ptgz_header, len);
+        vo->olen += len;
+    #endif
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
@@ -1654,7 +1676,8 @@ write_table:
     }
 
 #if _DEBUG & 0x80 // -----------------------------------------------------------
-    if(len)
+    #if _WRT_PTBL
+    if (len)
     {
         int err;
         pgunz_t *pz = read_pgunz_table(ofd, &err);
@@ -1666,6 +1689,7 @@ write_table:
         }
         return err;
     }
+    #endif
 #endif // ----------------------------------------------------------------------
 
     return 0;
