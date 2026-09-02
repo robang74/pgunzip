@@ -339,13 +339,13 @@ static void *thread_zxflate(void *arg)
         c->flags |= b_flag_read;
     }
 
-    const bool dflt = !opt_decompress;
+    const bool cmpr = !opt_decompress;
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
      *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
      *    be concatenated into a valid .gz file.
      */
-    if(dflt)
+    if(cmpr)
         ret = _deflate_init2(&strm, _g_compression_level,
             Z_DEFLATED, 15 + 16, 7, Z_DEFAULT_STRATEGY);
     else
@@ -372,7 +372,7 @@ static void *thread_zxflate(void *arg)
         *      corrupt data and thus creating a corrupted gzip archive or when
         *      the ending bound would be violated and thus the kernel SEGVDEF.
         */
-        if(dflt)
+        if(cmpr)
             c->out_cap = _deflate_bound(&strm, c->in_len);
         else
             c->out_cap = _inflate_bound(&strm, c->in_len);
@@ -401,14 +401,14 @@ static void *thread_zxflate(void *arg)
 #if _ONE_ZDF
 #else
     do {
-        if(dflt)
+        if(cmpr)
             ret = _deflate(&strm, Z_NO_FLUSH);
         else
             ret = _inflate(&strm, Z_NO_FLUSH);
     } while (ret == Z_OK);
     if (ret != Z_STREAM_END)
 #endif
-    if(dflt)
+    if(cmpr)
         ret = _deflate(&strm, Z_FINISH);
     else
         ret = _inflate(&strm, Z_FINISH);
@@ -431,7 +431,7 @@ if(strm.total_out)
      *             Skipping to call it leaks several KiB per chunk.
      */
 endfnc:
-    if(dflt)
+    if(cmpr)
         _deflate_end(&strm);
     else
         _inflate_end(&strm);
@@ -1915,7 +1915,7 @@ static int zxflate_parallel(int infd, int ofd, size_t in_size,
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
-    const bool dflt = !opt_decompress;
+    const bool cmpr = !opt_decompress;
 
 #if _DEBUG
 fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
@@ -1932,7 +1932,7 @@ fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
     {
         chunk_t *c = &chunks[0][i];
 
-        if (dflt) {
+        if (cmpr) {
             chunk_init_fast(c);
         } else {
             chunk_list_init(c);
@@ -2001,7 +2001,7 @@ fprintf(stderr, "%s> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            if (dflt)
+            if (cmpr)
                 chunk_init_fast(cb);
             else
                 chunk_list_init(cb);
@@ -2042,7 +2042,7 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
                 ;
-        if(dflt && ptbl->cur.list)
+        if(cmpr && ptbl->cur.list)
             ptbl->cur.list[ c->idx ] = c->out_len;
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
@@ -2067,7 +2067,7 @@ dispose:
 
     _verbout_init(vo);
     verbose_printout(&vo);
-if (dflt) {
+if (cmpr && ofd != STDOUT_FILENO) {
     err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
 }
 
