@@ -258,19 +258,19 @@ crash:
 	@printf "\n=== iocat build w/ CRASH_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(CRASH_FLAGS)"
 
-iocat:
+ioway:
 	@printf "\n=== iocat build w/ IOWAY_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(IOWAY_FLAGS)"
 
 _stress-iocat:
 	@printf "\n=== iocat stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do cat $$i | $(CMD2T) $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do dd if=$$i bs=1M status=none | $(CMD2T) $(CMDVC) -1 | $(ZCATCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
 	@echo
 
-stress-iocat: iocat _stress-iocat blkline
+stress-iocat: $(CMD2T) _stress-iocat blkline
 
 iocat-stress: stress-iocat
 

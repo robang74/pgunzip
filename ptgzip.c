@@ -959,6 +959,14 @@ endfunc:
 
 #else //////////////////////////////////////////////////////////////////////////
 
+#if 1 //_USE_MNZ
+#define _SEEKER_FUNC  6
+#define _READ_AHEAD   1
+#else
+#define _SEEKER_FUNC  0
+#define _READ_AHEAD   0
+#endif
+
 #include <endian.h>
 
 static ALWAYS_INLINE
@@ -981,6 +989,8 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
  * Searches for sequence: 0x1F 0x8B 0x08 starting from offset 1 up to 'r - 3'.
  * Returns offset 'n' if found, otherwise 0.
  */
+
+#if _SEEKER_FUNC == 5
 
 static ALWAYS_INLINE __attribute__((target("avx2")))
 uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
@@ -1025,12 +1035,54 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#if 0 //_USE_MNZ
-#define _SEEKER_FUNC  5
-#define _READ_AHEAD   1
-#else
-#define _SEEKER_FUNC  0
-#define _READ_AHEAD   0
+#elif _SEEKER_FUNC == 6
+
+static ALWAYS_INLINE __attribute__((target("avx2")))
+uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;   /* need n+3 valid for 4-byte match */
+    uint32_t n = 1;
+
+    /* 1. PROLOGUE: scalar until 32-byte alignment */
+    for (; n < maxn && (((uintptr_t)(p + n)) & 31) != 0; n++)
+        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    /* 2. VECTOR SCAN: four overlapping loads for 4-byte signature */
+    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
+    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
+    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+    const __m256i v_b3 = _mm256_set1_epi8(0x00);
+
+    for (; n + 31 < maxn; n += 32) {
+        __m256i chunk0 = _mm256_load_si256 ((const __m256i *)(p + n    ));
+        __m256i chunk1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
+        __m256i chunk2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
+        __m256i chunk3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
+
+        __m256i m0 = _mm256_cmpeq_epi8(chunk0, v_b0);
+        __m256i m1 = _mm256_cmpeq_epi8(chunk1, v_b1);
+        __m256i m2 = _mm256_cmpeq_epi8(chunk2, v_b2);
+        __m256i m3 = _mm256_cmpeq_epi8(chunk3, v_b3);
+
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
+                                         _mm256_and_si256(m2, m3));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
+
+        if (mask != 0) return n + __builtin_ctz(mask);
+    }
+
+    /* 3. EPILOGUE: scalar tail */
+    for (; n < maxn; n++)
+        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    return 0;
+}
+
 #endif
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
@@ -1170,7 +1222,7 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 rmn = r - f;
                 set = f;
             }
-            #elif _SEEKER_FUNC == 5
+            #elif _SEEKER_FUNC == 5 || _SEEKER_FUNC == 6
             /* RAF
              * The results indicate that AVX2 chuck seeker makes inflate 2%
              * slower compared to do not seek at all and process everything
@@ -2480,19 +2532,26 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     buf_size = ptgz_header_init(infd, &tbl);
     if(buf_size && buf_size < PTGZ_HEADER_SIZE)
         return 1; // nothing to do
+ 
+    max_out_size = do_output_mmap(ofd);
 
-    if(buf_size || infd == STDIN_FILENO) {
-        // what has been read should from STDIN be passed to the first chunk
+    if(buf_size) {
         goto set_default_values;
-    } else {
+    } else
+#if 0 // RAF: 'make test-inout' is 3x faster with full parallelisation
+    if (infd == STDIN_FILENO) {
+      // what has been read should from STDIN be passed to the 1st chunk
+      //goto do_inflate_stream;
+      //goto set_default_values;
+    } else
+#endif
+    {
         // at this point, tbl and the first chunk offset are initialisated
         next_idx = tbl.nwords;
         in_size = tbl.bufsze;
         ilst = tbl.cur.list;
         buf_size = 0;
     }
-
-    max_out_size = do_output_mmap(ofd);
 
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
