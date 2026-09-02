@@ -339,7 +339,7 @@ static void *thread_zxflate(void *arg)
         c->flags |= b_flag_read;
     }
 
-    const bool dflt = (c->action[0] == 'd');
+    const bool dflt = !opt_decompress;
 
     /* 1. GZIP FORMAT: 15 + 16 is mandatory otherwise deflateInit() produces
      *    RFC-1950 zlib format, not RFC-1952 gzip. Only RFC-1952 output can
@@ -598,17 +598,19 @@ size_t full_rcopy(int ofd, off_t off_out, off_t off_in, size_t size)
 }
 
 static
-void chunk_init(chunk_t *c, int idx, int ofd,
-    int infd, sem_t *sem_ptr, size_t out_size)
+void _chunk_init_fast(chunk_t *c, int ofd, int infd, sem_t *sem_ptr)
 {
     static ALIGNED4 chunk_t m = {0};
+    static off_t out_offset = 0;
+    static off_t  in_offset = 0;
+    static unsigned idx = 0;
 
     if(m.state == 0) {
         m.state = 1;
         if (_USE_FREE) m.flags = b_flag_free;
         m.sem_ptr = _THR_WAIT ? sem_ptr : NULL;
-        m.out_cap = out_size ?: WBUF_MAX_SIZE;
-        m.out_off = out_size ? 0 : PTGZ_HEADER_CURSIZE;
+        m.out_off = PTGZ_HEADER_CURSIZE;
+        m.out_cap = WBUF_MAX_SIZE;
         m.in_len = _g_chunk_size;
         m.infd = infd;
         m.ofd = ofd;
@@ -616,13 +618,19 @@ void chunk_init(chunk_t *c, int idx, int ofd,
 
     __builtin_memcpy(c, &m, sizeof(m));
 
-    c->idx = idx;
-    c->out_off += c->out_cap  * idx;
-    c->in_off = _g_chunk_size * idx;
+    c->idx = idx++;
 
-    if (infd != STDIN_FILENO && idx + 1 == _g_tot_chunks)
-        c->in_len = (size_t)_g_read_file_size - c->in_off;
+    c->out_off += out_offset;
+    out_offset += m.out_cap;
+
+    c->in_off += in_offset;
+    in_offset += m.in_len;
+
+    if (infd != STDIN_FILENO && idx == _g_tot_chunks)
+        c->in_len = _g_read_file_size - c->in_off;
 }
+
+#define chunk_init_fast(_c) _chunk_init_fast(_c, ofd, infd, &sem)
 
 #define inflate_chunk_init zxflate_chunk_init
 #define deflate_chunk_init zxflate_chunk_init
@@ -693,22 +701,11 @@ fprintf(stderr, "inp2> thr(%04d): read = %lu, off: %lu, err: %d\n",
     return 0;
 }
 
-static ALWAYS_INLINE
-void chunk_deflate_start(pthread_t *p, chunk_t *c)
+static inline
+void chunk_zxflate_start(pthread_t *p, chunk_t *c)
 {
-    c->action = act_deflt;
-    if (!pthread_create(p, NULL, thread_deflate, c))
-        return;
-
-    perror("pthread_create");
-    exit(1);
-}
-
-static ALWAYS_INLINE
-void chunk_inflate_start(pthread_t *p, chunk_t *c)
-{
-    c->action = act_inflt;
-    if (!pthread_create(p, NULL, thread_inflate, c))
+    c->action = opt_decompress ? act_inflt : act_deflt;
+    if (!pthread_create(p, NULL, thread_zxflate, c))
         return;
 
     perror("pthread_create");
@@ -1873,8 +1870,8 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
 // =============================================================================
 
 static
-void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
-    size_t out_size, uint32_t in_len)
+void _chunk_list_init(chunk_t *c, int ofd, int infd,
+    sem_t *sem_ptr, size_t out_size, uint32_t in_len)
 {
     static ALIGNED4 chunk_t m = {0};
     static off_t out_offset = 0;
@@ -1893,19 +1890,17 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 
     __builtin_memcpy(c, &m, sizeof(m));
 
-    c->idx      = idx;
+    c->idx      = idx++;
     c->out_off  = out_offset;
     out_offset += _g_chunk_size; // RAF: using out_cap requires file-reorganiz.
 
     c->in_off += in_offset;
     c->in_len  = in_len;
     in_offset += in_len;
-
-    idx++;
 }
 
 #define chunk_list_init(_c) \
-    _cinit(_c, ofd, infd, &sem, out_size, ilst[current])
+    _chunk_list_init(_c, ofd, infd, &sem, out_size, ilst[current])
 
 #define inflate_parallel zxflate_parallel
 #define deflate_parallel zxflate_parallel
@@ -1938,12 +1933,7 @@ fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
         chunk_t *c = &chunks[0][i];
 
         if (dflt) {
-            chunk_init(c, current, ofd, infd, &sem, 0);
-            if (deflate_chunk_init(c)) {
-                nthreads = i;
-                break;
-            }
-            chunk_deflate_start(&c->thr, c);
+            chunk_init_fast(c);
         } else {
             chunk_list_init(c);
             if (buf_size && buf) {
@@ -1951,12 +1941,12 @@ fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
                 c->read_len = buf_size;
                 buf_size = 0;
             }
-            if (inflate_chunk_init(c)) {
-                nthreads = i;
-                break;
-            }
-            chunk_inflate_start(&c->thr, c);
         }
+        if (zxflate_chunk_init(c)) {
+            nthreads = i;
+            break;
+        }
+        chunk_zxflate_start(&c->thr, c);
 //      pthread_detach(c->thr);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
@@ -2011,24 +2001,16 @@ fprintf(stderr, "%s> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            if (dflt) {
-                chunk_init(cb, current, ofd, infd, &sem, 0);
-                if (deflate_chunk_init(cb)) {
-                    c->thr = 0;
-                } else {
-                    current++;
-                    chunk_deflate_start(&cb->thr, cb);
-    //              pthread_detach(cb->thr);
-                }
-            } else {
+            if (dflt)
+                chunk_init_fast(cb);
+            else
                 chunk_list_init(cb);
-                if (inflate_chunk_init(cb)) {
-                    c->thr = 0;
-                } else {
-                    current++;
-                    chunk_inflate_start(&cb->thr, cb);
-    //              pthread_detach(cb->thr);
-                }
+            if (zxflate_chunk_init(cb)) {
+                c->thr = 0;
+            } else {
+                current++;
+                chunk_zxflate_start(&cb->thr, cb);
+//              pthread_detach(cb->thr);
             }
         }
 
