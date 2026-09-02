@@ -1580,13 +1580,13 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
 
     if (!ofd) return 0;
 
+    if (ofd == STDOUT_FILENO)
+        goto write_table;
+
     if(vo->nidx < 2 || !list) {
         list = NULL;
         goto skip_reorgnz;
     }
-
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
 
     /*
      * In-place file reorganization using kernel-Level zero-copy
@@ -1643,6 +1643,9 @@ skip_reorgnz:
     }
 
 write_table:
+    if(vo->nidx < 2 || !list)
+        return 0;
+
     /*
      * Append metadata table as initially described at this link
      *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
