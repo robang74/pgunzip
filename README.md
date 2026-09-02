@@ -11,7 +11,7 @@ Simplicity is the ultimate sophistication (cit.)
 - [Quick Overview](#quick-overview)
 - [Rationale](#rationale) about un/gzip parallel format benefits
     - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
-    - [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06) &dash; [Planning](#planning)
+    - [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06) &dash; [Updates v0.7](#updates-v07)
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -333,7 +333,7 @@ Therefore, enforcing threads CPU migration is very useful during development whe
 
 ---
 
-### Planning
+### Updates v0.7
 
 Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` field with its target length zero-filled, while appending the actual PTGZ index table to the end of the stream. The receiving end can then rebuild the file (via `-R` aka `--rebuild`) using just a combo of a `copy_range()` and a `ftruncate()`. For standard compliance, the trailing `PTGZ` table will be replaced by the populated RFC-1952 compliant header.
 
@@ -362,6 +362,20 @@ Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` fie
 ```
 
 In its simplicity the PTGZ format is so effective that what remains isn't achieving the excellence in parallelism (even if it would be great to have and probably also significative in performance) but the I/O orchestration which, in ultimate terms, strongly depends by four main cases created by the combinations of these two double-options pairs: pipe vs file on input / output.
+
+```
+=== ./ptgzip -d I/O speed test x30 ===
+
+nl=/dev/null && cmd="dd if=libz.tar.gz bs=1M status=none |\
+    ./ptgzip -d -c" && sync && \
+    eval "$cmd" >$nl && time for i in $(seq 1 30); do \
+    eval "$cmd"; done | dd bs=1M of=$nl
+
+278937600 bytes (279 MB, 266 MiB) copied, 0.258228 s, 1.1 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.266013 s, 1.0 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.261467 s, 1.1 GB/s
+278937600 bytes (279 MB, 266 MiB) copied, 0.270039 s, 1.0 GB/s
+```
 
 When reading from a file, `ptgzip` calculates the total chunk count upfront, recording dynamic output chunk sizes into the table. From `STDIN`, it uses the read buffer size as a sliding window to scan for the next GZIP header. Accelerated via AVX2, this scan quickly isolates complete chunks for parallel processing, leaving sequential writing as the only potential synchronization point.
 
