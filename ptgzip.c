@@ -1629,10 +1629,10 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
     }
     vo->olen += offset;
 
-skip_reorgnz:
     /* Update vo->olen and truncate remaining sparse tail */
     if(list)
         vo->olen = ((vo->olen + 3) >> 2) << 2;
+skip_reorgnz:
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
         return -1;
