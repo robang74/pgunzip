@@ -262,13 +262,14 @@ ioway:
 	@printf "\n=== iocat build w/ IOWAY_FLAGS ===\n\n"
 	rm -f ptgzip && make ptgzip EXTRA_CFLAGS="$(EXTRA_CFLAGS) $(IOWAY_FLAGS)"
 
+SIOCMD := dd if=$$i bs=1M status=none | $(CMD2T) $(CMDVC) -1 | $(ZCATCMD)
+
 _stress-iocat:
 	@printf "\n=== iocat stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do dd if=$$i bs=1M status=none | $(CMD2T) $(CMDVC) -1 | $(ZCATCMD); done' \
+	@cmd='for i in $$list; do $(SIOCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
-	@echo
 
 stress-iocat: $(CMD2T) _stress-iocat blkline
 
