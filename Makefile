@@ -202,9 +202,7 @@ devel: $(LIBZ_A)
 	@make test-basic  || printf "\n>>> ERR=$$?\n"
 	@echo
 
-speed:
-	@make _test-speed _test-speef CMD2T=$(CMD2T) blkline
-	@echo
+speed: $(CMD2T) _test-speed _test-speef blkline
 
 speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
@@ -216,13 +214,21 @@ speed-stress: libz.tar $(CMD2T)
 
 stress-speed: speed-stress
 
-stress: libz.tar $(CMD2T)
+STRCMD := $(CMD2T) $$i $(CMDVC) -1 | { zcat || echo $$i >&2; }
+
+_test-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC) -1 | zcat; done' \
+	@cmd='for i in $$list; do $(STRCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
 	@echo
+
+stress-test: test-stress
+
+test-stress: _test-stress blkline
+
+stress: $(CMD2T) _test-stress _speed-stress blkline
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
