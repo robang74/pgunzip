@@ -18,6 +18,7 @@ MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
 GZCMD     = $(shell command -v pigz gzip | head -n1)
+ZCATCMD  ?= ./ptgzip -dc
 NTS      ?= 30
 
 CC       ?= gcc
@@ -204,17 +205,20 @@ devel: $(LIBZ_A)
 
 speed: $(CMD2T) _test-speed _test-speef blkline
 
-speed-stress: libz.tar $(CMD2T)
+_speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" | dd bs=1M of=$$nl
-	@echo
 
-stress-speed: speed-stress
+_stress-speed: _speed-stress
 
-STRCMD := $(CMD2T) $$i $(CMDVC) -1 | { zcat || echo $$i >&2; }
+speed-stress: stress-speed
+
+stress-speed: _speed-stress blkline
+
+STRCMD := $(CMD2T) $$i $(CMDVC) -1 | { $(ZCATCMD) || echo $$i >&2; }
 
 _test-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
@@ -222,13 +226,17 @@ _test-stress: libz.tar $(CMD2T)
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
-	@echo
 
 stress-test: test-stress
 
+_stress-test: _test-stress
+
 test-stress: _test-stress blkline
 
-stress: $(CMD2T) _test-stress _speed-stress blkline
+stress: $(CMD2T) _speed-stress _test-stress
+	@echo
+	@make ZCATCMD="$(GZCMD) -dc" test-stress
+	@echo
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
