@@ -959,8 +959,12 @@ endfunc:
 
 #else //////////////////////////////////////////////////////////////////////////
 
-#if 1 //_USE_MNZ
-#define _SEEKER_FUNC  6
+#ifndef _DO_STRM
+#define _DO_STRM 0
+#endif
+
+#if _DO_STRM
+#define _SEEKER_FUNC  9
 #define _READ_AHEAD   1
 #else
 #define _SEEKER_FUNC  0
@@ -990,7 +994,7 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
  * Returns offset 'n' if found, otherwise 0.
  */
 
-#if _SEEKER_FUNC == 5
+#if _SEEKER_FUNC == 5 // 3-bytes AVX2 aligned version
 
 static ALWAYS_INLINE __attribute__((target("avx2")))
 uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
@@ -1009,7 +1013,8 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     const __m256i v_b1 = _mm256_set1_epi8(0x8B);
     const __m256i v_b2 = _mm256_set1_epi8(0x08);
 
-    for (; n + 31 < maxn; n += 32) {
+    for (; n + 31 < maxn; n += 32)
+    {
         // Aligned load on chunk0 and overlapping chunk1 and chunk2
         // use unaligned loads offset by 1 and 2 bytes relative to
         // the aligned chunk0 pointer
@@ -1023,8 +1028,7 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
-
-        if (mask != 0) return n + __builtin_ctz(mask);
+        if (mask) return n + __builtin_ctz(mask);
     }
 
     // 3. EPILOGUE: Scalar tail loop for remaining unaligned trailing bytes
@@ -1035,28 +1039,39 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
     return 0;
 }
 
-#elif _SEEKER_FUNC == 6
+#elif _SEEKER_FUNC == 6 // 4-bytes AVX2 aligned version
 
+#include <stdint.h>
+#include <immintrin.h>
+
+/* ------------------------------------------------------------------ */
+/* AVX2 4-byte scanner with optional prefetch                         */
+/* ------------------------------------------------------------------ */
+#if defined(__AVX2__)
 static ALWAYS_INLINE __attribute__((target("avx2")))
-uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
+uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r)
+{
     if (r < 4) return 0;
 
-    const uint32_t maxn = r - 3;   /* need n+3 valid for 4-byte match */
+    const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
     /* 1. PROLOGUE: scalar until 32-byte alignment */
     for (; n < maxn && (((uintptr_t)(p + n)) & 31) != 0; n++)
-        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        if (p[n]     == 0x1F && p[n + 1] == 0x8B
         &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
             return n;
 
-    /* 2. VECTOR SCAN: four overlapping loads for 4-byte signature */
     const __m256i v_b0 = _mm256_set1_epi8(0x1F);
     const __m256i v_b1 = _mm256_set1_epi8(0x8B);
     const __m256i v_b2 = _mm256_set1_epi8(0x08);
     const __m256i v_b3 = _mm256_set1_epi8(0x00);
 
-    for (; n + 31 < maxn; n += 32) {
+    for (; n + 31 < maxn; n += 32)
+    {
+
+        _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
+
         __m256i chunk0 = _mm256_load_si256 ((const __m256i *)(p + n    ));
         __m256i chunk1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
         __m256i chunk2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
@@ -1070,18 +1085,167 @@ uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r) {
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
                                          _mm256_and_si256(m2, m3));
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
-
-        if (mask != 0) return n + __builtin_ctz(mask);
+        if (mask) return n + __builtin_ctz(mask);
     }
 
     /* 3. EPILOGUE: scalar tail */
     for (; n < maxn; n++)
-        if (p[n] == 0x1F     && p[n + 1] == 0x8B
+        if (p[n]   == 0x1F && p[n+1] == 0x8B
+        &&  p[n+2] == 0x08 && p[n+3] == 0x00)
+            return n;
+
+    return 0;
+}
+#endif
+
+#elif _SEEKER_FUNC == 7 // 4-bytes AVX2 unaligned version
+
+#if defined(__AVX2__)
+static ALWAYS_INLINE __attribute__((target("avx2")))
+uint32_t chunk_seeker_avx2(const uint8_t *p, const uint32_t r)
+{
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;
+    uint32_t n = 1;
+
+    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
+    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
+    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+    const __m256i v_b3 = _mm256_set1_epi8(0x00);
+
+    for (; n + 32 < maxn; n += 32)  /* nota: n+32, non n+31 */
+    {
+        _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
+
+        __m256i c0 = _mm256_loadu_si256((const __m256i *)(p + n    ));
+        __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
+        __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
+        __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
+
+        __m256i m = _mm256_and_si256(
+                        _mm256_and_si256(_mm256_cmpeq_epi8(c0, v_b0),
+                                         _mm256_cmpeq_epi8(c1, v_b1)),
+                        _mm256_and_si256(_mm256_cmpeq_epi8(c2, v_b2),
+                                         _mm256_cmpeq_epi8(c3, v_b3)));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(m);
+        if (mask) return n + __builtin_ctz(mask);
+    }
+
+    /* 3. EPILOGUE: scalar tail */
+    for (; n < maxn; n++)
+        if (p[n]  == 0x1F && p[n+1] == 0x8B
+        && p[n+2] == 0x08 && p[n+3] == 0x00)
+            return n;
+
+    return 0;
+}
+#endif
+
+#elif _SEEKER_FUNC == 8 // 4-bytes SSE2 aligned version
+
+/* ------------------------------------------------------------------ */
+/* SSE2 4-byte fallback                                               */
+/* Compile with -msse2 or define _USE_SSE2 explicitly                 */
+/* ------------------------------------------------------------------ */
+#if defined(__SSE2__) //|| defined(_USE_SSE2)
+static ALWAYS_INLINE __attribute__((target("sse2")))
+uint32_t chunk_seeker_sse2(const uint8_t *p, const uint32_t r)
+{
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;
+    uint32_t n = 1;
+
+    /* 1. PROLOGUE: scalar until 16-byte alignment */
+    for (; n < maxn && (((uintptr_t)(p + n)) & 15) != 0; n++)
+        if (p[n]     == 0x1F && p[n + 1] == 0x8B
+        &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    const __m128i v_b0 = _mm_set1_epi8(0x1F);
+    const __m128i v_b1 = _mm_set1_epi8(0x8B);
+    const __m128i v_b2 = _mm_set1_epi8(0x08);
+    const __m128i v_b3 = _mm_set1_epi8(0x00);
+
+    for (; n + 15 < maxn; n += 16)
+    {
+        _mm_prefetch((const char *)(p + n + 32), _MM_HINT_T0);
+
+        __m128i chunk0 = _mm_load_si128 ((const __m128i *)(p + n    ));
+        __m128i chunk1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
+        __m128i chunk2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
+        __m128i chunk3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
+
+        __m128i m0 = _mm_cmpeq_epi8(chunk0, v_b0);
+        __m128i m1 = _mm_cmpeq_epi8(chunk1, v_b1);
+        __m128i m2 = _mm_cmpeq_epi8(chunk2, v_b2);
+        __m128i m3 = _mm_cmpeq_epi8(chunk3, v_b3);
+
+        __m128i match = _mm_and_si128(_mm_and_si128(m0, m1),
+                                      _mm_and_si128(m2, m3));
+        uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
+        if (mask) return n + __builtin_ctz(mask);
+    }
+
+    /* 3. EPILOGUE: scalar tail */
+    for (; n < maxn; n++)
+        if (p[n]     == 0x1F && p[n + 1] == 0x8B
         &&  p[n + 2] == 0x08 && p[n + 3] == 0x00)
             return n;
 
     return 0;
 }
+#endif
+
+#elif _SEEKER_FUNC == 9 // 4-bytes SSE2 unaligned version
+
+#if defined(__SSE2__) //|| defined(_USE_SSE2)
+static ALWAYS_INLINE __attribute__((target("sse2")))
+uint32_t chunk_seeker_sse2(const uint8_t *p, const uint32_t r)
+{
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;
+    uint32_t n = 1;
+
+    const __m128i v_b0 = _mm_set1_epi8(0x1F);
+    const __m128i v_b1 = _mm_set1_epi8(0x8B);
+    const __m128i v_b2 = _mm_set1_epi8(0x08);
+    const __m128i v_b3 = _mm_set1_epi8(0x00);
+
+    for (; n + 15 < maxn; n += 16) {
+
+        _mm_prefetch((const char *)(p + n + 32), _MM_HINT_T0);
+
+        __m128i chunk0 = _mm_loadu_si128((const __m128i *)(p + n    ));
+        __m128i chunk1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
+        __m128i chunk2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
+        __m128i chunk3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
+
+        __m128i m0 = _mm_cmpeq_epi8(chunk0, v_b0);
+        __m128i m1 = _mm_cmpeq_epi8(chunk1, v_b1);
+        __m128i m2 = _mm_cmpeq_epi8(chunk2, v_b2);
+        __m128i m3 = _mm_cmpeq_epi8(chunk3, v_b3);
+
+        __m128i m = _mm_and_si128(
+                        _mm_and_si128(_mm_and_si128(m0, v_b0),
+                                      _mm_and_si128(m1, v_b1)),
+                        _mm_and_si128(_mm_and_si128(m2, v_b2),
+                                      _mm_and_si128(m3, v_b3)));
+        uint32_t mask = (uint32_t)_mm_movemask_epi8(m);
+        if (mask) return n + __builtin_ctz(mask);
+    }
+
+    /* 3. EPILOGUE: scalar tail */
+    for (; n < maxn; n++)
+        if (p[n]    == 0x1F && p[n + 1] == 0x8B
+        && p[n + 2] == 0x08 && p[n + 3] == 0x00)
+            return n;
+
+    return 0;
+}
+#endif
 
 #endif
 
@@ -1222,7 +1386,7 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
                 rmn = r - f;
                 set = f;
             }
-            #elif _SEEKER_FUNC == 5 || _SEEKER_FUNC == 6
+            #elif _SEEKER_FUNC >= 5 && _SEEKER_FUNC <= 7
             /* RAF
              * The results indicate that AVX2 chuck seeker makes inflate 2%
              * slower compared to do not seek at all and process everything
@@ -1234,6 +1398,13 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
              */
             strm.avail_in = r;
             set = chunk_seeker_avx2(inbuf, r);
+            if(set) {
+                strm.avail_in = set;
+                rmn = r - set;
+            }
+            #elif _SEEKER_FUNC >= 8 && _SEEKER_FUNC <= 9
+            strm.avail_in = r;
+            set = chunk_seeker_sse2(inbuf, r);
             if(set) {
                 strm.avail_in = set;
                 rmn = r - set;
@@ -1468,7 +1639,7 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     *len = (nwords + 4) << 2;
 #endif
 
-#if 1 //_DEBUG & 0x04 // -----------------------------------------------------------
+#if _DEBUG & 0x04 // -----------------------------------------------------------
     sum = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
@@ -2532,13 +2703,15 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     buf_size = ptgz_header_init(infd, &tbl);
     if(buf_size && buf_size < PTGZ_HEADER_SIZE)
         return 1; // nothing to do
- 
+
     max_out_size = do_output_mmap(ofd);
 
     if(buf_size) {
         goto set_default_values;
     } else
-#if 0 // RAF: 'make test-inout' is 3x faster with full parallelisation
+#if _DO_STRM // RAF: doing 'make test-inout', parallel is:
+             //    - 2x faster than the fastest streaming
+             //    - 3x faster than the slowest streaming
     if (infd == STDIN_FILENO) {
       // what has been read should from STDIN be passed to the 1st chunk
       //goto do_inflate_stream;
@@ -2560,7 +2733,7 @@ fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
     ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
 #endif // ----------------------------------------------------------------------
 
-    if (in_size  < MIN_CHUNK_SIZE) {
+    if (in_size < MIN_CHUNK_SIZE) {
 set_default_values:
         ptr      = _g_ptgz_header;
         out_size = UNOUT_CHUNK_SIZE;
@@ -2577,6 +2750,7 @@ do_inflate_stream:
         ret = _inflate_stream(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
     } else {
+do_inflate_parall:
         out_size = size_by_blocks(zread_max_size(in_size));
         ret = inflate_parallel(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
