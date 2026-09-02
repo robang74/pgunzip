@@ -446,6 +446,7 @@ endfnc:
         c->error |= chunk_write(c);
     }
     c->state = 3;
+
 release:
     if (c->sem_ptr) {
         sem_post(c->sem_ptr);
@@ -1906,9 +1907,10 @@ void _cinit(chunk_t *c, int ofd, int infd, sem_t *sem_ptr,
 #define chunk_list_init(_c) \
     _cinit(_c, ofd, infd, &sem, out_size, ilst[current])
 
-#define _inflate_parallel zlib_inflate_parallel
+#define inflate_parallel zxflate_parallel
+#define deflate_parallel zxflate_parallel
 
-static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
+static int zxflate_parallel(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
 {
     sem_t sem;
@@ -1917,6 +1919,8 @@ static int zlib_inflate_parallel(int infd, int ofd, size_t in_size,
     size_t outlen = 0, offset = 0;
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
+
+    const bool dflt = !opt_decompress;
 
 #if _DEBUG
 fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
@@ -1928,21 +1932,31 @@ fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
     memset(chunks, 0, sizeof(chunks));
     sem_init(&sem, 0, 0);
 
+    /* setup chunk descriptors and output buffers, spawn worker threads */
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
 
-        chunk_list_init(c);
-        if (buf_size && buf) {
-            c->read = buf;
-            c->read_len = buf_size;
-            buf_size = 0;
+        if (dflt) {
+            chunk_init(c, current, ofd, infd, &sem, 0);
+            if (deflate_chunk_init(c)) {
+                nthreads = i;
+                break;
+            }
+            chunk_deflate_start(&c->thr, c);
+        } else {
+            chunk_list_init(c);
+            if (buf_size && buf) {
+                c->read = buf;
+                c->read_len = buf_size;
+                buf_size = 0;
+            }
+            if (inflate_chunk_init(c)) {
+                nthreads = i;
+                break;
+            }
+            chunk_inflate_start(&c->thr, c);
         }
-        if (inflate_chunk_init(c)) {
-            nthreads = i;
-            break;
-        }
-        chunk_inflate_start(&c->thr, c);
 //      pthread_detach(c->thr);
         //RAF: the bottleneck is the next one in the ordered list
         //     since after the first the father starts to write
@@ -1970,9 +1984,9 @@ do_another_loop:
         chunk_t *cb = &chunks[b][i];
 
         if (c->error) {
-            _print2("\nERROR: inflate failed on chunk %d,"
-                " size: %lu -> %lu, state: %d, ofd: %d, error: %d\n",
-                c->idx, c->in_len, c->out_len, c->state, c->ofd, c->error);
+            _print2("\nERROR: %s failed on chunk %d, size: %lu -> %lu,"
+                " state: %d, ofd: %d, error: %d\n", c->action, c->idx,
+                c->in_len, c->out_len, c->state, c->ofd, c->error);
             return c->error;
         }
 
@@ -1982,12 +1996,12 @@ do_another_loop:
         if (!c->thr)
             goto skip_do_new_thread;
 
-#if _DEBUG & 0x40 // -----------------------------------------------------------
-fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n",
-    c->thr, ofd, c->idx, next_idx, _g_tot_chunks, c->out_len, outlen);
+#if _DEBUG & 0x20 // -----------------------------------------------------------
+fprintf(stderr, "%s> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n",
+    c->action, c->thr, ofd, c->idx, next_idx, _g_tot_chunks, c->out_len, outlen);
 #endif // ----------------------------------------------------------------------
 
-        if (!c->out_len && c->state == 3)
+        if (!c->in_len && c->state == 3)
         {
             current--;
             goto dispose;
@@ -1997,16 +2011,35 @@ fprintf(stderr, ">>> pid: %lu, ofd: %d, idx: %d vs %d / %d, outlen: %lu / %lu\n"
         if (!cb->thr && !cb->state
         && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
         ){
-            chunk_list_init(cb);
-            if (inflate_chunk_init(cb)) {
-                c->thr = 0;
+            if (dflt) {
+                chunk_init(cb, current, ofd, infd, &sem, 0);
+                if (deflate_chunk_init(cb)) {
+                    c->thr = 0;
+                } else {
+                    current++;
+                    chunk_deflate_start(&cb->thr, cb);
+    //              pthread_detach(cb->thr);
+                }
             } else {
-                current++;
-                chunk_inflate_start(&cb->thr, cb);
-//              pthread_detach(cb->thr);
+                chunk_list_init(cb);
+                if (inflate_chunk_init(cb)) {
+                    c->thr = 0;
+                } else {
+                    current++;
+                    chunk_inflate_start(&cb->thr, cb);
+    //              pthread_detach(cb->thr);
+                }
             }
         }
+
 skip_do_new_thread:
+
+#if _DEBUG & 0x40 // -----------------------------------------------------------
+if (ofd > STDOUT_FILENO || c->idx == next_idx)
+fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
+    c->action, current, _g_tot_chunks, nthreads, c->idx, next_idx,
+    ofd, c->thr, chunks[b][i].state);
+#endif // ----------------------------------------------------------------------
 
         /* thread write done or ready to */
         if (c->state != 3)
@@ -2027,7 +2060,8 @@ skip_do_new_thread:
                 ? full_write(ofd, c->out, c->out_len)
                 : c->out_len
                 ;
-        //if(list) list[ c->idx ] = c->out_len;
+        if(dflt && ptbl->cur.list)
+            ptbl->cur.list[ c->idx ] = c->out_len;
 
 #if _DEBUG & 0x20 // -----------------------------------------------------------
 //if (ofd > STDOUT_FILENO || c->idx == next_idx)
@@ -2047,22 +2081,13 @@ dispose:
     if (next_idx < current)
         goto do_a_thread_wait;
 
-    // -----------------------------------------------------------
-    // Ending
-    // -----------------------------------------------------------
+// === Ending ==================================================================
 
     _verbout_init(vo);
     verbose_printout(&vo);
-#if 0
-    err = output_finaliser(ofd, &vo, 0);
-#else
-/*
-    if (ftruncate(ofd, outlen) < 0) {
-        perror("ftruncate");
-        return -1;
-    }
-*/
-#endif
+if (dflt) {
+    err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
+}
 
 do_free_n_return:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2414,7 +2439,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if (!opt_decompress)
         goto set_ptbl_list;
 
-// === gunzip ==================================================================
+// === inflate =================================================================
 
     int ret = 0;
     uint32_t *ilst = NULL;
@@ -2463,7 +2488,7 @@ do_inflate_stream:
             out_size, ptr, buf_size, !max_out_size, &tbl);
     } else {
         out_size = size_by_blocks(zread_max_size(in_size));
-        ret = _inflate_parallel(infd, ofd, in_size,
+        ret = inflate_parallel(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
         buf_size = 0;
     }
@@ -2481,9 +2506,7 @@ do_inflate_stream:
 
     goto do_free;
 
-// =============================================================================
-// Threads
-// =============================================================================
+// === deflate =================================================================
 
 set_ptbl_list:
     max_out_size = do_output_mmap(ofd);
@@ -2515,131 +2538,14 @@ set_ptbl_list:
     full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
-_print2("PTGZ2> magic: 0x%08x, ntot: %u, size: %lu, head: %lu\n",
-    *(uint32_t *)&ptr[0], _g_tot_chunks, _g_chunk_size, PTGZ_HEADER_CURSIZE);
+fprintf(stderr, "PTGZ1> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
+fprintf(stderr, "      list: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
+    ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
 #endif // ----------------------------------------------------------------------
 
-// =============================================================================
-
-    /* setup chunk descriptors and output buffers, spawn worker threads */
-    for (uint32_t i = 0; i < nthreads; i++, current++)
-    {
-        chunk_t *c = &chunks[0][i];
-        chunk_init(c, current, ofd, infd, &sem, 0);
-        if (deflate_chunk_init(c)) {
-            nthreads = i;
-            break;
-        }
-        chunk_deflate_start(&c->thr, c);
-//      pthread_detach(c->thr);
-        //RAF: the bottleneck is the next one in the ordered list
-        //     since after the first the father starts to write
-        //     then the bottleneck is the first one, let it go!
-        if(!i) _cpu_relax();
-    }
-
-do_a_thread_wait:
-#if _THR_WAIT
-//RAF: one thread completed, at least as
-// long as, at least, one thread exists.
-    if (current != _g_tot_chunks)
-        if (full_sem_wait(&sem))
-            return -1;
-#else
-    _cpu_relax();
-#endif
-do_another_loop:
-    for(uint32_t a = 0; a < 2; a++)
-    for(uint32_t i = 0, b = !a; i < nthreads; i++)
-    {
-        chunk_t *c  = &chunks[a][i];
-        chunk_t *cb = &chunks[b][i];
-
-        if (c->error) {
-            _print2("file: '%s'\n    compression failed on chunk %d,"
-                " size: %lu, err: %d\n", filename, current + i,
-                    c->out_len, c->error);
-            return c->error;
-        }
-        if (c->state < 2)
-            continue;
-
-        if (!c->thr)
-            goto skip_do_new_thread;
-
-        if (!c->in_len && c->state == 3)
-        {
-            current--;
-            goto dispose;
-        }
-
-        /* create another thread to do work */
-        if (!cb->thr && !cb->state
-        && (_g_tot_chunks ? (current < _g_tot_chunks) : 1)
-        ){
-            chunk_init(cb, current, ofd, infd, &sem, 0);
-            if (deflate_chunk_init(cb)) {
-                c->thr = 0;
-            } else {
-                current++;
-                chunk_deflate_start(&cb->thr, cb);
-//              pthread_detach(cb->thr);
-            }
-        }
-skip_do_new_thread:
-
-#if _DEBUG & 0x20 // -----------------------------------------------------------
-if (ofd > STDOUT_FILENO || c->idx == next_idx)
-fprintf(stderr, ">>> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d\n",
-    current, _g_tot_chunks, nthreads, c->idx, next_idx,
-    ofd, c->thr, chunks[b][i].state);
-#endif // ----------------------------------------------------------------------
-
-        /* thread write done or ready to */
-        if (c->state != 3)
-            continue;
-
-        /* ordered writing on STDOUT, only */
-        if (ofd == STDOUT_FILENO
-        &&  c->idx != next_idx
-        ){
-            continue;
-        }
-
-#if _DEBUG & 0x40 // -----------------------------------------------------------
-fprintf(stderr, ">>> pid: %lu, ofd: %d, nxt: %d / %d \n",
-    c->thr, ofd, next_idx, _g_tot_chunks);
-#endif // ----------------------------------------------------------------------
-
-        /* granting the correct order */
-        next_idx++;
-        if(infd == STDIN_FILENO)
-            _g_read_file_size += c->in_len;
-        outlen += (ofd == STDOUT_FILENO)
-                ? full_write(ofd, c->out, c->out_len)
-                : c->out_len
-                ;
-        if(list) list[ c->idx ] = c->out_len;
-
-dispose:
-        chunk_dispose(c, 0);
-
-        // RAF: another pending work-done might be available
-        goto do_another_loop;
-    }
-
-    // RAF: no pending work-done available
-    // is there something else to wait for?
-    if (next_idx < current)
-        goto do_a_thread_wait;
-
-// =============================================================================
-// Ending
-// =============================================================================
-
-    _verbout_init(vo);
-    ret = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
-    verbose_printout(&vo);
+    ret = deflate_parallel(infd, ofd, _g_chunk_size,
+        WBUF_MAX_SIZE, 0, 0, !max_out_size, ptbl);
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
