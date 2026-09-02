@@ -361,7 +361,7 @@ Interestingly, when writing to `stdout`, `ptgzip` pre-allocates the `FEXTRA` fie
       └──────────────────────────────┘
 ```
 
-In its simplicity the PTGZ format is so effective that what remains isn't achieving the excellence in parallelism (even if it would be great to have and probably also significative in performance) but the I/O orchestration which, in ultimate terms, strongly depends by four main cases created by the combinations of these two double-options pairs: pipe vs file on input / output.
+In its simplicity the PTGZ format is so effective that what remains isn't achieving the excellence in parallelism (even if it would be great to have and probably also significant for performance) but the I/O orchestration which, in ultimate terms, strongly depends on four primary I/O combinations created by these two double-options pairs: pipe vs file on input / output.
 
 ```
 === ./ptgzip -d I/O speed test x30 ===
