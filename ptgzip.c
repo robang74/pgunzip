@@ -52,9 +52,6 @@
 #define PTGZ_LIST_START_OFF   20UL
 #define PTGZ_LIST_MAX_WORDS   16380UL
 #define PTGZ_HEADER_CURSIZE  (PTGZ_HEADER_SIZE + _g_ptgz_list_size)
-#define PTGZ_HEADER_MAXSIZE  (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
-
-static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
 
 static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
 static int opt_help       = 0;    /* -h, --help */
@@ -91,6 +88,16 @@ typedef struct {
 //RAF: part that requires to be completely reset //
     uint8_t   end;
 } chunk_t ALIGNED4;
+
+#if 0
+#define MAX_SIZE(_a,_b) ((_a > _b) ? _a : _b)
+#define PTGZ_HEADAT_MAXSIZE (MAX_SIZE(PTGZ_HEADER_SIZE, sizeof(pgunz_t)))
+#define PTGZ_HEADER_MAXSIZE (PTGZ_HEADAT_MAXSIZE + (PTGZ_LIST_MAX_WORDS << 2))
+#else
+#define PTGZ_HEADER_MAXSIZE (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
+#endif
+
+static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
 
 #define act_deflt "deflate"
 #define act_inflt "inflate"
@@ -233,7 +240,7 @@ static bool chunk_read(chunk_t *c);
 static bool chunk_write(chunk_t *c);
 static size_t full_write(int ofd, const void *buf, size_t len);
 static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
-static const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
+static void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
 
 // =============================================================================
 
@@ -1368,8 +1375,8 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
         perror("malloc");
         return p;
     }
-
     memset(p, 0, len);
+
     p->nwords = nwords;
     p->cur.size = nwords;
     u = (uint8_t *)p;
@@ -1409,7 +1416,7 @@ uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
     *len = (nwords + 4) << 2;
 #endif
 
-#if _DEBUG & 0x04 // -----------------------------------------------------------
+#if 1 //_DEBUG & 0x04 // -----------------------------------------------------------
     sum = 0;
     for(i = 0; i < nwords + 4; i++)
         sum += list[i];
@@ -1629,9 +1636,9 @@ write_table:
     size_t len = 0;
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
-    uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
     #define _WRT_PTBL 0
     #if _WRT_PTBL
+    uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
     #else
     len = _g_tot_chunks << 2;
     #endif
@@ -1647,8 +1654,6 @@ write_table:
                 (const void *)u, len);
             vo->olen += len;
         #else
-            __builtin_memcpy(&_g_ptgz_header[PTGZ_LIST_START_OFF],
-                (const void *)list, len);
             len = PTGZ_HEADER_CURSIZE;
             __builtin_memcpy(_g_out_mmap_base + vo->olen,
                 _g_ptgz_header, len);
@@ -1663,8 +1668,6 @@ write_table:
         vo->olen += len;
         len = 0;
     #else
-        __builtin_memcpy(&_g_ptgz_header[PTGZ_LIST_START_OFF],
-            (const void *)list, len);
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
@@ -1762,7 +1765,7 @@ head -c64 libz.tar.gz | hexdump -C
 */
 
 static ALWAYS_INLINE
-const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
+void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
     uint8_t *buf = _g_ptgz_header;
 
@@ -1811,7 +1814,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     buf[19] = (uint8_t)(in_len >> 24);
 
     // Termination 10 bytes from buf[20]
-    buf[20 + size] = 0x03;        // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    buf[20 + size] = 0x03; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
 #if 0
     buf[21] = 0x00;
     buf[22] = 0x00; buf[23] = 0x00; buf[24] = 0x00; buf[25] = 0x00; // CRC32
@@ -1821,7 +1824,7 @@ const uint8_t *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
     //__builtin_memset(&buf[21], 0, PTGZ_HEADER_MAXSIZE - 21);
 #endif
 
-    return buf; // return a local value but it is fine
+    return &buf[PTGZ_LIST_START_OFF]; // return a local value but it is fine
 }
 
 static ALWAYS_INLINE
@@ -2459,7 +2462,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     pgunz_t tbl, *ptbl = &tbl;
     size_t buf_size = 0;
     uint8_t *ptr = NULL;
-    uint32_t *list = NULL;
     uint32_t next_idx = 0, current = 0;
 
     chunk_t chunks[2][MAX_THREADS];
@@ -2493,7 +2495,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     max_out_size = do_output_mmap(ofd);
 
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ1> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
     ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
 fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
     ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
@@ -2540,7 +2542,6 @@ do_inflate_stream:
 set_ptbl_list:
     max_out_size = do_output_mmap(ofd);
     ptbl = create_pgunz_table(_g_tot_chunks);
-    list = ptbl->cur.list;
 
     _g_ptgz_list_size = _g_tot_chunks;
     if(_g_ptgz_list_size > PTGZ_LIST_MAX_WORDS)
@@ -2563,11 +2564,11 @@ set_ptbl_list:
      * can be transferred into the header, like it happens during the
      * creation from a seekable file as data input source.
      */
-    ptr = (void *)ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
-    full_write(ofd, ptr, PTGZ_HEADER_CURSIZE);
+    ptbl->cur.list = ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
+    full_write(ofd, _g_ptgz_header, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ1> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
     ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
 fprintf(stderr, "      list: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
     ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
@@ -2587,7 +2588,6 @@ do_free:
     }
     if(ofd) close(ofd);
     free(ptbl);
-    free(list);
     #endif
 
     return ret;
