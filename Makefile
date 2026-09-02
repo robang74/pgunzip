@@ -16,10 +16,8 @@ LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
-TARGET    = ptgzip
-TARGETS   = pxgzip plgzip bbox/gzip pmgzip pugzip $(TARGET)
+TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
 GZCMD     = $(shell command -v pigz gzip | head -n1)
-SRC       = ptgzip.c
 NTS      ?= 30
 
 CC       ?= gcc
@@ -33,7 +31,7 @@ MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 
 .PHONY: all clean distclean source
 
-all: $(TARGETS)
+all: libzall.a $(TARGETS)
 	@echo
 	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
 	@du -k libzall.a && printf "\t%s\n\n" "$$(file libzall.a)"
@@ -94,8 +92,8 @@ bbox/gzip: bbox/.config | bbox
 # -----------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
 # -----------------------------------------------------------------------------
-$(TARGET): $(SRC) libzall.a
-	$(CC) -o $@ $< -I$(BUILD_DIR) -I$(LIBZ_DIR) libzall.a \
+ptgzip: ptgzip.c libzall.a
+	$(CC) -o $@ $^ -I$(BUILD_DIR) -I$(LIBZ_DIR) \
 	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
 
 pxgzip: pxgzip.c
