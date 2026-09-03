@@ -181,9 +181,13 @@ blkline:
 
 tests1: _test-clean _test-basic  test-inout
 
-tests2: _test-clean _test-basic _test-speed  test-speef
+tests2: tests1 _test-speed _test-speef
+	@echo
 
-tests3: _test-clean _test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
+tests3: tests2 _speef-gunzp _speed-gunzp _speed-inout
+	@echo
+
+tests4: tests3 _test-stress _speed-stress
 	@echo
 
 devel: $(LIBZ_A)
