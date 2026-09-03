@@ -1506,11 +1506,11 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
 {
     pgunz_t *p;
     uint8_t *u;
-    uint32_t n, len;
+    uint32_t n, len, nw;
 
     if(!nwords)
-        nwords = PTGZ_LIST_MAX_WORDS;
-    n   = _mpceil(nwords << 2);
+        nw = PTGZ_LIST_MAX_WORDS;
+    n   = _mpceil(nw << 2);
     len = sizeof(pgunz_t) + n;
     p   = malloc(len);
     if(!p) {
@@ -1520,7 +1520,7 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
     memset(p, 0, len);
 
     p->nwords = nwords;
-    p->cur.size = nwords;
+    p->cur.size = nw;
     u = (uint8_t *)p;
     p->cur.list = (uint32_t *)(u + sizeof(pgunz_t));
     u = (uint8_t *)&p->magicw;
@@ -1778,13 +1778,17 @@ write_table:
      */
 
     size_t len = 0;
+/*
+    fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
+    vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
+*/
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
 
     #if _WRT_PTBL
     uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
     #else
-    len = _g_tot_chunks << 2;
+    len = vo->nidx << 2;
     #endif
 
     if (_g_out_mmap_base) {
@@ -1815,10 +1819,14 @@ write_table:
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
+/*
+        fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
+        vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
+*/
     #endif
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
-            _g_tot_chunks << 2, PTGZ_LIST_START_OFF);
+            len, PTGZ_LIST_START_OFF);
         len = 0;
     }
 
@@ -1972,6 +1980,41 @@ void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 }
 
 static ALWAYS_INLINE
+void ptgz_header_print2(void)
+{
+    for(int i = 0, n = 0; i < PTGZ_HEADER_CURSIZE; i += 4)
+    {
+        if((i & 15) == 0 ) fprintf(stderr, "\n%4u: ", n++);
+        fprintf(stderr, "0x%08X ",
+            *(uint32_t *)&_g_ptgz_header[i]);
+    }
+    fprintf(stderr, "\n\n");
+}
+
+static ALWAYS_INLINE
+void _ptgz_header_update(int16_t size)
+{
+    uint8_t *buf = _g_ptgz_header;
+
+    uint16_t plen = size + 4;
+    // XLEN = Subfield ID (2B) + Subfield LEN (2B) + Payload Length
+    uint16_t xlen = plen + 4;
+
+    // FEXTRA field: XLEN 2 bytes
+    buf[10] = (uint8_t)(xlen     );
+    buf[11] = (uint8_t)(xlen >> 8);
+
+    // Subfield Payload Length 2 bytes
+    buf[14] = (uint8_t)(plen     );
+    buf[15] = (uint8_t)(plen >> 8);
+
+    buf[20 + size] = 0x03; // Raw DEFLATE void (BFINAL=1, BTYPE=00)
+    memset(&buf[21 + size], 0, 9);
+}
+
+#define ptgz_header_update() _ptgz_header_update(_g_ptgz_list_size)
+
+static ALWAYS_INLINE
 uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size)
 {
     uint16_t plen;
@@ -2104,7 +2147,7 @@ static int zxflate_parallel(int infd, int ofd, size_t in_size,
     const bool cmpr = !opt_decompress;
 
 #if _DEBUG
-fprintf(stderr, "\n>>> zpd, is: %lu, os: %lu, bs: %lu, tot: %u\n",
+fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
     in_size, out_size, buf_size, _g_tot_chunks);
 #endif
 
@@ -2258,6 +2301,18 @@ dispose:
     if (next_idx < current)
         goto do_a_thread_wait;
 
+    if (cmpr && ptbl->cur.list) {
+//      fprintf(stderr, "upd: %u -> %u\n", next_idx, next_idx << 2);
+        _g_ptgz_list_size = next_idx << 2;
+        ptbl->nwords      = next_idx;
+//      ptgz_header_print2();
+        ptgz_header_update();
+//      ptgz_header_print2();
+    }
+#if 0 //RAF: absolutely not, the zero is (wrongly?) used as discriminant
+    if (infd == STDIN_FILENO && !_g_tot_chunks)
+        _g_tot_chunks = next_idx;
+#endif
 // === Ending ==================================================================
 
     _verbout_init(vo);
