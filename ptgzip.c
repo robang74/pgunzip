@@ -1921,6 +1921,8 @@ void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size)
 {
     uint8_t *buf = _g_ptgz_header;
 
+    memset(_g_ptgz_header, 0, size + PTGZ_HEADER_SIZE);
+
     // 1. Fixed Header GZIP 10 bytes
     if (buf[0] == 0) {            // Set once, because fixed fields
         buf[0]  = 0x1f;           // Magic 2 bytes
