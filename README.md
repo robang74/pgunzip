@@ -389,6 +389,10 @@ The header search currently matches the 3-byte sequence `1f 8b 08`, which could 
 
 The reading window is pre-sized, knowing the original size of reading and to read at least 38 bytes (30 header bytes plus an 8-byte margin) to guarantee hitting chunk boundaries. Alternatively, carrying over the unconsumed trailing 64 bytes to the front of the buffer on subsequent reads ensures reliable parsing across arbitrary window sizes (cfr. read-ahead feature which has been recently integrated with the magic-seeker function).
 
+#### Fixing release v0.7.1
+
+The release v0.7 achieved relevant goals but it was a little immature in terms of usability because it triggers harmless but annoying warnings that can break the scriptability. Thus the v0.7.1, is released to fix a few minor bugs and made an important step forward being a full-usable command line too.
+
 <br>
 
 ## Deflating
