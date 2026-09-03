@@ -149,13 +149,14 @@ pugzip: ptgzip.c libzall.a
 # Tests
 # -----------------------------------------------------------------------------
 
-.PHONY: tests blkline speed stress iocat crash devel
-.PHONY:  test-clean  test-basic  test-speed  test-pigzc
-.PHONY: _test-clean _test-basic _test-speed _test-pigzc
-.PHONY:  test-speef  test-gzipc  test-crash  test-pigzf
-.PHONY: _test-speef _test-gzipc _test-crash _test-pigzf
-.PHONY:  test-gzipf _test-gzipf  test-zsize _test-zsize
-.PHONY: _test-inout  test-inout _speed-stress speed-stress
+.PHONY: tests1 tests2 tests3 blkline speed stress iocat crash devel
+.PHONY:  test-clean    test-basic   test-speed   test-pigzc
+.PHONY: _test-clean   _test-basic  _test-speed  _test-pigzc
+.PHONY:  test-speef    test-gzipc   test-crash   test-pigzf
+.PHONY: _test-speef   _test-gzipc  _test-crash  _test-pigzf
+.PHONY:  test-gzipf   _test-gzipf   test-zsize  _test-zsize
+.PHONY: _test-inout    test-inout
+.PHONY: _speed-stress speed-stress _speed-inout speed-inout
 
 CRASH_FLAGS ?= -D_THR_WAIT=1 -D_GZ_WRITE=0 -D_USE_MMAP=1 -D_USE_FREE=0
 IOWAY_FLAGS ?= -D_THR_WAIT=0 -D_GZ_WRITE=1 -D_USE_MMAP=0 -D_USE_FREE=1
@@ -178,7 +179,11 @@ libz.tar.gz: libz.tar | ptgzip
 blkline:
 	@echo
 
-tests: test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
+tests1: _test-clean _test-basic  test-inout
+
+tests2: _test-clean _test-basic _test-speed  test-speef
+
+tests3: _test-clean _test-basic _test-speed _test-pigzc blkline _test-speef _test-gzipf
 	@echo
 
 devel: $(LIBZ_A)
@@ -342,7 +347,7 @@ _test-gunzp: libz.tar.gz $(CMD2T)
 
 test-gunzp: _test-gunzp blkline
 
-_test-inout: libz.tar libz.tar.gz $(CMD2T)
+_speed-inout: libz.tar libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) I/O speed test x$(NTS) ===\n\n"
 	nl=/dev/null && cmd="dd if=libz.tar bs=1M status=none |\
 	    $(CMD2T) $(CMDVC)" && sync && \
@@ -353,6 +358,23 @@ _test-inout: libz.tar libz.tar.gz $(CMD2T)
 	    $(CMD2T) -d $(CMDVC)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
+
+speed-inout: _speed-inout blkline
+
+_test-inout: libz.tar $(CMD2T)
+	@printf "\n=== $(CMD2T) I/O test suite ===\n\n"
+	sha1sum libz.tar && rm -f libz.tar.gz && $(GZCMD) -kf libz.tar
+	@printf "\n--- $(CMD2T) -c I/O self test ---\n"
+	cat libz.tar    | $(CMD2T)    $(CMDVC) | tee test.gz | $(ZCATCMD) | sha1sum
+	@printf "\n--- $(CMD2T) -c I/O pipe test ---\n"
+	cat libz.tar    | $(CMD2T)    $(CMDVC) | tee test.gz | $(GZCMD) -dc | sha1sum
+	@printf "\n--- $(CMD2T) -d I/O gzip test ---\n"
+	cat libz.tar.gz | $(CMD2T) -d $(CMDVC) | tee test.dz | sha1sum
+	@printf "\n--- $(CMD2T) -d I/O self test ---\n"
+	cat test.gz     | $(CMD2T) -d $(CMDVC) | sha1sum
+	@printf "\n--- $(CMD2T) -d I/O check test ---\n"
+	cat test.gz     | $(GZCMD) -dc | sha1sum
+	@rm -f test.[dg]z
 
 test-inout: _test-inout blkline
 
