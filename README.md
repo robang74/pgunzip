@@ -1,10 +1,16 @@
 # pgunzip
 
+**`(c)`** 2026 – Roberto A. Foglietta &lt;roberto.foglietta@gmail.com&gt;, CC BY-NC-ND 4.0
+
+- &nbsp;Click on the button to know how to &nbsp;[![Sponsor me](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ff69b4?style=flat&logo=github)](https://github.com/sponsors/robang74)&nbsp; this project and get in touch with me.
+
+---
+
 Simplicity is the ultimate sophistication (cit.)
 
 > [!WARNING]
->
-> This is a **experimental** project not aiming to be a product, but to be **demonstrative**. Therefore it is distributed in source only form and during compilation mixes stuff from different sources in a way that distributing the binaries could potentially infringe the licensing terms of those sources. However, **personal use** is fine, especially for study and research.
+> 
+> This is a **experimental** project not aiming to be a product, but to be **demonstrative**, to present a new PTGZ format GZIP 100% back-compatible based on RFC-1952 standard. Therefore it is distributed in source only form and during compilation mixes stuff from different sources in a way that distributing the binaries could potentially infringe the licensing terms of those sources. However, **personal use** is fine, especially for study and research.
 
 ### Index
 
