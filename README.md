@@ -15,6 +15,7 @@ Simplicity is the ultimate sophistication (cit.)
 ### Index
 
 - [Quick Overview](#quick-overview)
+- [How It Works](#how-it-works)
 - [Rationale](#rationale) about un/gzip parallel format benefits
     - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
     - [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06) &dash; [Updates v0.7](#updates-v07)
@@ -43,6 +44,40 @@ Its relative performances tend to improve in the real-world scenarios:
 - re-ordering the `PTGZ` table fields to act as header, creates a stand-alone new format
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
+
+<br>
+
+## How It Works
+
+The standard RFC 1952 (1996) allows to concatenate a multiple .gz files in a single stream:
+
+- `gzip::[ [header] [data] ] gzip::[ [header] [data] ] ... gzip::[ [header] [data] ]`
+
+The simplest way to generate this sequence is splitting the file to compress in same-sized chunks:
+
+- `orig::[   data chunk    ] orig::[   data chunk    ] ... orig::[   data chunk    ]`
+
+The compressed chunks aren't the same size, therefore `pgunzip` should know them in advance.
+
+The simplest way is to fix a max data chunk size in a way that `1f 8b 08` can be searched by.
+
+The standard RFC 1952 (1996) allows the `FEXTRA` field that can contain upto 2^16 - 1 bytes.
+
+- `gzip::[ [header] [list] ] ( sequence of gzipped chunks )`
+
+The best way is to provide in advance a list of cumulative offsets to immediately separate chunks.
+
+In compression, when reading from STDIN, the total data size is unknown, a fixed chunk size is used.
+
+This fixed size is declared as the first member of the list, the others are the lengths of pieces.
+
+- `gzip::[ [header] [size, list] ] ( sequence of gzipped chunks )`
+
+In the worst case the size of the data chunk is known in advance but nothing else and decompression can be parallelised by using that size within which the magic number can be found and each compressed chunk can be separated.
+
+The additional overhead in computational power depends on the availability of vetorialised instructions like SSE2 (2000) or AVX2 (2013) or more modern ones. However, since 4x parallelism is from 2007, the SSE2 are always available where they matter.
+
+The PTGZ format is 100% back-compatible because it is totally contained in RFC 1952 standard.
 
 <br>
 
