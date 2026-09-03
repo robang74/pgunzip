@@ -1495,11 +1495,27 @@ typedef struct ALIGNED4 {
     size_t osze;
     size_t olen;
     size_t blen;
+    size_t soff;
     int vlvl;
     int infd;
+    int otfd;
 } __attribute__ ((packed)) vrbout_t;
 
 const uint8_t ptgz_magic_str[4] = { "ptgz" };
+
+#define _verbout_init(_vo) {  \
+    _vo.ptbl = ptbl;          \
+    _vo.vlvl = opt_verbose;   \
+    _vo.nthr = nthreads;      \
+    _vo.nidx = next_idx;      \
+    _vo.isze =  in_size;      \
+    _vo.osze = out_size;      \
+    _vo.blen = buf_size;      \
+    _vo.olen = outlen;        \
+    _vo.infd = infd;          \
+    _vo.otfd = ofd;           \
+}
+
 
 static
 pgunz_t *create_pgunz_table(uint32_t nwords)
@@ -1699,8 +1715,25 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+static ALWAYS_INLINE
+void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
+{
+    size_t len = vo->ptbl->cur.list[i];
+    // RAF: it should never happens, by design
+    if (!len) return;
+
+    if (_g_out_mmap_base)
+        __builtin_memmove( _g_out_mmap_base + vo->olen,
+                           _g_out_mmap_base + vo->soff,  len);
+    else
+    if (full_rcopy(vo->otfd, vo->olen, vo->soff, len) != len)
+        exit(-1);
+
+    vo->olen += len;
+}
+
 static
-int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
+int output_finaliser(int ofd, vrbout_t *vo)
 {
     uint32_t *list = vo->ptbl->cur.list;
 
@@ -1729,32 +1762,12 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
      * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
      */
-    if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base + offset;
-        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < vo->nidx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst, src, len);
-            dst += len;
-        }
-        vo->olen += dst - _g_out_mmap_base;
-    } else {
-        int i;
-        off_t src = offset;
-        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < vo->nidx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            if (full_rcopy(ofd, dst, src, len) != len)
-                return 1;
-            dst += len;
-        }
-        vo->olen = dst;
+    vo->soff = PTGZ_HEADER_CURSIZE;
+    vo->olen = PTGZ_HEADER_CURSIZE + list[0];
+    for (uint32_t i = 1; i < vo->nidx; i++) {
+        vo->soff += WBUF_MAX_SIZE;
+        do_copy_range_on_output_file(i, vo);
     }
-    vo->olen += offset;
 
 skip_reorgnz:
     /* Update vo->olen and truncate remaining sparse tail */
@@ -1848,18 +1861,6 @@ write_table:
 #endif // ----------------------------------------------------------------------
 
     return 0;
-}
-
-#define _verbout_init(_vo) {  \
-    _vo.ptbl = ptbl;          \
-    _vo.vlvl = opt_verbose;   \
-    _vo.nthr = nthreads;      \
-    _vo.nidx = next_idx;      \
-    _vo.isze =  in_size;      \
-    _vo.osze = out_size;      \
-    _vo.blen = buf_size;      \
-    _vo.olen = outlen;        \
-    _vo.infd = infd;          \
 }
 
 /* RAF
@@ -2319,7 +2320,7 @@ dispose:
 
     _verbout_init(vo);
     if (cmpr)
-        err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
+        err = output_finaliser(ofd, &vo);
 
 do_free_n_return:
     verbose_printout(&vo);
