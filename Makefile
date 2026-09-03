@@ -216,7 +216,7 @@ speed: $(CMD2T) _test-speed _test-speef blkline
 
 _speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
-	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC); done' \
+	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC) $(ZLVL); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" | dd bs=1M of=$$nl
@@ -227,14 +227,22 @@ speed-stress: stress-speed
 
 stress-speed: _speed-stress blkline
 
-STRCMD := $(CMD2T) $$i $(CMDVC) -1 | { $(ZCATCMD) || echo $$i >&2; }
+STRCMD := $(CMD2T) $$i $(CMDVC) $(ZLVL) | { $(ZCATCMD) || echo $$i >&2; }
 
-_test-stress: libz.tar $(CMD2T)
+__test-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(STRCMD); done' \
     && sync && echo "$$cmd" && nl=/dev/null \
     && list="$(shell find /bin/ -type f | sort)" \
     && time eval "$$cmd" >$$nl
+
+_test-stress:
+	@echo
+	@make __test-stress ZLVL=1 blkline
+
+_full-stress: libz.tar $(CMD2T)
+	@printf "\n=== $(CMD2T) full stress test on /bin/ ===\n\n"
+	@for i in $$(seq 1 9); do make test-stress ZLVL=-$$i; echo; done 
 
 stress-test: test-stress
 
@@ -242,10 +250,11 @@ _stress-test: _test-stress
 
 test-stress: _test-stress blkline
 
+full-stress: _full-stress blkline
+
 stress: $(CMD2T) _speed-stress _test-stress
 	@echo
 	@make ZCATCMD="$(GZCMD) -dc" test-stress
-	@echo
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
@@ -384,7 +393,7 @@ test-inout: _test-inout blkline
 
 _test-speed: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) libz.tar -kf $(CMDVC)" && sync && \
+	nl=/dev/null && cmd="$(CMD2T) libz.tar -kf $(CMDVC) $(NP) $(ZLVL)" && sync && \
     eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done | dd bs=1M of=$$nl
 
@@ -392,7 +401,7 @@ test-speed: _test-speed blkline
 
 _test-speef: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) libz.tar -kf $(CMDVF) $(NP)" && sync && \
+	nl=/dev/null && cmd="$(CMD2T) libz.tar -kf $(CMDVF) $(NP) $(ZLVL)" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done; sync
 
