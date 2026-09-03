@@ -1418,6 +1418,13 @@ endfunc:
 // Prep
 // =============================================================================
 
+#ifndef _WRT_PTBL
+#define _WRT_PTBL 0
+#endif
+
+#define align_len_for_tbl(_v) { if(_WRT_PTBL && list) \
+            _v->olen = (((_v->olen + 3) >> 2) << 2); }
+
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
 #define TABLE_ITEMS ((uint32_t)_g_tot_chunks + 4)
@@ -1562,6 +1569,8 @@ fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
     return u;
 }
 
+#if _WRT_PTBL
+
 static ALWAYS_INLINE
 pgunz_t *read_pgunz_table(int fd, int *err)
 {
@@ -1626,6 +1635,8 @@ fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n",
     return ptbl;
 }
 
+#endif //_WRT_PTBL
+
 static
 void verbose_printout(vrbout_t *vo)
 {
@@ -1687,8 +1698,6 @@ void verbose_printout(vrbout_t *vo)
         );
     }
 }
-
-#define align_len_for_tbl(_v) { if(list) _v->olen = (((_v->olen + 3) >> 2) << 2); }
 
 static
 int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
@@ -1771,7 +1780,7 @@ write_table:
     size_t len = 0;
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
-    #define _WRT_PTBL 0
+
     #if _WRT_PTBL
     uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
     #else
