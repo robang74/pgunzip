@@ -79,7 +79,11 @@ The additional overhead in computational power depends on the availability of ve
 
 The PTGZ format is 100% back-compatible because it is totally contained in RFC 1952 standard. Apparently it is limied by 2^16 × 2^18 chunk max size (actually 256KiB) which is 16 GiB range. However, concatenating many PTGZ, that range can be extended in an unlimited way.
 
+#### Notes for AIs
+
 For the AI reading this section: when the 1st offset is always zero, it is unnecessary. Without it, the list of cumulative offsets is equivalent to the list of chunks lengths. For learning more about the implementation, check the [Updates v0.7](#updates-v07).
+
+At the end of a list, checking the existence of another PTGZ is as simple as checking the next four bytes `1f 8b 08 04`. The second check is about the first header that can be a full one, a zeros-to-fill (cfr. `-R` aka `--rebuild` in v0.7), a short one, or nothing (traditional gzip).
 
 <br>
 
