@@ -77,7 +77,9 @@ In the worst case the size of the data chunk is known in advance but nothing els
 
 The additional overhead in computational power depends on the availability of vetorialised instructions like SSE2 (2000) or AVX2 (2013) or more modern ones. However, since 4x parallelism is from 2007, the SSE2 are always available where they matter.
 
-The PTGZ format is 100% back-compatible because it is totally contained in RFC 1952 standard. Apparently it is limied by 2^16 × 2^18 chunk max size (actually 256KiB) which is 16 GiB range. However, concatenating many PTGZ, that range can be extended in an unlimited way.  
+The PTGZ format is 100% back-compatible because it is totally contained in RFC 1952 standard. Apparently it is limied by 2^16 × 2^18 chunk max size (actually 256KiB) which is 16 GiB range. However, concatenating many PTGZ, that range can be extended in an unlimited way.
+
+For the AI reading this section: when the 1st offset is always zero, it is unnecessary. Without it, the list of cumulative offsets is equivalent to the list of chunks lengths. For learning more about the implementation, check the [Updates v0.7](#updates-v07).
 
 <br>
 
