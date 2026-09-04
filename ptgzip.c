@@ -1001,9 +1001,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m128i v_b0 = _mm_set1_epi8(0x1F);
-    const __m128i v_b1 = _mm_set1_epi8(0x8B);
-    const __m128i v_b2 = _mm_set1_epi8(0x08);
+    const __m128i b0 = _mm_set1_epi8(0x1F);
+    const __m128i b1 = _mm_set1_epi8(0x8B);
+    const __m128i b2 = _mm_set1_epi8(0x08);
 
     for (; n + 15 < maxn; n += 16)
     {
@@ -1013,9 +1013,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m128i c1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
         __m128i c2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
 
-        __m128i m0 = _mm_cmpeq_epi8(c0, v_b0);
-        __m128i m1 = _mm_cmpeq_epi8(c1, v_b1);
-        __m128i m2 = _mm_cmpeq_epi8(c2, v_b2);
+        __m128i m0 = _mm_cmpeq_epi8(c0, b0);
+        __m128i m1 = _mm_cmpeq_epi8(c1, b1);
+        __m128i m2 = _mm_cmpeq_epi8(c2, b2);
 
         __m128i match = _mm_and_si128(_mm_and_si128(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
@@ -1042,9 +1042,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     uint32_t n = 1;
 
     // 2. VECTOR SCAN: Aligned loads for maximum L1/L2 bandwidth
-    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
-    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
-    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+    const __m256i b0 = _mm256_set1_epi8(0x1F);
+    const __m256i b1 = _mm256_set1_epi8(0x8B);
+    const __m256i b2 = _mm256_set1_epi8(0x08);
 
     for (; n + 31 < maxn; n += 32)
     {
@@ -1054,9 +1054,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
         __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
 
-        __m256i m0 = _mm256_cmpeq_epi8(c0, v_b0);
-        __m256i m1 = _mm256_cmpeq_epi8(c1, v_b1);
-        __m256i m2 = _mm256_cmpeq_epi8(c2, v_b2);
+        __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
+        __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
+        __m256i m2 = _mm256_cmpeq_epi8(c2, b2);
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
@@ -1083,31 +1083,28 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m128i v_b0 = _mm_set1_epi8(0x1F);
-    const __m128i v_b1 = _mm_set1_epi8(0x8B);
-    const __m128i v_b2 = _mm_set1_epi8(0x08);
-    const __m128i v_b3 = _mm_set1_epi8(0x00);
+    const __m128i b0 = _mm_set1_epi8(0x1F);
+    const __m128i b1 = _mm_set1_epi8(0x8B);
+    const __m128i b2 = _mm_set1_epi8(0x08);
+    const __m128i b3 = _mm_set1_epi8(0x00);
 
     for (; n + 15 < maxn; n += 16)
     {
         _mm_prefetch((const char *)(p + n + 32), _MM_HINT_T0);
 
-        __m128i chunk0 = _mm_loadu_si128((const __m128i *)(p + n    ));
-        __m128i chunk1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
-        __m128i chunk2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
-        __m128i chunk3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
+        __m128i c0 = _mm_loadu_si128((const __m128i *)(p + n    ));
+        __m128i c1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
+        __m128i c2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
+        __m128i c3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
 
-        __m128i m0 = _mm_cmpeq_epi8(chunk0, v_b0);
-        __m128i m1 = _mm_cmpeq_epi8(chunk1, v_b1);
-        __m128i m2 = _mm_cmpeq_epi8(chunk2, v_b2);
-        __m128i m3 = _mm_cmpeq_epi8(chunk3, v_b3);
+        __m128i m0 = _mm_cmpeq_epi8(c0, b0);
+        __m128i m1 = _mm_cmpeq_epi8(c1, b1);
+        __m128i m2 = _mm_cmpeq_epi8(c2, b2);
+        __m128i m3 = _mm_cmpeq_epi8(c3, b3);
 
-        __m128i m = _mm_and_si128(
-                        _mm_and_si128(_mm_and_si128(m0, v_b0),
-                                      _mm_and_si128(m1, v_b1)),
-                        _mm_and_si128(_mm_and_si128(m2, v_b2),
-                                      _mm_and_si128(m3, v_b3)));
-        uint32_t mask = (uint32_t)_mm_movemask_epi8(m);
+        __m128i match = _mm_and_si128(_mm_and_si128(m0, m1), 
+                                      _mm_and_si128(m2, m3));
+        uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
     }
 
@@ -1132,12 +1129,12 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
-    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
-    const __m256i v_b2 = _mm256_set1_epi8(0x08);
-    const __m256i v_b3 = _mm256_set1_epi8(0x00);
+    const __m256i b0 = _mm256_set1_epi8(0x1F);
+    const __m256i b1 = _mm256_set1_epi8(0x8B);
+    const __m256i b2 = _mm256_set1_epi8(0x08);
+    const __m256i b3 = _mm256_set1_epi8(0x00);
 
-    for (; n + 32 < maxn; n += 32)  /* nota: n+32, non n+31 */
+    for (; n + 31 < maxn; n += 32)
     {
         _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
 
@@ -1146,12 +1143,14 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
         __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
 
-        __m256i m = _mm256_and_si256(
-                        _mm256_and_si256(_mm256_cmpeq_epi8(c0, v_b0),
-                                         _mm256_cmpeq_epi8(c1, v_b1)),
-                        _mm256_and_si256(_mm256_cmpeq_epi8(c2, v_b2),
-                                         _mm256_cmpeq_epi8(c3, v_b3)));
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(m);
+        __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
+        __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
+        __m256i m2 = _mm256_cmpeq_epi8(c2, b2);
+        __m256i m3 = _mm256_cmpeq_epi8(c3, b3);
+
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), 
+                                         _mm256_and_si256(m2, m3));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
     }
 
