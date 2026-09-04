@@ -51,11 +51,11 @@ The aim of this project is to provide 3rd-party verifiable evidence that the new
 
 The standard RFC 1952 (1996) allows to concatenate a multiple .gz files in a single stream:
 
-- `gzip::[ [header] [data] ] gzip::[ [header] [data] ] ... gzip::[ [header] [data] ]`
+- `gzip::[ [header] [data] ] ... gzip::[ [header] [data] ]`
 
 The simplest way to generate this sequence is splitting the file to compress in same-sized chunks:
 
-- `orig::[   data chunk    ] orig::[   data chunk    ] ... orig::[   data chunk    ]`
+- `orig::[   data chunk    ] ... orig::[   data chunk    ]`
 
 The compressed chunks aren't the same size, therefore `pgunzip` should know them in advance.
 
@@ -71,7 +71,7 @@ In compression, when reading from STDIN, the total data size is unknown, a fixed
 
 This fixed size is declared as the first member of the list, the others are the lengths of pieces.
 
-- `gzip::[ [header] [size, list] ] ( sequence of gzipped chunks )`
+- `gzip::[ [header] [size, list] ] ( sequence of .gz chunks )`
 
 In the worst case the size of the data chunk is known in advance but nothing else and decompression can be parallelised by using that size within which the magic number can be found and each compressed chunk can be separated.
 
