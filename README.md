@@ -45,6 +45,8 @@ Its relative performances tend to improve in the real-world scenarios:
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
+- v0.7 inflates at 1.3GB/s from file on a x390 where `dd bs=1M` does 1.5GB/s
+
 The field `FEXTRA` was defined by RFC-1952 (1996), and the `PTGZ` format leverages it for supporting the parallelism of `.gz` inflate. This is the **novelty**: how that field is used and why. Because of that novelty the claim of a new format and the `PTGZ` naming.
 
 <br>
