@@ -1731,6 +1731,8 @@ void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
     vo->olen += len;
 }
 
+#define _DO_PREM 1
+
 static
 int output_finaliser(int ofd, vrbout_t *vo)
 {
@@ -1757,16 +1759,23 @@ int output_finaliser(int ofd, vrbout_t *vo)
     if(!opt_decompress && _DNT_REOR)
         goto skip_reorgnz;
 
+
     /*
      * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
+     *
      */
     vo->soff = PTGZ_HEADER_CURSIZE;
     vo->olen = PTGZ_HEADER_CURSIZE + list[0];
     for (uint32_t i = 1; i < vo->nidx; i++) {
         vo->soff += WBUF_MAX_SIZE;
+#if _DO_PREM
+        vo->olen += vo->ptbl->cur.list[i];
+#else
         do_copy_range_on_output_file(i, vo);
+#endif
     }
+
 
 skip_reorgnz:
     /* Update vo->olen and truncate remaining sparse tail */
@@ -2260,26 +2269,39 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             continue;
 
         /* ordered writing on STDOUT, only */
-        if ((ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
-        &&  c->idx != next_idx
-        ){
+        if (c->idx != next_idx)
             continue;
-        }
 
         /* granting the correct order */
-        next_idx++;
-        if(infd == STDIN_FILENO)
-            _g_read_file_size += c->in_len;
-
         if (ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
         {
-            if (_g_out_mmap_base)
-                __builtin_memcpy(_g_out_mmap_base
-                    + outlen, c->out, c->out_len);
-            else
-                c->out_len = full_write(ofd,
-                              c->out, c->out_len);
+            if (_g_out_mmap_base) {
+                __builtin_memcpy(_g_out_mmap_base + outlen, c->out, c->out_len);
+            } else {
+                c->out_len = full_write(ofd, c->out, c->out_len);
+            }
         }
+#if _DO_PREM
+        else
+        if (next_idx && cmpr && ofd)
+        {
+        // Preemptively collapse sparse thread allocations into contiguous file ranges
+            off_t src_off = PTGZ_HEADER_CURSIZE + ((off_t)next_idx * WBUF_MAX_SIZE);
+            off_t dst_off = PTGZ_HEADER_CURSIZE + outlen;
+
+            if (src_off != dst_off) {
+#if _DO_PREM == 2
+                sync_file_range(ofd, src_off, c->out_len,
+                    SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
+#endif
+                if (full_rcopy(ofd, dst_off, src_off, c->out_len) != c->out_len) {
+                    err = -1;
+                    goto do_free_n_return;
+                }
+            }
+        }
+#endif
+        next_idx++;
         outlen += c->out_len;
 
         if(cmpr && ptbl->cur.list)
