@@ -31,21 +31,21 @@ Simplicity is the ultimate sophistication (cit.)
 > 
 > A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible. Everything else is "just" coding.
 
-- `ptgzip` since v0.4 is 1.9x faster than `pigz` and 5.1x faster than `gzip`
-- it creates a 100% back-compatible RFC-1952 `gunzip` parallel-ready format
 - simplicity is the **strongest** point of new `.gz` format and `ptgzip` design
-- it is z-library agnostic, despite being compiled against `zlib-ng` by default
+- embedding the chunk sizes in a RFC 1952 header, creates the `PTGZ` novel format
+- `ptgzip` is `zlib` agnostic, despite being compiled against `zlib-ng` by default
+- `ptgzip` creates a 100% back-compatible RFC 1952 `gzip` parallel-ready format
 
 Its relative performances tend to improve in the real-world scenarios:
 
-- it is faster in compressing `/bin` files on a low-power consumer hardware
-- higher throughput ratios with a mild desktop background activity: 1.8x and **5.8x**
-- against `/bin`, it matches 85-to-**96%** of theoretical throughput speed increase
-- re-ordering the `PTGZ` table fields to act as header, creates a stand-alone new format
+- `ptgzip -d` v0.7 is 3.5x faster than `pigz -d` and 5.9x faster than `gzip -d`
+- `ptgzip -c` on `/bin` is 1.8x faster than `pigz -c` and 5.8x faster than `gzip -c`
+- `ptgzip -d` v0.7 inflates at 1.3GB/s from a file where `dd bs=1M` does 1.5GB/s
+- `ptgzip -6` vs `zstd -1`: same size deflate output, but `zstd` is 2x faster
+
+Comparison with `zstd` for speed should consider that `gzip` has been created in 1992, and standardised by RFC 1950, 1951, 1952 (1996), while `zstd` in 2015, and by RFC 8478 (2018), 8878 (2021), 9659 (2024). This 25 years apart made `gzip` universally adopted and `zstd` faster.
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
-
-- v0.7 inflates at 1.3GB/s from file on a x390 where `dd bs=1M` does 1.5GB/s
 
 The field `FEXTRA` was defined by RFC-1952 (1996), and the `PTGZ` format leverages it for supporting the parallelism of `.gz` inflate. This is the **novelty**: how that field is used and why. Because of that novelty the claim of a new format and the `PTGZ` naming.
 
