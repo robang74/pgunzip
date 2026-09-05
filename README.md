@@ -39,10 +39,10 @@ Simplicity is the ultimate sophistication (cit.)
 
 Its relative performances tend to improve in the real-world scenarios:
 
-- `ptgzip -d` v0.7 is 3.4x faster than `pigz -d` v2.8 and 5.9x faster than `gzip -d`
-- `ptgzip -6c` on `/bin` is 1.8x faster than `pigz -5c` and 5.8x faster than `gzip -c`
+- `ptgzip -d` v0.7 is 3.4× faster than `pigz -d` v2.8 and 5.9× faster than `gzip -d`
+- `ptgzip -6c` on `/bin` is 1.8× faster than `pigz -5c` and 5.8× faster than `gzip -c`
 - `ptgzip -d` v0.7 inflates at 1.3GB/s from a file where `dd bs=1M` does 1.5GB/s
-- `ptgzip -6` vs `zstd -1`: same size deflate output, but `zstd` is 2x faster
+- `ptgzip -6` vs `zstd -1`: same size deflate output, but `zstd` is 2× faster
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
@@ -52,9 +52,13 @@ In being a novel format, PTGZ has its own crystal clear advantages, but also sho
 
 ### PTGZ Format Overhead
 
-The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk. For a 36-chunk PTGZ file, it is 30 + (36 * 4) + (36 * 20) = 894 bytes.
+The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk.
 
-A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk, the overhead, considering a 50% .gz in output by full usage of the whole input chunk size, is 894 / (36 * 256 KiB) ~ 0.1% circa. Current tests, using `libz.tar`, indicates a +0.4% circa for the v0.7.
+- Overhead for a 36-chunk file: `30 + 36 × (4 + 20) = 894` bytes.
+
+A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk and considering a 50% .gz in output by full usage of the whole input chunk size, the overhead cannot be less than `894 / (36 × 256 KiB)` a 0.1% circa.
+
+- Current tests using `libz.tar`, indicate a `+0.4%` circa for the v0.7.
 
 ### Benchmark Comparison
 
