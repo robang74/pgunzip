@@ -42,7 +42,7 @@ Its relative performances tend to improve in the real-world scenarios:
 - `ptgzip -d` v0.7 is 3.4× faster than `pigz -d` v2.8 and 5.9× faster than `gzip -d`
 - `ptgzip -6c` on `/bin` is 1.8× faster than `pigz -5c` and 5.8× faster than `gzip -c`
 - `ptgzip -d` v0.7 inflates at 1.3GB/s from a file where `dd bs=1M` does 1.5GB/s
-- `ptgzip -6` vs `zstd -1`: same size deflate output, but `zstd` is 2× faster
+- `ptgzip -6` vs `zstd -1`: same size output, but `zstd` compresses 2× faster
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
@@ -62,7 +62,7 @@ A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. Fo
 
 ### Benchmark Comparison
 
-Comparison with `zstd` for speed should consider that `gzip` has been created in 1992, and standardised by RFC 1950, 1951, 1952 (1996), while `zstd` in 2015, and by RFC 8478 (2018), 8878 (2021), 9659 (2024). This 25 years apart made `gzip` universally adopted and `zstd` faster.
+Comparison with `zstd` for speed should consider that `gzip` has been created in 1992, and standardised by RFC 1950, 1951, 1952 (1996), while `zstd` in 2015, and by RFC 8478 (2018), 8878 (2021), 9659 (2024). This 25-year gap explains why `gzip` is universally adopted, while `zstd`, benefiting from a much more recent design, is faster in compressing.
 
 Compiling `pigz` v2.8 (which had its 1st release on 2007) against the same `libzall.a` created for `ptgzip` v0.7 (after 3 weeks of development) shows that `pigz -5c` (dictionary reuse) is 1.26x faster than `ptgzip -6c` (same output size) while the `pigz -d` is 2.55x slower than `ptgzip -d`.
 
@@ -96,7 +96,7 @@ This fixed size is declared as the first member of the list, the others are the 
 
 In the worst case the size of the data chunk is known in advance but nothing else and decompression can be parallelised by using that size within which the magic number can be found and each compressed chunk can be separated.
 
-The additional overhead in computational power depends on the availability of vetorialised instructions like SSE2 (2000) or AVX2 (2013) or more modern ones. However, since 4x parallelism is from 2007, the SSE2 are always available where they matter.
+The additional overhead in computational power depends on the availability of vectorised instructions like SSE2 (2000) or AVX2 (2013) or later SIMD extensions. However, since 4x parallelism is from 2007, the SSE2 are always available where they matter.
 
 The PTGZ format is 100% back-compatible because it is totally contained in RFC 1952 standard. Apparently it is limied by 2^16 × 2^18 chunk max size (actually 256KiB) which is 16 GiB range. However, concatenating many PTGZ, that range can be extended in an unlimited way.
 
@@ -455,13 +455,17 @@ The reading window is pre-sized, knowing the original size of reading and to rea
 
 The release v0.7 achieved relevant goals but it was a little immature in terms of usability because it triggers harmless but annoying warnings that can break the scriptability. Thus the v0.7.1, is released to fix a few minor bugs and made an important step forward being a full-usable command line too.
 
-#### Refine release v0.7.2
+#### Refine release v0.7.x
 
-The release v0.7.2 continues on the path of code unification and reduction, while the advantage of newly added `copy_range()` pre-emption is minimal. Benchmarks evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, versions, maturity, etc.).
+The releases v0.7.x continue on the path of code unification and LoC reduction: despite the performance increase of newly added `copy_range()` pre-emption is minimal, code is simpler. Meanwhile the benchmark test suite evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, latest versions, maturity, etc.) to properly highlight the competitiveness of the PTGZ format.
 
 <br>
 
 ## Deflating
+
+> [!WARNING]
+> 
+> Historical section, kept as development log
 
 About compressed output suitable for the new format, and 100% back-compatible versus the standard gzip output.
 
@@ -652,6 +656,10 @@ sys   0m0.089s
 <br>
 
 ## Inflating
+
+> [!WARNING]
+> 
+> Historical section, kept as development log
 
 Clearly a shell script isn't the correct tool for inflating a parallel streams into a single file. Despite the shortcomings of the scripting, the evarage hot cached run is nearly 2x faster than standard `gzip` and faster than `pigz`, also.
 
