@@ -38,6 +38,8 @@
 #define LICENSE \
     "(c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2"
 
+#define VERSION "ptgzip v0.7.2"
+
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 #define ALIGNED4      __attribute__ ((aligned(4)))
 #define ALIGNED8      __attribute__ ((aligned(8)))
@@ -54,13 +56,12 @@
 #define PTGZ_HEADER_CURSIZE  (PTGZ_HEADER_SIZE + _g_ptgz_list_size)
 
 static int opt_stdout     = 0;    /* -c, --stdout, --to-stdout */
-static int opt_help       = 0;    /* -h, --help */
 static int opt_quiet      = 0;    /* -q, --quiet */
-        // _g_compression_level ;    /* -#, --fast (=1), --best (=9) */
+     // _g_compression_level ;    /* -#, --fast (=1), --best (=9) */
 static int opt_keep       = 0;    /* -k, --keep */
 static int opt_test       = 0;    /* -t, --test */
 static int opt_force      = 0;    /* -f, --force */
-static int opt_memory     = 0;    /* -m, --memory (KiB) */
+static int opt_blocksize  = 0;    /* -b, --blocksize (KiB) */
 static int opt_processes  = 0;    /* -p, --processes */
 static int opt_verbose    = 0;    /* -v, --verbose */
 static int opt_decompress = 0;    /* -d, --decompress */
@@ -114,36 +115,34 @@ enum {
 #ifndef _DEBUG
 #define _DEBUG     0 //xFF
 #endif
-#ifndef _USE_OPT
-#define _USE_OPT   1 //RAF: no difference in gz speed
-#endif
+
 #ifndef _DNT_MMAP
-#define _DNT_MMAP  1 //RAF: =1 to test mmap() failure, also file faster
+#define _DNT_MMAP  1 //RAF: =1 to test mmap() failure, also file faster         (ko)
 #endif
 #ifndef _DNT_REOR
-#define _DNT_REOR  0 //RAF: =1 use write() to avoid copy_range() on file
+#define _DNT_REOR  0 //RAF: =1 use write() to avoid copy_range() on file        (ok)
 #endif
 #ifndef _USE_CPUM
-#define _USE_CPUM  0 //RAF: cpu migration stabilise performance but slower
+#define _USE_CPUM  0 //RAF: cpu migration stabilise performance but slower      (ok)
 #endif               //     =0 to disable, =1 immediate, =2 before CPU workload
 #ifndef _DO_OPTL
-#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8) 16
+#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8) 16  (ok:0)
 #endif
 
 #ifndef _DO_WRST
-#define _DO_WRST   2 // 0: last run can be shorter than 1/2 _g_chunk_size
+#define _DO_WRST   2 // 0: last run can be shorter than 1/2 _g_chunk_size       (ok)
 #endif               // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
-#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling
+#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling        (ko)
 #endif
-#ifndef _USE_MMAP    // mmap() is performed by default, but it can fail
-#define _USE_MMAP  0
+#ifndef _USE_MMAP
+#define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ko)
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE  0 // free() isn't strictly necessary, but do testing
+#define _USE_FREE  1 // free() isn't strictly necessary, but do testing         (ko)
 #endif
 #ifndef _ONE_ZDF
-#define _ONE_ZDF   1 //RAF: no difference in .gz size
+#define _ONE_ZDF   1 //RAF: no difference in .gz size                           (ok)
 #endif
 
 #ifndef _ZLIB_MEM
@@ -2181,6 +2180,9 @@ size_t do_output_mmap(int ofd)
 
 int main(int argc, char **argv)
 {
+    bool opt_quit = 0;
+    char opt_notime = 0;
+    time_t utc_time = 0;
     char *filename = NULL;
     int ofd = STDOUT_FILENO;
     int infd = STDIN_FILENO;
@@ -2203,7 +2205,6 @@ int main(int argc, char **argv)
     }
     #endif
 
-#if _USE_OPT
     static struct option longopts[] = {
         {"stdout",      no_argument,       NULL, 'c'},
         {"to-stdout",   no_argument,       NULL, 'c'},
@@ -2215,10 +2216,13 @@ int main(int argc, char **argv)
         {"best",        no_argument,       NULL, '9'},
         {"test",        no_argument,       NULL, 't'},
         {"keep",        no_argument,       NULL, 'k'},
+        {"time",        no_argument,       NULL, 'M'},
+        {"no-time",     no_argument,       NULL, 'm'},
         {"no-name",     no_argument,       NULL, 'n'},
+        {"version",     no_argument,       NULL, 'V'},
         {"verbose",     no_argument,       NULL, 'v'},
         {"license",     no_argument,       NULL, 'L'},
-        {"memory",      required_argument, NULL, 'm'},
+        {"blocksize",   required_argument, NULL, 'b'},
         {"processes",   required_argument, NULL, 'p'},
         {NULL, 0, NULL, 0}
     };
@@ -2229,6 +2233,12 @@ int main(int argc, char **argv)
         switch (ch) {
         case 'c':
             opt_stdout = 1;
+            break;
+        case 'm':
+            opt_notime =  1;
+            break;
+        case 'M':
+            opt_notime = -1;
             break;
         case 'd':
             opt_decompress = 1;
@@ -2241,11 +2251,21 @@ int main(int argc, char **argv)
             break;
         case '?':
         case 'h':
-            opt_help = 1;
+            fprintf(stderr,
+                "\n    Usage: %s [opts] <file>"
+                "\n     opts: -d, -#, -v, -q, -c, -b, -p, -h"
+                "\n           -f, -k, -t, -m, -n, -M, -L, -V"
+                "\n\n", basename(argv[0]));
+            opt_quit = 1;
+            break;
+        case 'V':
+            fprintf(stderr, "%s\n", VERSION);
+            opt_quit = 1;
             break;
         case 'L':
             fprintf(stderr, "%s\n", LICENSE);
-            return 0;
+            opt_quit = 1;
+            break;
         case 'q':
             opt_quiet = 1;
             break;
@@ -2259,8 +2279,8 @@ int main(int argc, char **argv)
         case 'v':
             opt_verbose++;
             break;
-        case 'm':
-            opt_memory = (int)strtoul(optarg, NULL, 0);
+        case 'b':
+            opt_blocksize = (int)strtoul(optarg, NULL, 0);
             break;
         case 'p':
             opt_processes = (int)strtoul(optarg, NULL, 0);
@@ -2270,22 +2290,22 @@ int main(int argc, char **argv)
         }
     }
 
-#else // RAF: this branch was kept for testing _USE_OPT=1 performance impact
-    opt_help = (argc < 2);
-#endif
+    if (opt_quit)
+        return 0;
 
-    if(opt_quiet)
+    if (opt_quiet)
         opt_verbose = 0;
 
-    if (opt_help) {
-        opt_quiet = 0;
-        _print2("\n    Usage: %s [opts] <file>"
-                "\n     opts: -d, -#, -v, -q, -c, -h\n\n",
-                    basename(argv[0]));
-        return 0;
+    if (opt_notime != 1) {
+        /* RAF
+         * The GZIP modify-time is a 32-bit unsigned value and therefore
+         * it will not overflow in the year 2038 but in 2106. So, we can
+         * use time() output as-is without worrying too much about 2038.
+         */
+        utc_time = time(NULL);
     }
 
-    if(!opt_processes)
+    if (!opt_processes)
         opt_processes = MAX_THREADS;
 
     _g_cpu_procs = sysconf(_SC_NPROCESSORS_ONLN);
@@ -2567,12 +2587,6 @@ set_ptbl_list:
     _g_ptgz_list_size = _g_ptgz_list_size << 2;
 
     /* RAF
-     * The GZIP modify-time is a 32-bit unsigned value and therefore
-     * it will not overflow in the year 2038 but in 2106. So, we can
-     * use time() output as-is without worrying too much about 2038.
-     */
-    time_t utc = time(NULL);
-    /* RAF
      * When the data is read from STDIN the _g_tot_chunks is zero and
      * the size of the PTGZ table into the header reaches the minimum
      * to contain just the helpful value of the _g_chunk_size used.
@@ -2582,7 +2596,8 @@ set_ptbl_list:
      * can be transferred into the header, like it happens during the
      * creation from a seekable file as data input source.
      */
-    ptbl->cur.list = ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
+    ptbl->cur.list =
+        ptgz_header_make(utc_time, _g_chunk_size, _g_ptgz_list_size);
     xfull_write(ofd, _g_ptgz_header, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
