@@ -54,11 +54,13 @@ In being a novel format, PTGZ has its own crystal clear advantages, but also sho
 
 The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk.
 
-- Overhead for a 36-chunk file: `30 + 36 × (4 + 20) = 894` bytes.
+- Overhead for a 36-chunk file: `(30 - 20) + 36 × (4 + 20) = 874` bytes.
 
-A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk and considering a 50% .gz in output by full usage of the whole input chunk size, the overhead cannot be less than `894 / (36 × 256 KiB)` a 0.1% circa.
+A file under 64 KiB bypass PTGZ encoding, otherwise is split into as many chunks as the CPU can handle (unless `-p` specifies otherwise). For a 36-chunk file with a 30% compressed output ratio (assuming using half-size 256 KiB input data max window), the overhead is `874 / (36 × 256 KiB × 0.50 × 0.30)` a +0.06% circa.
 
-- Current tests using `libz.tar`, indicate a `+0.4%` circa for the v0.7.
+- Current tests using `libz.tar`, indicate approximately `+0.4%` for the v0.7.
+
+Clearly, restarting the dictionary is the most impacting effect on compression ratio.
 
 ### Benchmark Comparison
 
