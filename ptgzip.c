@@ -127,7 +127,7 @@ enum {
 #define _USE_CPUM  0 //RAF: cpu migration stabilise performance but slower
 #endif               //     =0 to disable, =1 immediate, =2 before CPU workload
 #ifndef _DO_OPTL
-#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8)
+#define _DO_OPTL   7 //RAF: optional code, mask enabling bits: 1 2 4 (or 8) 16
 #endif
 
 #ifndef _DO_WRST
@@ -728,12 +728,13 @@ static void *thread_chunk_write(void *arg)
 {
     chunk_t *c = arg;
 
-    #if 0 // _USE_CPUM // RAF: slower in this specific corner case
+// RAF: too slow in this specific I/O-only case of use
+#if 0 // _USE_CPUM
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(c->idx % _g_cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
-    #endif
+#endif
 
     c->error |= chunk_write(c);
     c->state = 3;
@@ -1028,7 +1029,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
     return 0;
 }
-#endif
+#endif //__SSE2__
 
 #elif _SEEKER_FUNC == 6 // 3-bytes AVX2 aligned version
 
@@ -1070,7 +1071,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
     return 0;
 }
-#endif
+#endif //__AVX2__
 
 #elif _SEEKER_FUNC == 7 // 4-bytes SSE2 unaligned version
 
@@ -1102,7 +1103,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m128i m2 = _mm_cmpeq_epi8(c2, b2);
         __m128i m3 = _mm_cmpeq_epi8(c3, b3);
 
-        __m128i match = _mm_and_si128(_mm_and_si128(m0, m1), 
+        __m128i match = _mm_and_si128(_mm_and_si128(m0, m1),
                                       _mm_and_si128(m2, m3));
         uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
@@ -1116,7 +1117,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
     return 0;
 }
-#endif
+#endif //__SSE2__
 
 #elif _SEEKER_FUNC == 8 // 4-bytes AVX2 unaligned version
 
@@ -1148,7 +1149,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m256i m2 = _mm256_cmpeq_epi8(c2, b2);
         __m256i m3 = _mm256_cmpeq_epi8(c3, b3);
 
-        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), 
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
                                          _mm256_and_si256(m2, m3));
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
@@ -1162,9 +1163,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
     return 0;
 }
-#endif
+#endif //__AVX2__
 
-#endif
+#endif //_SEEKER_FUNC
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     size_t out_size, int8_t *buf, size_t buf_size, bool seek, void *ptbl)
@@ -1175,7 +1176,6 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     int ret, eof = 0, nchunks = 0;
     _stream_t strm = {0};
     chunk_t c = {0};
-
 
     r = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
     if (posix_memalign((void **)&inbuf,  64, r)
@@ -1508,7 +1508,6 @@ const uint8_t ptgz_magic_str[4] = { "ptgz" };
     _vo.otfd = ofd;           \
 }
 
-
 static
 pgunz_t *create_pgunz_table(uint32_t nwords)
 {
@@ -1536,45 +1535,6 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
         u[i] = ptgz_magic_str[i];
 
     return p;
-}
-
-static ALWAYS_INLINE
-uint8_t *finalize_pgunz_table(pgunz_t *ptbl, size_t *len)
-{
-    int i;
-    uint32_t sum = 0;
-    uint32_t *p = &ptbl->chksum;
-    uint32_t *list = ptbl->cur.list;
-    uint32_t nwords = ptbl->nwords;
-    uint8_t *u = (uint8_t *)list;
-
-    for (i = 1; i < 4; i++)
-        list[nwords + i] = p[i];
-
-    sum = 0;
-    list[nwords] = 0;
-    for(i = 0; i < nwords + 4; i++)
-        sum += list[i];
-    p[0] = -sum; // checking sum code
-    list[nwords] = p[0];
-
-#if 0 // ftruncate() does it for us
-    *len = (4 - (*len & 3)) & 3;
-    u -= *len; // 32-bit align
-    *len += (nwords + 4) << 2;
-#else
-    *len = (nwords + 4) << 2;
-#endif
-
-#if _DEBUG & 0x04 // -----------------------------------------------------------
-    sum = 0;
-    for(i = 0; i < nwords + 4; i++)
-        sum += list[i];
-fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
-    ptbl->chksum, sum, *len);
-#endif // ----------------------------------------------------------------------
-
-    return u;
 }
 
 static
@@ -1639,28 +1599,6 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
-#define _DO_PREM 1
-
-#if _DO_PREM
-#else
-static ALWAYS_INLINE
-void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
-{
-    size_t len = vo->ptbl->cur.list[i];
-    // RAF: it should never happens, by design
-    if (!len) return;
-
-    if (_g_out_mmap_base)
-        __builtin_memmove( _g_out_mmap_base + vo->olen,
-                           _g_out_mmap_base + vo->soff,  len);
-    else
-    if (full_rcopy(vo->otfd, vo->olen, vo->soff, len) != len)
-        exit(-1);
-
-    vo->olen += len;
-}
-#endif
-
 static
 int output_finaliser(int ofd, vrbout_t *vo)
 {
@@ -1671,45 +1609,6 @@ int output_finaliser(int ofd, vrbout_t *vo)
             vo->nidx, _g_tot_chunks);
         return 1;
     }
-
-#if _DO_PREM
-#else
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
-
-    if(vo->nidx < 2 || !list) {
-        list = NULL;
-        goto skip_reorgnz;
-    }
-
-    if(!opt_decompress && _DNT_REOR)
-        goto skip_reorgnz;
-
-    /*
-     * In-place file reorganization using kernel-Level zero-copy
-     * Loop through all compressed chunk lengths stored in list[]
-     *
-     */
-    vo->soff = PTGZ_HEADER_CURSIZE;
-    vo->olen = PTGZ_HEADER_CURSIZE + list[0];
-    for (uint32_t i = 1; i < vo->nidx; i++) {
-        vo->soff += WBUF_MAX_SIZE;
-        do_copy_range_on_output_file(i, vo);
-    }
-
-skip_reorgnz:
-    /* Update vo->olen and truncate remaining sparse tail */
-    if (ftruncate(ofd, vo->olen) < 0) {
-        perror("ftruncate");
-        return -1;
-    }
-    if(lseek(ofd, 0, SEEK_END) < 0) {
-        perror("lseek");
-        return -1;
-    }
-
-write_table:
-#endif
 
     if(vo->nidx < 2 || !list)
         return  0;
@@ -1728,19 +1627,27 @@ write_table:
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
                 (const void *)list, len);
-            len = 0;
         } else { // append the full PTGZ header at the end of file
             len = PTGZ_HEADER_CURSIZE;
             __builtin_memcpy(_g_out_mmap_base + vo->olen,
                 _g_ptgz_header, len);
             vo->olen += len;
         }
+        if (ftruncate(ofd, vo->olen) < 0) {
+            perror("ftruncate");
+            return -1;
+        }/* RAF: not anymore neccesary at this point
+        if (lseek(ofd, 0, SEEK_END) < 0) {
+            perror("lseek");
+            return -1;
+        }*/
     } else
     if(ofd == STDOUT_FILENO) {
         // append the full PTGZ header at the end of file
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
+        len = 0;
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             len, PTGZ_LIST_START_OFF);
@@ -2011,7 +1918,9 @@ void _chunk_list_init(chunk_t *c, int ofd, int infd,
 
     c->idx      = idx++;
     c->out_off  = out_offset;
-    out_offset += _g_chunk_size; // RAF: using out_cap requires file-reorganiz.
+    // RAF: using m.out_cap here instead of _g_chunk_size
+    // require an unnecessary final file-reorganization
+    out_offset += _g_chunk_size;
 
     c->in_off += in_offset;
     c->in_len  = in_len;
@@ -2077,15 +1986,14 @@ fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
 
 do_a_thread_wait:
 #if _THR_WAIT
-//RAF: one thread completed, at least as
-// long as, at least, one thread exists.
+    //RAF: one thread completed, at least as
+    // long as, at least, one thread exists.
     if (current != _g_tot_chunks)
         if (full_sem_wait(&sem))
             return -1;
 #else
     _cpu_relax();
 #endif
-    //fprintf(stderr, "o\n");
 
 do_another_loop:
     for(uint32_t a = 0; a < 2; a++)
@@ -2162,22 +2070,21 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
                 c->out_len = full_write(ofd, c->out, c->out_len);
             }
         }
-#if _DO_PREM
         else
+        /* collapse sparse thread allocations into a contiguous file */
         if (next_idx && cmpr && ofd && !_DNT_REOR)
-        {   // collapse sparse thread allocations into a contiguous file
+        {
             src_off += WBUF_MAX_SIZE;
-#if _DO_PREM == 2
+            #if (_DO_OPTL & 16)
             sync_file_range(ofd, src_off, c->out_len,
                 SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
-#endif
+            #endif
             if (full_rcopy(ofd, outlen, src_off, c->out_len) != c->out_len)
             {
                 err = -1;
                 goto do_free_n_return;
             }
         }
-#endif
         next_idx++;
         outlen += c->out_len;
 
@@ -2203,37 +2110,16 @@ dispose:
         goto do_a_thread_wait;
 
     if (cmpr && ptbl->cur.list) {
-//      fprintf(stderr, "upd: %u -> %u\n", next_idx, next_idx << 2);
         _g_ptgz_list_size = next_idx << 2;
         ptbl->nwords      = next_idx;
-//      ptgz_header_print2();
         ptgz_header_update();
-//      ptgz_header_print2();
     }
-#if 0 //RAF: absolutely not, the zero is (wrongly?) used as discriminant
-    if (infd == STDIN_FILENO && !_g_tot_chunks)
-        _g_tot_chunks = next_idx;
-#endif
+
 // === Ending ==================================================================
 
     _verbout_init(vo);
-    if (cmpr && ofd) {
-#if _DO_PREM
-        if (ofd != STDOUT_FILENO)
-        {
-            if (ftruncate(ofd, outlen) < 0) {
-                perror("ftruncate");
-                return -1;
-            }
-            if (lseek(ofd, 0, SEEK_END) < 0) {
-                perror("lseek");
-                return -1;
-            }
-        }
-#endif
+    if (cmpr && ofd)
         err = output_finaliser(ofd, &vo);
-        /* Update vo->olen and truncate remaining sparse tail */
-    }
 
 do_free_n_return:
     verbose_printout(&vo);
@@ -2435,17 +2321,13 @@ int main(int argc, char **argv)
         if(_DNT_MMAP || !_g_read_file_size)
             break;
 
-        // mmap entire file (zero-copy input for all threads)
+        /* mmap entire file (zero-copy input for all threads) */
         _g_read_mmap_base = mmap(NULL, _g_read_file_size,
             PROT_READ, MAP_SHARED | MAP_POPULATE, infd, 0);
         if (_g_read_mmap_base == MAP_FAILED) {
             _g_read_mmap_base = NULL;
             perror("mmap");
-        } /*else {
-            // kernel keeps the mapping via vnode reference
-            close(infd);
-            infd = -1;
-        }*/
+        }
 
         break;
     }
@@ -2605,13 +2487,13 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
              //    - 2x faster than the fastest streaming
              //    - 3x faster than the slowest streaming
     if (infd == STDIN_FILENO) {
-      // what has been read should from STDIN be passed to the 1st chunk
+      //RAF: what has been read should from STDIN be passed to the 1st chunk
       //goto do_inflate_stream;
       //goto set_default_values;
     } else
 #endif
     {
-        // at this point, tbl and the first chunk offset are initialisated
+        //RAF: at this point, tbl and the 1st chunk offset are initialisated
         next_idx = tbl.nwords;
         in_size = tbl.bufsze;
         ilst = tbl.cur.list;
