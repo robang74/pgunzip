@@ -1001,9 +1001,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m128i v_b0 = _mm_set1_epi8(0x1F);
-    const __m128i v_b1 = _mm_set1_epi8(0x8B);
-    const __m128i v_b2 = _mm_set1_epi8(0x08);
+    const __m128i b0 = _mm_set1_epi8(0x1F);
+    const __m128i b1 = _mm_set1_epi8(0x8B);
+    const __m128i b2 = _mm_set1_epi8(0x08);
 
     for (; n + 15 < maxn; n += 16)
     {
@@ -1013,9 +1013,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m128i c1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
         __m128i c2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
 
-        __m128i m0 = _mm_cmpeq_epi8(c0, v_b0);
-        __m128i m1 = _mm_cmpeq_epi8(c1, v_b1);
-        __m128i m2 = _mm_cmpeq_epi8(c2, v_b2);
+        __m128i m0 = _mm_cmpeq_epi8(c0, b0);
+        __m128i m1 = _mm_cmpeq_epi8(c1, b1);
+        __m128i m2 = _mm_cmpeq_epi8(c2, b2);
 
         __m128i match = _mm_and_si128(_mm_and_si128(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
@@ -1042,9 +1042,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     uint32_t n = 1;
 
     // 2. VECTOR SCAN: Aligned loads for maximum L1/L2 bandwidth
-    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
-    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
-    const __m256i v_b2 = _mm256_set1_epi8(0x08);
+    const __m256i b0 = _mm256_set1_epi8(0x1F);
+    const __m256i b1 = _mm256_set1_epi8(0x8B);
+    const __m256i b2 = _mm256_set1_epi8(0x08);
 
     for (; n + 31 < maxn; n += 32)
     {
@@ -1054,9 +1054,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
         __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
 
-        __m256i m0 = _mm256_cmpeq_epi8(c0, v_b0);
-        __m256i m1 = _mm256_cmpeq_epi8(c1, v_b1);
-        __m256i m2 = _mm256_cmpeq_epi8(c2, v_b2);
+        __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
+        __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
+        __m256i m2 = _mm256_cmpeq_epi8(c2, b2);
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), m2);
         uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
@@ -1083,31 +1083,28 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m128i v_b0 = _mm_set1_epi8(0x1F);
-    const __m128i v_b1 = _mm_set1_epi8(0x8B);
-    const __m128i v_b2 = _mm_set1_epi8(0x08);
-    const __m128i v_b3 = _mm_set1_epi8(0x00);
+    const __m128i b0 = _mm_set1_epi8(0x1F);
+    const __m128i b1 = _mm_set1_epi8(0x8B);
+    const __m128i b2 = _mm_set1_epi8(0x08);
+    const __m128i b3 = _mm_set1_epi8(0x00);
 
     for (; n + 15 < maxn; n += 16)
     {
         _mm_prefetch((const char *)(p + n + 32), _MM_HINT_T0);
 
-        __m128i chunk0 = _mm_loadu_si128((const __m128i *)(p + n    ));
-        __m128i chunk1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
-        __m128i chunk2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
-        __m128i chunk3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
+        __m128i c0 = _mm_loadu_si128((const __m128i *)(p + n    ));
+        __m128i c1 = _mm_loadu_si128((const __m128i *)(p + n + 1));
+        __m128i c2 = _mm_loadu_si128((const __m128i *)(p + n + 2));
+        __m128i c3 = _mm_loadu_si128((const __m128i *)(p + n + 3));
 
-        __m128i m0 = _mm_cmpeq_epi8(chunk0, v_b0);
-        __m128i m1 = _mm_cmpeq_epi8(chunk1, v_b1);
-        __m128i m2 = _mm_cmpeq_epi8(chunk2, v_b2);
-        __m128i m3 = _mm_cmpeq_epi8(chunk3, v_b3);
+        __m128i m0 = _mm_cmpeq_epi8(c0, b0);
+        __m128i m1 = _mm_cmpeq_epi8(c1, b1);
+        __m128i m2 = _mm_cmpeq_epi8(c2, b2);
+        __m128i m3 = _mm_cmpeq_epi8(c3, b3);
 
-        __m128i m = _mm_and_si128(
-                        _mm_and_si128(_mm_and_si128(m0, v_b0),
-                                      _mm_and_si128(m1, v_b1)),
-                        _mm_and_si128(_mm_and_si128(m2, v_b2),
-                                      _mm_and_si128(m3, v_b3)));
-        uint32_t mask = (uint32_t)_mm_movemask_epi8(m);
+        __m128i match = _mm_and_si128(_mm_and_si128(m0, m1), 
+                                      _mm_and_si128(m2, m3));
+        uint32_t mask = (uint32_t)_mm_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
     }
 
@@ -1132,12 +1129,12 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const uint32_t maxn = r - 3;
     uint32_t n = 1;
 
-    const __m256i v_b0 = _mm256_set1_epi8(0x1F);
-    const __m256i v_b1 = _mm256_set1_epi8(0x8B);
-    const __m256i v_b2 = _mm256_set1_epi8(0x08);
-    const __m256i v_b3 = _mm256_set1_epi8(0x00);
+    const __m256i b0 = _mm256_set1_epi8(0x1F);
+    const __m256i b1 = _mm256_set1_epi8(0x8B);
+    const __m256i b2 = _mm256_set1_epi8(0x08);
+    const __m256i b3 = _mm256_set1_epi8(0x00);
 
-    for (; n + 32 < maxn; n += 32)  /* nota: n+32, non n+31 */
+    for (; n + 31 < maxn; n += 32)
     {
         _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
 
@@ -1146,12 +1143,14 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
         __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
         __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
 
-        __m256i m = _mm256_and_si256(
-                        _mm256_and_si256(_mm256_cmpeq_epi8(c0, v_b0),
-                                         _mm256_cmpeq_epi8(c1, v_b1)),
-                        _mm256_and_si256(_mm256_cmpeq_epi8(c2, v_b2),
-                                         _mm256_cmpeq_epi8(c3, v_b3)));
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(m);
+        __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
+        __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
+        __m256i m2 = _mm256_cmpeq_epi8(c2, b2);
+        __m256i m3 = _mm256_cmpeq_epi8(c3, b3);
+
+        __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1), 
+                                         _mm256_and_si256(m2, m3));
+        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
         if (mask) return n + __builtin_ctz(mask);
     }
 
@@ -1418,13 +1417,6 @@ endfunc:
 // Prep
 // =============================================================================
 
-#ifndef _WRT_PTBL
-#define _WRT_PTBL 0
-#endif
-
-#define align_len_for_tbl(_v) { if(_WRT_PTBL && list) \
-            _v->olen = (((_v->olen + 3) >> 2) << 2); }
-
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
 #define TABLE_ITEMS ((uint32_t)_g_tot_chunks + 4)
@@ -1495,11 +1487,27 @@ typedef struct ALIGNED4 {
     size_t osze;
     size_t olen;
     size_t blen;
+    size_t soff;
     int vlvl;
     int infd;
+    int otfd;
 } __attribute__ ((packed)) vrbout_t;
 
 const uint8_t ptgz_magic_str[4] = { "ptgz" };
+
+#define _verbout_init(_vo) {  \
+    _vo.ptbl = ptbl;          \
+    _vo.vlvl = opt_verbose;   \
+    _vo.nthr = nthreads;      \
+    _vo.nidx = next_idx;      \
+    _vo.isze =  in_size;      \
+    _vo.osze = out_size;      \
+    _vo.blen = buf_size;      \
+    _vo.olen = outlen;        \
+    _vo.infd = infd;          \
+    _vo.otfd = ofd;           \
+}
+
 
 static
 pgunz_t *create_pgunz_table(uint32_t nwords)
@@ -1569,74 +1577,6 @@ fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
     return u;
 }
 
-#if _WRT_PTBL
-
-static ALWAYS_INLINE
-pgunz_t *read_pgunz_table(int fd, int *err)
-{
-    int i;
-    uint8_t *u, buf[16];
-    uint32_t nwords, *list, sum = 0;
-    pgunz_t *ptbl;
-    size_t len;
-
-    *err = 0;
-
-    if (fd <= STDOUT_FILENO)
-        return NULL;
-
-    if (lseek(fd, -16, SEEK_END) < 0) {
-        *err = -16;
-        perror("lseek");
-        return NULL;
-    }
-
-    u = &buf[12];
-    full_read(fd, buf, 16); //RAF, TODO: better return -1 in case of error
-    for (i = 0; i < 4; i++)
-        if(u[i] != ptgz_magic_str[i])
-            break;
-    if (i != 4) {
-        *err = -4;
-        return NULL;
-    }
-
-    nwords = *(uint32_t *)&buf[4];
-
-    ptbl = create_pgunz_table(nwords);
-    if (!ptbl) {
-        *err = -2;
-        return NULL;
-    }
-
-    len = ((nwords + 4) << 2);
-    if (lseek(fd, -len, SEEK_END) < 0) {
-        *err = -1;
-        perror("lseek");
-        return NULL;
-    }
-
-    list = &ptbl->chksum;
-    full_read(fd, list, len); //RAF, TODO: better return -1 in case of error
-
-    sum = 0;
-    for (i = 0; i < nwords + 4; i++)
-        sum += list[i];
-#if _DEBUG & 0x08 // -----------------------------------------------------------
-fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n",
-    sum, ptbl->chksum, len);
-#endif // ----------------------------------------------------------------------
-    if (sum) {
-        *err = 1;
-        free(ptbl);
-        return NULL;
-    }
-
-    return ptbl;
-}
-
-#endif //_WRT_PTBL
-
 static
 void verbose_printout(vrbout_t *vo)
 {
@@ -1699,8 +1639,30 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+#define _DO_PREM 1
+
+#if _DO_PREM
+#else
+static ALWAYS_INLINE
+void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
+{
+    size_t len = vo->ptbl->cur.list[i];
+    // RAF: it should never happens, by design
+    if (!len) return;
+
+    if (_g_out_mmap_base)
+        __builtin_memmove( _g_out_mmap_base + vo->olen,
+                           _g_out_mmap_base + vo->soff,  len);
+    else
+    if (full_rcopy(vo->otfd, vo->olen, vo->soff, len) != len)
+        exit(-1);
+
+    vo->olen += len;
+}
+#endif
+
 static
-int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
+int output_finaliser(int ofd, vrbout_t *vo)
 {
     uint32_t *list = vo->ptbl->cur.list;
 
@@ -1710,12 +1672,10 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
         return 1;
     }
 
-    if (!ofd) return 0;
-
-    if (ofd == STDOUT_FILENO) {
-        align_len_for_tbl(vo);
+#if _DO_PREM
+#else
+    if (ofd == STDOUT_FILENO)
         goto write_table;
-    }
 
     if(vo->nidx < 2 || !list) {
         list = NULL;
@@ -1728,37 +1688,17 @@ int output_finaliser(int ofd, vrbout_t *vo, off_t offset)
     /*
      * In-place file reorganization using kernel-Level zero-copy
      * Loop through all compressed chunk lengths stored in list[]
+     *
      */
-    if(_g_out_mmap_base) {
-        uint8_t *src = _g_out_mmap_base + offset;
-        uint8_t *dst = src + list[0]; /* Skip chunk 0 */
-        for (uint32_t i = 1; i < vo->nidx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            __builtin_memmove(dst, src, len);
-            dst += len;
-        }
-        vo->olen += dst - _g_out_mmap_base;
-    } else {
-        int i;
-        off_t src = offset;
-        off_t dst = src + list[0]; /* Start immediately after Chunk 0 */
-        for (uint32_t i = 1; i < vo->nidx; i++) {
-            size_t len = list[i];
-            src += WBUF_MAX_SIZE;
-            if (!len) continue; //RAF: it should never happens, by design
-            if (full_rcopy(ofd, dst, src, len) != len)
-                return 1;
-            dst += len;
-        }
-        vo->olen = dst;
+    vo->soff = PTGZ_HEADER_CURSIZE;
+    vo->olen = PTGZ_HEADER_CURSIZE + list[0];
+    for (uint32_t i = 1; i < vo->nidx; i++) {
+        vo->soff += WBUF_MAX_SIZE;
+        do_copy_range_on_output_file(i, vo);
     }
-    vo->olen += offset;
 
 skip_reorgnz:
     /* Update vo->olen and truncate remaining sparse tail */
-    align_len_for_tbl(vo);
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
         return -1;
@@ -1769,6 +1709,8 @@ skip_reorgnz:
     }
 
 write_table:
+#endif
+
     if(vo->nidx < 2 || !list)
         return  0;
 
@@ -1777,19 +1719,10 @@ write_table:
      *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
      */
 
-    size_t len = 0;
-/*
-    fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
-    vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
-*/
+    size_t len = vo->nidx << 2;
+
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
-
-    #if _WRT_PTBL
-    uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
-    #else
-    len = vo->nidx << 2;
-    #endif
 
     if (_g_out_mmap_base) {
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
@@ -1797,69 +1730,24 @@ write_table:
                 (const void *)list, len);
             len = 0;
         } else { // append the full PTGZ header at the end of file
-        #if _WRT_PTBL
-            __builtin_memmove(_g_out_mmap_base + vo->olen,
-                (const void *)u, len);
-            vo->olen += len;
-        #else
             len = PTGZ_HEADER_CURSIZE;
             __builtin_memcpy(_g_out_mmap_base + vo->olen,
                 _g_ptgz_header, len);
             vo->olen += len;
-        #endif
         }
     } else
     if(ofd == STDOUT_FILENO) {
-    // append the full PTGZ header at the end of file
-    #if _WRT_PTBL
-        full_write(ofd, (const void *)u, len);
-        vo->olen += len;
-        len = 0;
-    #else
+        // append the full PTGZ header at the end of file
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
-/*
-        fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
-        vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
-*/
-    #endif
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             len, PTGZ_LIST_START_OFF);
         len = 0;
     }
 
-#if _DEBUG & 0x80 // -----------------------------------------------------------
-    #if _WRT_PTBL
-    if (len)
-    {
-        int err;
-        pgunz_t *pz = read_pgunz_table(ofd, &err);
-        if(!pz || err)
-            fprintf(stderr, ">>> ERR -- read_pgunz_table: %d\n", err);
-        else
-        if (memcmp(u, &pz->chksum, len)) {
-            fprintf(stderr, ">>> ERR -- table mismatch, len: %lu\n", len);
-        }
-        return err;
-    }
-    #endif
-#endif // ----------------------------------------------------------------------
-
     return 0;
-}
-
-#define _verbout_init(_vo) {  \
-    _vo.ptbl = ptbl;          \
-    _vo.vlvl = opt_verbose;   \
-    _vo.nthr = nthreads;      \
-    _vo.nidx = next_idx;      \
-    _vo.isze =  in_size;      \
-    _vo.osze = out_size;      \
-    _vo.blen = buf_size;      \
-    _vo.olen = outlen;        \
-    _vo.infd = infd;          \
 }
 
 /* RAF
@@ -2142,11 +2030,13 @@ static int zxflate_parallel(int infd, int ofd, size_t in_size,
     sem_t sem;
     int err = 0;
     vrbout_t vo;
-    size_t outlen = 0, offset = 0;
+    size_t offset = 0;
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
     const bool cmpr = !opt_decompress;
+    off_t src_off = PTGZ_HEADER_CURSIZE;
+    size_t outlen = PTGZ_HEADER_CURSIZE;
 
 #if _DEBUG
 fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
@@ -2260,26 +2150,35 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             continue;
 
         /* ordered writing on STDOUT, only */
-        if ((ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
-        &&  c->idx != next_idx
-        ){
+        if (c->idx != next_idx)
             continue;
-        }
 
         /* granting the correct order */
-        next_idx++;
-        if(infd == STDIN_FILENO)
-            _g_read_file_size += c->in_len;
-
         if (ofd == STDOUT_FILENO || (cmpr && _DNT_REOR))
         {
-            if (_g_out_mmap_base)
-                __builtin_memcpy(_g_out_mmap_base
-                    + outlen, c->out, c->out_len);
-            else
-                c->out_len = full_write(ofd,
-                              c->out, c->out_len);
+            if (_g_out_mmap_base) {
+                __builtin_memcpy(_g_out_mmap_base + outlen, c->out, c->out_len);
+            } else {
+                c->out_len = full_write(ofd, c->out, c->out_len);
+            }
         }
+#if _DO_PREM
+        else
+        if (next_idx && cmpr && ofd && !_DNT_REOR)
+        {   // collapse sparse thread allocations into a contiguous file
+            src_off += WBUF_MAX_SIZE;
+#if _DO_PREM == 2
+            sync_file_range(ofd, src_off, c->out_len,
+                SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
+#endif
+            if (full_rcopy(ofd, outlen, src_off, c->out_len) != c->out_len)
+            {
+                err = -1;
+                goto do_free_n_return;
+            }
+        }
+#endif
+        next_idx++;
         outlen += c->out_len;
 
         if(cmpr && ptbl->cur.list)
@@ -2318,8 +2217,23 @@ dispose:
 // === Ending ==================================================================
 
     _verbout_init(vo);
-    if (cmpr)
-        err = output_finaliser(ofd, &vo, PTGZ_HEADER_CURSIZE);
+    if (cmpr && ofd) {
+#if _DO_PREM
+        if (ofd != STDOUT_FILENO)
+        {
+            if (ftruncate(ofd, outlen) < 0) {
+                perror("ftruncate");
+                return -1;
+            }
+            if (lseek(ofd, 0, SEEK_END) < 0) {
+                perror("lseek");
+                return -1;
+            }
+        }
+#endif
+        err = output_finaliser(ofd, &vo);
+        /* Update vo->olen and truncate remaining sparse tail */
+    }
 
 do_free_n_return:
     verbose_printout(&vo);

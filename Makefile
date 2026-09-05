@@ -174,7 +174,10 @@ libz.tar: /bin/tar
 	/bin/tar cf libz.tar libz
 
 libz.tar.gz: libz.tar | ptgzip
-	./ptgzip -nkf libz.tar
+	./ptgzip -nkf $<
+	head -c176 $@ | hexdump | grep -q "00000a0 .* 8b1f"
+	du -b $@
+	@echo
 
 blkline:
 	@echo
@@ -238,7 +241,7 @@ __test-stress: libz.tar $(CMD2T)
 
 _test-stress:
 	@echo
-	@make __test-stress ZLVL=1 blkline
+	@make __test-stress ZLVL=-1 blkline
 
 _full-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) full stress test on /bin/ ===\n\n"
