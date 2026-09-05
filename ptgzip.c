@@ -1417,13 +1417,6 @@ endfunc:
 // Prep
 // =============================================================================
 
-#ifndef _WRT_PTBL
-#define _WRT_PTBL 0
-#endif
-
-#define align_len_for_tbl(_v) { if(_WRT_PTBL && list) \
-            _v->olen = (((_v->olen + 3) >> 2) << 2); }
-
 #define _mpceil(_x) (((_x) + 4095) >> 12)
 
 #define TABLE_ITEMS ((uint32_t)_g_tot_chunks + 4)
@@ -1584,74 +1577,6 @@ fprintf(stderr, ">>> table WR chksum: 0x%08x (0x%08x), len: %lu\n",
     return u;
 }
 
-#if _WRT_PTBL
-
-static ALWAYS_INLINE
-pgunz_t *read_pgunz_table(int fd, int *err)
-{
-    int i;
-    uint8_t *u, buf[16];
-    uint32_t nwords, *list, sum = 0;
-    pgunz_t *ptbl;
-    size_t len;
-
-    *err = 0;
-
-    if (fd <= STDOUT_FILENO)
-        return NULL;
-
-    if (lseek(fd, -16, SEEK_END) < 0) {
-        *err = -16;
-        perror("lseek");
-        return NULL;
-    }
-
-    u = &buf[12];
-    full_read(fd, buf, 16); //RAF, TODO: better return -1 in case of error
-    for (i = 0; i < 4; i++)
-        if(u[i] != ptgz_magic_str[i])
-            break;
-    if (i != 4) {
-        *err = -4;
-        return NULL;
-    }
-
-    nwords = *(uint32_t *)&buf[4];
-
-    ptbl = create_pgunz_table(nwords);
-    if (!ptbl) {
-        *err = -2;
-        return NULL;
-    }
-
-    len = ((nwords + 4) << 2);
-    if (lseek(fd, -len, SEEK_END) < 0) {
-        *err = -1;
-        perror("lseek");
-        return NULL;
-    }
-
-    list = &ptbl->chksum;
-    full_read(fd, list, len); //RAF, TODO: better return -1 in case of error
-
-    sum = 0;
-    for (i = 0; i < nwords + 4; i++)
-        sum += list[i];
-#if _DEBUG & 0x08 // -----------------------------------------------------------
-fprintf(stderr, ">>> table RD chksum: 0x%08x (0x%08x), len: %lu\n",
-    sum, ptbl->chksum, len);
-#endif // ----------------------------------------------------------------------
-    if (sum) {
-        *err = 1;
-        free(ptbl);
-        return NULL;
-    }
-
-    return ptbl;
-}
-
-#endif //_WRT_PTBL
-
 static
 void verbose_printout(vrbout_t *vo)
 {
@@ -1714,6 +1639,10 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
+#define _DO_PREM 1
+
+#if _DO_PREM
+#else
 static ALWAYS_INLINE
 void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
 {
@@ -1730,8 +1659,7 @@ void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
 
     vo->olen += len;
 }
-
-#define _DO_PREM 1
+#endif
 
 static
 int output_finaliser(int ofd, vrbout_t *vo)
@@ -1744,12 +1672,10 @@ int output_finaliser(int ofd, vrbout_t *vo)
         return 1;
     }
 
-    if (!ofd) return 0;
-
-    if (ofd == STDOUT_FILENO) {
-        align_len_for_tbl(vo);
+#if _DO_PREM
+#else
+    if (ofd == STDOUT_FILENO)
         goto write_table;
-    }
 
     if(vo->nidx < 2 || !list) {
         list = NULL;
@@ -1758,7 +1684,6 @@ int output_finaliser(int ofd, vrbout_t *vo)
 
     if(!opt_decompress && _DNT_REOR)
         goto skip_reorgnz;
-
 
     /*
      * In-place file reorganization using kernel-Level zero-copy
@@ -1769,17 +1694,11 @@ int output_finaliser(int ofd, vrbout_t *vo)
     vo->olen = PTGZ_HEADER_CURSIZE + list[0];
     for (uint32_t i = 1; i < vo->nidx; i++) {
         vo->soff += WBUF_MAX_SIZE;
-#if _DO_PREM
-        vo->olen += vo->ptbl->cur.list[i];
-#else
         do_copy_range_on_output_file(i, vo);
-#endif
     }
-
 
 skip_reorgnz:
     /* Update vo->olen and truncate remaining sparse tail */
-    align_len_for_tbl(vo);
     if (ftruncate(ofd, vo->olen) < 0) {
         perror("ftruncate");
         return -1;
@@ -1790,6 +1709,8 @@ skip_reorgnz:
     }
 
 write_table:
+#endif
+
     if(vo->nidx < 2 || !list)
         return  0;
 
@@ -1798,19 +1719,10 @@ write_table:
      *  ~> https://github.com/robang74/uzpexec#parallel-ungzip
      */
 
-    size_t len = 0;
-/*
-    fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
-    vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
-*/
+    size_t len = vo->nidx << 2;
+
     vo->ptbl->nwords = vo->nidx;
     vo->ptbl->bufsze = _g_chunk_size;
-
-    #if _WRT_PTBL
-    uint8_t *u = finalize_pgunz_table(vo->ptbl, &len);
-    #else
-    len = vo->nidx << 2;
-    #endif
 
     if (_g_out_mmap_base) {
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
@@ -1818,55 +1730,22 @@ write_table:
                 (const void *)list, len);
             len = 0;
         } else { // append the full PTGZ header at the end of file
-        #if _WRT_PTBL
-            __builtin_memmove(_g_out_mmap_base + vo->olen,
-                (const void *)u, len);
-            vo->olen += len;
-        #else
             len = PTGZ_HEADER_CURSIZE;
             __builtin_memcpy(_g_out_mmap_base + vo->olen,
                 _g_ptgz_header, len);
             vo->olen += len;
-        #endif
         }
     } else
     if(ofd == STDOUT_FILENO) {
-    // append the full PTGZ header at the end of file
-    #if _WRT_PTBL
-        full_write(ofd, (const void *)u, len);
-        vo->olen += len;
-        len = 0;
-    #else
+        // append the full PTGZ header at the end of file
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
-/*
-        fprintf(stderr, "nw: %u vs %u vs %u, len: %lu\n",
-        vo->ptbl->nwords, vo->nidx, _g_tot_chunks, vo->olen);
-*/
-    #endif
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             len, PTGZ_LIST_START_OFF);
         len = 0;
     }
-
-#if _DEBUG & 0x80 // -----------------------------------------------------------
-    #if _WRT_PTBL
-    if (len)
-    {
-        int err;
-        pgunz_t *pz = read_pgunz_table(ofd, &err);
-        if(!pz || err)
-            fprintf(stderr, ">>> ERR -- read_pgunz_table: %d\n", err);
-        else
-        if (memcmp(u, &pz->chksum, len)) {
-            fprintf(stderr, ">>> ERR -- table mismatch, len: %lu\n", len);
-        }
-        return err;
-    }
-    #endif
-#endif // ----------------------------------------------------------------------
 
     return 0;
 }
@@ -2151,11 +2030,13 @@ static int zxflate_parallel(int infd, int ofd, size_t in_size,
     sem_t sem;
     int err = 0;
     vrbout_t vo;
-    size_t outlen = 0, offset = 0;
+    size_t offset = 0;
     uint32_t *ilst = ptbl->cur.list;
     uint32_t next_idx = 0, current = 0, nthreads = _g_cpu_procs;
 
     const bool cmpr = !opt_decompress;
+    off_t src_off = PTGZ_HEADER_CURSIZE;
+    size_t outlen = PTGZ_HEADER_CURSIZE;
 
 #if _DEBUG
 fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
@@ -2283,21 +2164,17 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
         }
 #if _DO_PREM
         else
-        if (next_idx && cmpr && ofd)
-        {
-        // Preemptively collapse sparse thread allocations into contiguous file ranges
-            off_t src_off = PTGZ_HEADER_CURSIZE + ((off_t)next_idx * WBUF_MAX_SIZE);
-            off_t dst_off = PTGZ_HEADER_CURSIZE + outlen;
-
-            if (src_off != dst_off) {
+        if (next_idx && cmpr && ofd && !_DNT_REOR)
+        {   // collapse sparse thread allocations into a contiguous file
+            src_off += WBUF_MAX_SIZE;
 #if _DO_PREM == 2
-                sync_file_range(ofd, src_off, c->out_len,
-                    SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
+            sync_file_range(ofd, src_off, c->out_len,
+                SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
 #endif
-                if (full_rcopy(ofd, dst_off, src_off, c->out_len) != c->out_len) {
-                    err = -1;
-                    goto do_free_n_return;
-                }
+            if (full_rcopy(ofd, outlen, src_off, c->out_len) != c->out_len)
+            {
+                err = -1;
+                goto do_free_n_return;
             }
         }
 #endif
@@ -2340,8 +2217,23 @@ dispose:
 // === Ending ==================================================================
 
     _verbout_init(vo);
-    if (cmpr)
+    if (cmpr && ofd) {
+#if _DO_PREM
+        if (ofd != STDOUT_FILENO)
+        {
+            if (ftruncate(ofd, outlen) < 0) {
+                perror("ftruncate");
+                return -1;
+            }
+            if (lseek(ofd, 0, SEEK_END) < 0) {
+                perror("lseek");
+                return -1;
+            }
+        }
+#endif
         err = output_finaliser(ofd, &vo);
+        /* Update vo->olen and truncate remaining sparse tail */
+    }
 
 do_free_n_return:
     verbose_printout(&vo);
