@@ -238,14 +238,14 @@ static off_t _g_first_offeset     = 0; // RAF: eq. to PTGZ_HEADER_CURSIZE
 
 static bool chunk_read(chunk_t *c);
 static bool chunk_write(chunk_t *c);
-static size_t full_write(int ofd, const void *buf, size_t len);
+static size_t xfull_write(int ofd, const void *buf, size_t len);
 static uint8_t *ptgz_header_read(uint8_t *buf, uint16_t *nbytes, uint32_t *size);
 static void *ptgz_header_make(uint32_t ctm, uint32_t in_len, int16_t size);
 
 // =============================================================================
 
 static
-size_t full_read(int fd, const void *buf, size_t len)
+size_t xfull_read(int fd, const void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
 
@@ -485,10 +485,10 @@ bool chunk_read(chunk_t *c)
         }
         if (len) {
             __builtin_memcpy(c->in, c->read, len);
-            len += full_read(c->infd, &c->in[len], c->in_len - len);
+            len += xfull_read(c->infd, &c->in[len], c->in_len - len);
             c->in_len = len;
         } else {
-            c->in_len = full_read(c->infd, c->in, c->in_len);
+            c->in_len = xfull_read(c->infd, c->in, c->in_len);
         }
     } else // The operations below can be post-poned w/ a thread
     if(_g_read_mmap_base) {
@@ -552,7 +552,7 @@ fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
     if (!c->ofd) return 0;
 
     if (c->ofd == STDOUT_FILENO)
-        return (full_write(c->ofd, c->out, c->out_len) < 0);
+        return (xfull_write(c->ofd, c->out, c->out_len) < 0);
 
     if(0 && c->flags & b_flag_seek) {
         if (ftruncate(c->ofd, c->out_off + c->out_len) < 0) {
@@ -570,7 +570,7 @@ fprintf(stderr, "ckw>  idx: %u, sze: %lu, off: %lu\n",
 }
 
 static
-size_t full_write(int ofd, const void *buf, size_t len)
+size_t xfull_write(int ofd, const void *buf, size_t len)
 {
     uint8_t *p = (uint8_t *)buf;
 
@@ -844,7 +844,7 @@ typedef struct {
 static const char* ungz_file_reader(void *opaque, uint64_t *len)
 {
     reader_ctx_t *ctx = (reader_ctx_t *)opaque;
-    ssize_t bytes_read = full_read(ctx->fd,
+    ssize_t bytes_read = xfull_read(ctx->fd,
         ctx->buffer   + ctx->pre_size,
         ctx->buf_size - ctx->pre_size);
     bytes_read +=       ctx->pre_size ;
@@ -919,7 +919,7 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
         }
 
         if (ofd == STDOUT_FILENO) {
-            ret = full_write(ofd, decomp_ptr, chunk_len);
+            ret = xfull_write(ofd, decomp_ptr, chunk_len);
             if(ret < 0) goto endfunc;
             else ret = 0;
         } else {
@@ -1217,7 +1217,7 @@ fprintf(stderr, " buf: %p, buf_size: %lu, w: %lu\n", buf, buf_size, w);
         #endif
             if (n && set)
                 __builtin_memmove(inbuf, &inbuf[set], n);
-            r = n + full_read(infd, inbuf + n, in_size - n);
+            r = n + xfull_read(infd, inbuf + n, in_size - n);
 
             if (!r) eof = 1; // EOF
             else strm.avail_in += r;
@@ -1354,7 +1354,7 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
 
         w = out_size - strm.avail_out;
         if(1 || ofd == STDOUT_FILENO) {
-            if (w && full_write(ofd, outbuf, w) < 0) {
+            if (w && xfull_write(ofd, outbuf, w) < 0) {
                 ret = -1;
                 goto endfunc;
             }
@@ -1639,7 +1639,7 @@ int output_finaliser(int ofd, vrbout_t *vo)
     if(ofd == STDOUT_FILENO) {
         // append the full PTGZ header at the end of file
         len = PTGZ_HEADER_CURSIZE;
-        full_write(ofd, _g_ptgz_header, len);
+        xfull_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
         len = 0;
     } else { // write PTGZ list in the PTGZ header
@@ -1862,7 +1862,7 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
             __builtin_memcpy(_g_ptgz_header,
                           _g_read_mmap_base, PTGZ_HEADER_SIZE);
         } else {
-            len = full_read(infd, _g_ptgz_header, PTGZ_HEADER_SIZE);
+            len = xfull_read(infd, _g_ptgz_header, PTGZ_HEADER_SIZE);
             if (len != PTGZ_HEADER_SIZE)
                 return len;
         }
@@ -1878,7 +1878,7 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
         __builtin_memcpy(&_g_ptgz_header[PTGZ_HEADER_SIZE],
                       &_g_read_mmap_base[PTGZ_HEADER_SIZE], nbytes);
     } else {
-        len += full_read(infd, &_g_ptgz_header[PTGZ_HEADER_SIZE], nbytes);
+        len += xfull_read(infd, &_g_ptgz_header[PTGZ_HEADER_SIZE], nbytes);
         if (len != nbytes + PTGZ_HEADER_SIZE)
             return len;
     }
@@ -2072,7 +2072,7 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
             if (_g_out_mmap_base) {
                 __builtin_memcpy(_g_out_mmap_base + outlen, c->out, c->out_len);
             } else {
-                c->out_len = full_write(ofd, c->out, c->out_len);
+                c->out_len = xfull_write(ofd, c->out, c->out_len);
             }
         }
         else
@@ -2577,7 +2577,7 @@ set_ptbl_list:
      * creation from a seekable file as data input source.
      */
     ptbl->cur.list = ptgz_header_make(utc, _g_chunk_size, _g_ptgz_list_size);
-    full_write(ofd, _g_ptgz_header, PTGZ_HEADER_CURSIZE);
+    xfull_write(ofd, _g_ptgz_header, PTGZ_HEADER_CURSIZE);
 
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
