@@ -15,6 +15,7 @@ Simplicity is the ultimate sophistication (cit.)
 ### Index
 
 - [Quick Overview](#quick-overview)
+    - [PTGZ Format Overhead](#ptgz-format-overhead) &dash; [Benchmark Comparison](#benchmark-comparison)
 - [How It Works](#how-it-works)
 - [Rationale](#rationale) about un/gzip parallel format benefits
     - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
@@ -46,6 +47,14 @@ Its relative performances tend to improve in the real-world scenarios:
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
 The field `FEXTRA` was defined by RFC-1952 (1996), and the `PTGZ` format leverages it for supporting the parallelism of `.gz` inflate. This is the **novelty**: how that field is used and why. Because of that novelty the claim of a new format and the `PTGZ` naming.
+
+In being a novel format, PTGZ has its own crystal clear advantages, but also shortcomings tight in being 100% back-compatible. A tiny overhead in size is conversely a throughput penality: both on `zlib-ng`, the `ptgzip -6c` matches `pigz -6c` in speed, but the faster `pigz -5c` in output size.
+
+### PTGZ Format Overhead
+
+The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk. For a 36-chunk PTGZ file, it is 30 + (36 * 4) + (36 * 20) = 894 bytes.
+
+A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk, the overhead, considering a 50% .gz in output by full usage of the whole input chunk size, is 894 / (36 * 256 KiB) ~ 0.1% circa. Current tests, using `libz.tar`, indicates a +0.4% circa for the v0.7.
 
 ### Benchmark Comparison
 
@@ -145,6 +154,8 @@ The throughput peak moved from 64 MB/s to 91 MB/s (1.4x) maintaining the advanta
 - Time (T/30) is the average hot cache execution time, cold cache by `f=qemu.elf`
 
 The last three lines show how much the gzip format is *ancient* but also that it can stay relevant because it is the best compromise that still works everywhere. And `ptgzip` moves that compromise further toward "fast" (especially expected in parallel [inflating](#inflating)) without breaking the "works everywhere" part.
+
+---
 
 ### Technical
 
@@ -443,12 +454,6 @@ The release v0.7 achieved relevant goals but it was a little immature in terms o
 #### Refine release v0.7.2
 
 The release v0.7.2 continues on the path of code unification and reduction, while the advantage of newly added `copy_range()` pre-emption is minimal. Benchmarks evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, versions, maturity, etc.).
-
-### PTGZ overhead
-
-The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk. For a 36-chunk PTGZ file, it is 30 + (36 * 4) + (36 * 20) = 894 bytes.
-
-A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk, the overhead, considering a 50% .gz in output by full usage of the whole input chunk size, is 894 / (36 * 256 KiB) ~ 0.1% circa. Current tests, using `libz.tar`, indicates a +0.4% circa for the v0.7.
 
 <br>
 
