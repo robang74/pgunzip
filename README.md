@@ -442,6 +442,10 @@ The reading window is pre-sized, knowing the original size of reading and to rea
 
 The release v0.7 achieved relevant goals but it was a little immature in terms of usability because it triggers harmless but annoying warnings that can break the scriptability. Thus the v0.7.1, is released to fix a few minor bugs and made an important step forward being a full-usable command line too.
 
+#### Refine release v0.7.2
+
+The release v0.7.2 continues on the path of code unification and reduction, while the advantage of newly added `copy_range()` pre-emption is minimal. Benchmarks evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, versions, maturity, etc.).
+
 <br>
 
 ## Deflating
