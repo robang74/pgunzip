@@ -38,16 +38,20 @@ Simplicity is the ultimate sophistication (cit.)
 
 Its relative performances tend to improve in the real-world scenarios:
 
-- `ptgzip -d` v0.7 is 3.5x faster than `pigz -d` and 5.9x faster than `gzip -d`
-- `ptgzip -c` on `/bin` is 1.8x faster than `pigz -c` and 5.8x faster than `gzip -c`
+- `ptgzip -d` v0.7 is 3.4x faster than `pigz -d` v2.8 and 5.9x faster than `gzip -d`
+- `ptgzip -6c` on `/bin` is 1.8x faster than `pigz -5c` and 5.8x faster than `gzip -c`
 - `ptgzip -d` v0.7 inflates at 1.3GB/s from a file where `dd bs=1M` does 1.5GB/s
 - `ptgzip -6` vs `zstd -1`: same size deflate output, but `zstd` is 2x faster
-
-Comparison with `zstd` for speed should consider that `gzip` has been created in 1992, and standardised by RFC 1950, 1951, 1952 (1996), while `zstd` in 2015, and by RFC 8478 (2018), 8878 (2021), 9659 (2024). This 25 years apart made `gzip` universally adopted and `zstd` faster.
 
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
 The field `FEXTRA` was defined by RFC-1952 (1996), and the `PTGZ` format leverages it for supporting the parallelism of `.gz` inflate. This is the **novelty**: how that field is used and why. Because of that novelty the claim of a new format and the `PTGZ` naming.
+
+### Benchmark Comparison
+
+Comparison with `zstd` for speed should consider that `gzip` has been created in 1992, and standardised by RFC 1950, 1951, 1952 (1996), while `zstd` in 2015, and by RFC 8478 (2018), 8878 (2021), 9659 (2024). This 25 years apart made `gzip` universally adopted and `zstd` faster.
+
+Compiling `pigz` v2.8 (which had its 1st release on 2007) against the same `libzall.a` created for `ptgzip` v0.7 (after 3 weeks of development) shows that `pigz -5c` (dictionary reuse) is 1.26x faster than `ptgzip -6c` (same output size) while the `pigz -d` is 2.55x slower than `ptgzip -d`.
 
 <br>
 
