@@ -1633,14 +1633,6 @@ int output_finaliser(int ofd, vrbout_t *vo)
                 _g_ptgz_header, len);
             vo->olen += len;
         }
-        if (ftruncate(ofd, vo->olen) < 0) {
-            perror("ftruncate");
-            return -1;
-        }/* RAF: not anymore neccesary at this point
-        if (lseek(ofd, 0, SEEK_END) < 0) {
-            perror("lseek");
-            return -1;
-        }*/
     } else
     if(ofd == STDOUT_FILENO) {
         // append the full PTGZ header at the end of file
@@ -1653,6 +1645,17 @@ int output_finaliser(int ofd, vrbout_t *vo)
             len, PTGZ_LIST_START_OFF);
         len = 0;
     }
+
+    if (ofd && ofd != STDOUT_FILENO) {
+        if (ftruncate(ofd, vo->olen) < 0) {
+            perror("ftruncate");
+            return -1;
+        }
+    }/* RAF: not anymore neccesary at this point
+    if (lseek(ofd, 0, SEEK_END) < 0) {
+        perror("lseek");
+        return -1;
+    }*/
 
     return 0;
 }
