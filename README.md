@@ -315,7 +315,9 @@ Switching from appending a table to using the FEXTRA field in GZIP header, the s
 
 So, it seems that PTGZ  could be a 100% back-compatible format and also being embedded into a RFC-1952 header while the 64-bit coverage range and its memory burden spread among many PTGZ headers along the GZIP file, every time the current table run out of fields.
 
-The current table has 4 words (16 bytes) that are redundant when the PTGZ format is embedded in the GZIP header. The current overhead is 4 words plus a word for each record, in the embedded format would be 10 bytes + 3 bytes for each record (2^24 offset range is 2 x 16 MB x 16 cores = 512 MB RAM max).
+The current table has 4 words (16 bytes) that are redundant when the PTGZ format is embedded in the GZIP header. A 32-bit word can address a 2^32 range, and reducing it seems reasonable: 2^24 offset range is 2 x 16 MB x 16 cores = 512 MB RAM max. The effort to deal with this disalignement isn't worth the saving.
+
+Conflating the PTGZ header with the first GZIP header is possible and saves 20 bytes, but at the cost of recalculating the CRC32 which takes time in compression while having a separate header allows to strip it away easily. Also in this case the effort required isn't worth the saving.
 
 ```txt
 $ make ptgzip libz.tar EXTRA_CFLAGS="-D_DNT_MMAP=0"
@@ -346,10 +348,6 @@ $ hexdump -C libz.tar.gz | head -n12
 A customised version in devel branch created the first GZIP file which is RFC-1952 compliant and it starts with a GZIP header in which the `FEXTRA` field contains the chunk size (in output) and the list of compressed chunk offsets (in input).
 
 In short, the `list` element of PTGZ table has been written in the `FEXTRA` field of a valid GZIP header. This allows to read that information before the compressed data and to properly parallelise the inflating process, chunk by chunk.
-
-A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. The overhead, considering a 50% .gz in output, is 30 bytes + 4 bytes each chunk. The relative overhead is 38 bytes over 256 KiB .gz, which is 0.015%.
-
-Reducing to 28 bytes is possible by integrating the PTGZ format in the first chunk header but at the cost of recalculating the CRC32 which takes time in compression while having a separate header allows to strip it away easily.
 
 ```txt
 $ make ptgzip libz.tar.gz _speed-gunzp speef-gunzp
@@ -445,6 +443,12 @@ The release v0.7 achieved relevant goals but it was a little immature in terms o
 #### Refine release v0.7.2
 
 The release v0.7.2 continues on the path of code unification and reduction, while the advantage of newly added `copy_range()` pre-emption is minimal. Benchmarks evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, versions, maturity, etc.).
+
+### PTGZ overhead
+
+The PTGZ total overhead is a `FEXTRA` 30-byte header plus 32-bit word and a 20-byte GZIP header for each chunk, plus the extra size in output due to the restart of the dictionary on every chunk. For a 36-chunk PTGZ file, it is 30 + (36 * 4) + (36 * 20) = 894 bytes.
+
+A file within 256 KiB isn't PTGZ encoded, within 512 KiB is 2 chunks encoded. For a 36-chunk, the overhead, considering a 50% .gz in output by full usage of the whole input chunk size, is 894 / (36 * 256 KiB) ~ 0.1% circa. Current tests, using `libz.tar`, indicates a +0.4% circa for the v0.7.
 
 <br>
 
