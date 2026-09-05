@@ -470,6 +470,27 @@ release:
 }
 
 static ALWAYS_INLINE
+size_t xfull_pread(int fd, uint8_t *buf, size_t len, off_t off)
+{
+    size_t sze = len;
+
+    while (len > 0) {
+        ssize_t w = pread(fd, buf, len, off);
+        if (!w) break;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            perror("pread");
+            exit(-1);
+        }
+        buf += w;
+        off += w;
+        len -= w;
+    }
+
+    return sze - len;
+}
+
+static ALWAYS_INLINE
 bool chunk_read(chunk_t *c)
 {
     if(!c->in_len) return 0;
@@ -495,22 +516,7 @@ bool chunk_read(chunk_t *c)
         uint8_t *src = _g_read_mmap_base + c->in_off;
         __builtin_memcpy(c->in, src, c->in_len);
     } else {
-        off_t off = c->in_off;
-        size_t len = c->in_len;
-        uint8_t *p = c->in;
-        while (len > 0) {
-            ssize_t w = pread(c->infd, p, len, off);
-            if (!w) break;
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                perror("p/read");
-                return -1;
-            }
-            p   += w;
-            off += w;
-            len -= w;
-        }
-        c->in_len -= len;
+        c->in_len = xfull_pread(c->infd, c->in, c->in_len, c->in_off);
     }
 
     return 0;
