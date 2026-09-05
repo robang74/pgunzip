@@ -137,7 +137,7 @@ enum {
 #define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling
 #endif
 #ifndef _USE_MMAP    // mmap() is performed by default, but it can fail
-#define _USE_MMAP (0 && !_DNT_MMAP)
+#define _USE_MMAP  0
 #endif
 #ifndef _USE_FREE
 #define _USE_FREE  0 // free() isn't strictly necessary, but do testing
@@ -318,6 +318,8 @@ void chunk_dispose(chunk_t *c, uint8_t err)
 #define thread_inflate thread_zxflate
 #define thread_deflate thread_zxflate
 
+#define LOG2(_x) ({ uint8_t n, a=_x; for(n=0;a>0;n++) a>>=1; n; })
+
 static void *thread_zxflate(void *arg)
 {
     int ret;
@@ -489,7 +491,7 @@ bool chunk_read(chunk_t *c)
             c->in_len = full_read(c->infd, c->in, c->in_len);
         }
     } else // The operations below can be post-poned w/ a thread
-    if(_g_out_mmap_base) {
+    if(_g_read_mmap_base) {
         uint8_t *src = _g_read_mmap_base + c->in_off;
         __builtin_memcpy(c->in, src, c->in_len);
     } else {
