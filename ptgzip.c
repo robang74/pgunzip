@@ -1639,28 +1639,6 @@ void verbose_printout(vrbout_t *vo)
     }
 }
 
-#define _DO_PREM 1
-
-#if _DO_PREM
-#else
-static ALWAYS_INLINE
-void do_copy_range_on_output_file(uint32_t i, vrbout_t *vo)
-{
-    size_t len = vo->ptbl->cur.list[i];
-    // RAF: it should never happens, by design
-    if (!len) return;
-
-    if (_g_out_mmap_base)
-        __builtin_memmove( _g_out_mmap_base + vo->olen,
-                           _g_out_mmap_base + vo->soff,  len);
-    else
-    if (full_rcopy(vo->otfd, vo->olen, vo->soff, len) != len)
-        exit(-1);
-
-    vo->olen += len;
-}
-#endif
-
 static
 int output_finaliser(int ofd, vrbout_t *vo)
 {
@@ -1671,45 +1649,6 @@ int output_finaliser(int ofd, vrbout_t *vo)
             vo->nidx, _g_tot_chunks);
         return 1;
     }
-
-#if _DO_PREM
-#else
-    if (ofd == STDOUT_FILENO)
-        goto write_table;
-
-    if(vo->nidx < 2 || !list) {
-        list = NULL;
-        goto skip_reorgnz;
-    }
-
-    if(!opt_decompress && _DNT_REOR)
-        goto skip_reorgnz;
-
-    /*
-     * In-place file reorganization using kernel-Level zero-copy
-     * Loop through all compressed chunk lengths stored in list[]
-     *
-     */
-    vo->soff = PTGZ_HEADER_CURSIZE;
-    vo->olen = PTGZ_HEADER_CURSIZE + list[0];
-    for (uint32_t i = 1; i < vo->nidx; i++) {
-        vo->soff += WBUF_MAX_SIZE;
-        do_copy_range_on_output_file(i, vo);
-    }
-
-skip_reorgnz:
-    /* Update vo->olen and truncate remaining sparse tail */
-    if (ftruncate(ofd, vo->olen) < 0) {
-        perror("ftruncate");
-        return -1;
-    }
-    if(lseek(ofd, 0, SEEK_END) < 0) {
-        perror("lseek");
-        return -1;
-    }
-
-write_table:
-#endif
 
     if(vo->nidx < 2 || !list)
         return  0;
@@ -1728,19 +1667,27 @@ write_table:
         if(_g_tot_chunks) { // write PTGZ list in the PTGZ header
             __builtin_memmove(_g_out_mmap_base + PTGZ_LIST_START_OFF,
                 (const void *)list, len);
-            len = 0;
         } else { // append the full PTGZ header at the end of file
             len = PTGZ_HEADER_CURSIZE;
             __builtin_memcpy(_g_out_mmap_base + vo->olen,
                 _g_ptgz_header, len);
             vo->olen += len;
         }
+        if (ftruncate(ofd, vo->olen) < 0) {
+            perror("ftruncate");
+            return -1;
+        }/*
+        if (lseek(ofd, 0, SEEK_END) < 0) {
+            perror("lseek");
+            return -1;
+        }*/
     } else
     if(ofd == STDOUT_FILENO) {
         // append the full PTGZ header at the end of file
         len = PTGZ_HEADER_CURSIZE;
         full_write(ofd, _g_ptgz_header, len);
         vo->olen += len;
+        len = 0;
     } else { // write PTGZ list in the PTGZ header
         full_pwrite(ofd, (void *)list,
             len, PTGZ_LIST_START_OFF);
@@ -2162,12 +2109,12 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
                 c->out_len = full_write(ofd, c->out, c->out_len);
             }
         }
-#if _DO_PREM
         else
+        /* collapse sparse thread allocations into a contiguous file */
         if (next_idx && cmpr && ofd && !_DNT_REOR)
-        {   // collapse sparse thread allocations into a contiguous file
+        {
             src_off += WBUF_MAX_SIZE;
-#if _DO_PREM == 2
+#if 0
             sync_file_range(ofd, src_off, c->out_len,
                 SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE);
 #endif
@@ -2177,7 +2124,6 @@ fprintf(stderr, "%s> cur: %2d / %2d (%d), idx: %2d vs %2d (ofd: %d), pth: %lu/%d
                 goto do_free_n_return;
             }
         }
-#endif
         next_idx++;
         outlen += c->out_len;
 
@@ -2218,19 +2164,6 @@ dispose:
 
     _verbout_init(vo);
     if (cmpr && ofd) {
-#if _DO_PREM
-        if (ofd != STDOUT_FILENO)
-        {
-            if (ftruncate(ofd, outlen) < 0) {
-                perror("ftruncate");
-                return -1;
-            }
-            if (lseek(ofd, 0, SEEK_END) < 0) {
-                perror("lseek");
-                return -1;
-            }
-        }
-#endif
         err = output_finaliser(ofd, &vo);
         /* Update vo->olen and truncate remaining sparse tail */
     }
