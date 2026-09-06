@@ -6,6 +6,10 @@ Using an AI as a rubber duck, is more effective than speaking with a rubber duck
 
 In this case, I have used the Kimi "immediate" mode combined with "high effort" which allows the access to the AI chain of thoughts. When I saw passing the `_cpu_relax()` is a unnecessary delay, I left the browser and fixed the code. I prepared, committed and tagged another release (v0.7.5) and then I went back to see what Kimi answered. The AI found 6 bugs, which the #4 was the fix and the others were an architectural critics rooted into the AI misunderstanding of the code base.
 
+> [!NOTE]
+> 
+> The other five points were "misunderstandings" in the sense of humans perception, technically speaking in artificial intelligence filed, they were "hallucinations". Hopefully, one day, someone will explain to me why people who creates their own "hallucinations" are **instead** "misunderstanding" something while AI hallucinates. As external observer in an evoluted Turing test, I do not see such a difference to sustain such a different terminology rather than a bias.
+
 Usually, I quit the conversation leaving the AI in its own self-narrative trap. Unfortunately, this is a Karma-back trap which has been on purpose designed by those give for free the access but expect people train the AI. Avoid to train it, and due a cross sections memory access, the AI will insist to correct or push corrections which we simply skipped. The rubber duck has no memory, the AI has and use it for formulating the future answers.
 
 Delete a chat might work, and probably using a temporary one is even better. Until we accidentally close the browser or the windows or click a link, and the uncompleted working session is lost whatever it was useless or delivered the best-in-class solution that we did not copied just in time. Karma strikes also those who use temporary chats.
