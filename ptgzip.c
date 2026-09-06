@@ -127,7 +127,7 @@ enum {
 #define _DO_WRST   2 // 0: last run can be shorter than 1/2 _g_chunk_size       (ok)
 #endif               // 2: impose the same rule also to 2+ cycles runs
 #ifndef _THR_WAIT
-#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling        (ko)
+#define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling        (ok)
 #endif
 #ifndef _USE_MMAP
 #define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ok)
@@ -263,7 +263,6 @@ int full_sem_wait(sem_t *sem_ptr)
     int ret;
 
     do {
-        _cpu_relax();
         ret = sem_wait(sem_ptr);
         if(!ret) return 0;
     } while(errno == EINTR || errno == EAGAIN); //EINVAL
@@ -644,7 +643,7 @@ void _chunk_init_fast(chunk_t *c, int ofd, int infd, sem_t *sem_ptr)
         c->in_len = _g_read_file_size - c->in_off;
 }
 
-#define chunk_init_fast(_c) _chunk_init_fast(_c, ofd, infd, &sem)
+#define chunk_init_fast(_c) _chunk_init_fast(_c, ofd, infd, sem_ptr)
 
 #define inflate_chunk_init zxflate_chunk_init
 #define deflate_chunk_init zxflate_chunk_init
@@ -1918,15 +1917,14 @@ void _chunk_list_init(chunk_t *c, int ofd, int infd,
 }
 
 #define chunk_list_init(_c) \
-    _chunk_list_init(_c, ofd, infd, &sem, out_size, ilst[current])
+    _chunk_list_init(_c, ofd, infd, sem_ptr, out_size, ilst[current])
 
 #define inflate_parallel zxflate_parallel
 #define deflate_parallel zxflate_parallel
 
-static int zxflate_parallel(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl)
+static int zxflate_parallel(int infd, int ofd, size_t in_size, size_t out_size,
+    int8_t *buf, size_t buf_size, bool seek, pgunz_t *ptbl, sem_t *sem_ptr)
 {
-    sem_t sem;
     int err = 0;
     vrbout_t vo;
     size_t offset = 0;
@@ -1945,7 +1943,6 @@ fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
     _g_chunk_size = in_size;
     chunk_t chunks[2][MAX_THREADS];
     memset(chunks, 0, sizeof(chunks));
-    sem_init(&sem, 0, 0);
 
     /* setup chunk descriptors and output buffers, spawn worker threads */
     for (uint32_t i = 0; i < nthreads; i++, current++)
@@ -1979,7 +1976,7 @@ do_a_thread_wait:
     //RAF: one thread completed, at least as
     // long as, at least, one thread exists.
     if (current != _g_tot_chunks)
-        if (full_sem_wait(&sem))
+        if (full_sem_wait(sem_ptr))
             return -1;
 #else
     _cpu_relax();
@@ -2113,9 +2110,6 @@ dispose:
 
 do_free_n_return:
     verbose_printout(&vo);
-    #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
-    sem_destroy(&sem);
-    #endif
 
     return err;
 }
@@ -2543,7 +2537,7 @@ do_inflate_parall:
 //      next_idx = _g_tot_chunks;
         out_size = size_by_blocks(zread_max_size(in_size));
         ret = inflate_parallel(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, &tbl);
+            out_size, ptr, buf_size, !max_out_size, &tbl, &sem);
         buf_size = 0;
     }
 
@@ -2592,7 +2586,7 @@ fprintf(stderr, "      list: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
 #endif // ----------------------------------------------------------------------
 
     ret = deflate_parallel(infd, ofd, _g_chunk_size,
-        WBUF_MAX_SIZE, 0, 0, !max_out_size, ptbl);
+        WBUF_MAX_SIZE, 0, 0, !max_out_size, ptbl, &sem);
     if(_USE_FREE) free(ptbl);
 
 do_free:
