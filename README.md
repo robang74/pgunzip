@@ -68,6 +68,8 @@ Comparison with `zstd` for speed should consider that `gzip` has been created in
 
 Compiling `pigz` v2.8 (which had its 1st release on 2007) against the same `libzall.a` created for `ptgzip` v0.7 (after 3 weeks of development) shows that `pigz -5c` (dictionary reuse) is 1.26x faster than `ptgzip -6c` (same output size) while the `pigz -d` is 2.55x slower than `ptgzip -d`.
 
+A relevant aspect to consider in benchmarking is the CPU temperature: cold or hot CPU start. Which impacts more than dropping caches which requires `sudo`. The "cold start" can be easily defined, e.g.: `T < 50°C` for 5s. The "hot start", the same but preceded by a pre-determined workload.
+
 <br>
 
 ## How It Works
