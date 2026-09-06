@@ -2443,7 +2443,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         if (opt_decompress) {
             if (len < 4 || !strcmp(filename + len - 4, ".gz")) {
                 fprintf(stderr, "Fatal: not a '.gz' terminated file name\n%s", filename);
-                if(_USE_FREE) free(str);
                 return 1;
             }
 
@@ -2460,10 +2459,7 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
             perror("open");
             return 1;
         }
-        #if _USE_FREE
-        free(str); //RAF: this can be left at the exit() as well
-        str = NULL;
-        #endif
+        free(str);
     }
 
     if (ofd == STDOUT_FILENO)
