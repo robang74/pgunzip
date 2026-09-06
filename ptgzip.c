@@ -38,7 +38,7 @@
 #define LICENSE \
     "(c) 2026, Roberto A. Foglietta <roberto.foglietta@gmail.com>, GPL v2"
 
-#define VERSION "ptgzip v0.7.2"
+#define VERSION "ptgzip v0.7.4"
 
 #define ALWAYS_INLINE __attribute__ ((always_inline)) inline
 #define ALIGNED4      __attribute__ ((aligned(4)))
