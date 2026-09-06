@@ -1,5 +1,7 @@
 # Using Kimi AI to support debugging
 
+(c) 2026, Roberto A. Foglietta (roberto.foglietta@gmail.com), CC BY-NC-ND 4.0
+
 This conversation is interesting because it is educational for others developer about how using correctly the AI to support their debug. Spoiler: one of the most affecting bias of looking at our own code that we don't see the code but our own idea behind that code. So, developers are blind to their own bugs and realising this mismatch between "I wish to" and "I did that" takes time, sometimes a lot of time.
 
 Using an AI as a rubber duck, is more effective than speaking with a rubber duck and mimic the answer because the AI is a 3rd party. However, it is not granted that the AI would be more useful than a rubber duck, and it can be another source of delay rather than a solution provider. This chat show the advantages and the shortcomings, compared the rubber duck approach. One clear shortcoming, is that AI consume a lot of energy compared a rubber duck.
@@ -45,7 +47,6 @@ The irony is particularly striking here, because the same discipline that can ma
 When they scream "hackers", like once upon a time the guards on the navy crow's nest were screaming "pirates", it is just because they are remarkably good at becoming aficionados of those "local solutions" which are postponing the cost of their own consequences.
 
 From this PoV, it is their own TCMO which is pointing back at them, materialised in one of the many possible forms of an external agent or phenomenon. You may call it "Karma with a compounding interest term", if you like a polite-charitable wording and institutionalised terminology.
-
 
 ---
 ---
@@ -419,5 +420,4 @@ So your short answer is correct:
 - The state-2 `sem_post()` is a valid double-buffered pipeline design.
 - The `_cpu_relax()` before `sem_wait()` is the actual performance killer under load.
 - Removing it restores performance because `sem_wait()` already handles both the fast-path (immediate return) and the slow-path (efficient kernel sleep) correctly.
-
 
