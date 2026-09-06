@@ -110,8 +110,8 @@ enum {
 #define _DEBUG     0 //xFF
 #endif
 
-#ifndef _DNT_MMAP
-#define _DNT_MMAP  1 //RAF: =1 to test mmap() failure, also file faster         (ko)
+#ifndef _SZE_MMAP
+#define _SZE_MMAP  23 //RAF: =0 to test mmap() failure, =n is 2^n min size      (ok)
 #endif
 #ifndef _DNT_REOR
 #define _DNT_REOR  0 //RAF: =1 use write() to avoid copy_range() on file        (ok)
@@ -130,7 +130,7 @@ enum {
 #define _THR_WAIT  0 // 1: wait for any of threads completes, 0: polling        (ko)
 #endif
 #ifndef _USE_MMAP
-#define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ko)
+#define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ok)
 #endif
 #ifndef _USE_FREE
 #define _USE_FREE  0 // free() isn't strictly necessary, but do testing         (ok)
@@ -441,11 +441,13 @@ endfnc:
     else
         _inflate_end(&strm);
     c->state = 2;
+    if (_g_out_mmap_base && _USE_MMAP) {}
+    else
+    if (c->ofd == STDOUT_FILENO) {}
+    else
     if (cmpr && _DNT_REOR) {}
     else
-    if (c->ofd != STDOUT_FILENO
-    && (!_g_out_mmap_base || !_USE_MMAP)
-    ){
+    {
         if (c->sem_ptr){
             sem_post(c->sem_ptr);
             c->sem_ptr = NULL;
@@ -1225,30 +1227,12 @@ fprintf(stderr, " buf: %p, buf_size: %lu, w: %lu\n", buf, buf_size, w);
 #if 0 // -----------------------------------------------------------------------
 fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
 #endif // ----------------------------------------------------------------------
-            #if   _SEEKER_FUNC == 1
+            #if   _SEEKER_FUNC == 1 || _SEEKER_FUNC == 2
             strm.avail_in = r;
             set = chunk_seeker(inbuf, r - 3);
             if (set) {
                 strm.avail_in = set;
                 rmn = r - set;
-            }
-            #elif _SEEKER_FUNC == 2
-            set = 0;
-            strm.avail_in = r;
-            register uint8_t *p = inbuf + 1;
-            r -= 3; // to avoid the buffer overflow
-            for (register uint32_t n = 1; n < r; n++, p++) {
-                #if __BYTE_ORDER == __BIG_ENDIAN
-                if ((*(uint32_t *)p & 0xFFFFFF00) == 0x1F8B0800)
-                #else
-                if ((*(uint32_t *)p & 0x00ffffff) == 0x00088b1f)
-                #endif
-                {
-                    strm.avail_in = n;
-                    rmn = r - n + 3;
-                    set = n;
-                    break;
-                }
             }
             #elif _SEEKER_FUNC == 3
             set = 0;
@@ -1359,7 +1343,6 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
         } else {
             if (c.thr) {
                 pthread_join(c.thr, NULL);
-                //fprintf(stderr, "state: %u\n", c.state);
                 c.out_off += c.out_len;
                 c.thr = 0;
                 c.idx++;
@@ -1418,9 +1401,6 @@ endfunc:
 // =============================================================================
 
 #define _mpceil(_x) (((_x) + 4095) >> 12)
-
-#define TABLE_ITEMS ((uint32_t)_g_tot_chunks + 4)
-#define TABLE_BSIZE ((TABLE_ITEMS) << 2)
 
 /* RAF ptzip v0.5
  *******************************************************************************
@@ -1604,10 +1584,15 @@ int output_finaliser(int ofd, vrbout_t *vo)
 {
     uint32_t *list = vo->ptbl->cur.list;
 
-    if(vo->nidx && _g_tot_chunks && vo->nidx != _g_tot_chunks) {
+    if(vo->nidx && _g_tot_chunks && vo->nidx != _g_tot_chunks)
+    {
+#if 0
         _print2("ERROR: next_idx != _g_tot_chunks, %u vs %u\n",
             vo->nidx, _g_tot_chunks);
         return 1;
+#else
+        //_g_tot_chunks = vo->nidx;
+#endif
     }
 
     if(vo->nidx < 2 || !list)
@@ -1858,9 +1843,10 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
             if(_g_read_file_size < PTGZ_HEADER_SIZE)
                 return _g_read_file_size;
             __builtin_memcpy(_g_ptgz_header,
-                          _g_read_mmap_base, PTGZ_HEADER_SIZE);
+                _g_read_mmap_base, PTGZ_HEADER_SIZE);
         } else {
-            len = xfull_read(infd, _g_ptgz_header, PTGZ_HEADER_SIZE);
+            len = xfull_read(infd, _g_ptgz_header,
+                       PTGZ_HEADER_SIZE);
             if (len != PTGZ_HEADER_SIZE)
                 return len;
         }
@@ -1876,7 +1862,8 @@ size_t ptgz_header_init(int infd, pgunz_t *ptbl)
         __builtin_memcpy(&_g_ptgz_header[PTGZ_HEADER_SIZE],
                       &_g_read_mmap_base[PTGZ_HEADER_SIZE], nbytes);
     } else {
-        len += xfull_read(infd, &_g_ptgz_header[PTGZ_HEADER_SIZE], nbytes);
+        len += xfull_read(infd,
+            &_g_ptgz_header[PTGZ_HEADER_SIZE], nbytes);
         if (len != nbytes + PTGZ_HEADER_SIZE)
             return len;
     }
@@ -2140,26 +2127,29 @@ do_free_n_return:
 static
 size_t do_output_mmap(int ofd)
 {
-    size_t max;
+    size_t max_size;
 
     if (!ofd || opt_stdout)
         return 0;
 
     // RAF, TODO: the PTGZ determines the output file size
-    max  = (opt_decompress ? 0 : WBUF_MAX_SIZE) * _g_tot_chunks;
-    max += PTGZ_HEADER_CURSIZE;
+    max_size  = opt_decompress ? 0 : (WBUF_MAX_SIZE * _g_tot_chunks);
+    if (max_size)
+        max_size += PTGZ_HEADER_CURSIZE;
+    else
+        return 0;
 
     /* 1. Pre-allocate max size for output mmap */
-    if (ftruncate(ofd, max) < 0) {
+    if (ftruncate(ofd, max_size) < 0) {
         perror("ftruncate");
         return 0;
     }
 
-    if(_DNT_MMAP || !max)
+    if(!_SZE_MMAP || max_size < (1UL << _SZE_MMAP))
         return 0;
 
     /* 2. Map output file into virtual memory */
-    _g_out_mmap_base = mmap(NULL, max,
+    _g_out_mmap_base = mmap(NULL, max_size,
         PROT_READ  | PROT_WRITE,
         MAP_SHARED | MAP_POPULATE, ofd, 0);
     if (_g_out_mmap_base == MAP_FAILED) {
@@ -2168,7 +2158,7 @@ size_t do_output_mmap(int ofd)
         return 0;
     }
 
-    return max;
+    return max_size;
 }
 
 int main(int argc, char **argv)
@@ -2342,7 +2332,7 @@ int main(int argc, char **argv)
         posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
         #endif
 
-        if(_DNT_MMAP || !_g_read_file_size)
+        if(!_SZE_MMAP || _g_read_file_size < (1UL << _SZE_MMAP))
             break;
 
         /* mmap entire file (zero-copy input for all threads) */
@@ -2503,9 +2493,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     max_out_size = do_output_mmap(ofd);
 
-    if(buf_size) {
+    if(buf_size)
         goto set_default_values;
-    } else
+
 #if _DO_STRM // RAF: doing 'make test-inout', parallel is:
              //    - 2x faster than the fastest streaming
              //    - 3x faster than the slowest streaming
@@ -2524,14 +2514,15 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     }
 
 #if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d, mxos: %lu\n",
-    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, max_out_size);
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d/%d, mxos: %lu\n",
+    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, next_idx, max_out_size);
 fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
     ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
 #endif // ----------------------------------------------------------------------
 
-    if (in_size < MIN_CHUNK_SIZE) {
+    if (!in_size) {
 set_default_values:
+//      next_idx = 1;
         ptr      = _g_ptgz_header;
         out_size = UNOUT_CHUNK_SIZE;
         in_size  = UNZIN_CHUNK_SIZE;
@@ -2540,6 +2531,7 @@ set_default_values:
     } else
     if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst[0]) {
 do_inflate_stream:
+//      next_idx = _g_tot_chunks;
         in_size  = size_by_blocks(zread_max_size(in_size));
         out_size = size_by_blocks(in_size >> 1);
         if(out_size < UNOUT_CHUNK_SIZE)
@@ -2548,6 +2540,7 @@ do_inflate_stream:
             out_size, ptr, buf_size, !max_out_size, &tbl);
     } else {
 do_inflate_parall:
+//      next_idx = _g_tot_chunks;
         out_size = size_by_blocks(zread_max_size(in_size));
         ret = inflate_parallel(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
@@ -2559,7 +2552,6 @@ do_inflate_parall:
         verbose_printout(&vo);
     }
 
-//  fprintf(stderr, ">>> ret: %d, ptr: %p, sze: %u\n", ret, ptr, in_size);
     if (!ret && !opt_keep && !opt_test && !opt_stdout) {
         if(unlink(filename))
             perror("unlink");
