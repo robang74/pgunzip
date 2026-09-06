@@ -139,7 +139,7 @@ enum {
 #define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ko)
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE  1 // free() isn't strictly necessary, but do testing         (ko)
+#define _USE_FREE  0 // free() isn't strictly necessary, but do testing         (ko)
 #endif
 #ifndef _ONE_ZDF
 #define _ONE_ZDF   1 //RAF: no difference in .gz size                           (ok)
@@ -512,8 +512,7 @@ bool chunk_read(chunk_t *c)
         }
     } else // The operations below can be post-poned w/ a thread
     if(_g_read_mmap_base) {
-        uint8_t *src = _g_read_mmap_base + c->in_off;
-        __builtin_memcpy(c->in, src, c->in_len);
+        __builtin_memcpy(c->in, _g_read_mmap_base + c->in_off, c->in_len);
     } else {
         c->in_len = xfull_pread(c->infd, c->in, c->in_len, c->in_off);
     }
@@ -1406,8 +1405,8 @@ fprintf(stderr, "  init2 mnz: %d (avail: %u, %u, write: %ld)\n",
 
 endfunc:
     if (c.thr) pthread_join(c.thr, NULL);
+    //_inflate_end(&strm);
     #if _USE_FREE
-    _inflate_end(&strm);
     free(inbuf);
     free(outbuf);
     #endif
@@ -1520,9 +1519,9 @@ pgunz_t *create_pgunz_table(uint32_t nwords)
 {
     pgunz_t *p;
     uint8_t *u;
-    uint32_t n, len, nw;
+    uint32_t n, len, nw = nwords;
 
-    if(!nwords)
+    if(!nw)
         nw = PTGZ_LIST_MAX_WORDS;
     n   = _mpceil(nw << 2);
     len = sizeof(pgunz_t) + n;
@@ -2441,22 +2440,25 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     else
     if (ofd && !opt_stdout)
     {
-        ssize_t len = strlen(filename) + (opt_decompress ? -3 : 4);
-        char *str = malloc(len);
+        size_t len = strlen(filename);
+        char *str = malloc(len + 4);
         if(!str) {
             perror("malloc");
             return 1;
         }
-        if(opt_decompress) {
-            if(len < 0 || !strstr(".gz", &filename[len])) {
-                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n");
+        if (opt_decompress) {
+            if (len < 4 || !strcmp(filename + len - 4, ".gz")) {
+                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n%s", filename);
+                if(_USE_FREE) free(str);
                 return 1;
             }
-            strncpy(str, filename, len);
+
+            len -= 3;
+            memcpy(str, filename, len);
+            str[len] = '\0';
         } else {
-            snprintf(str, len, "%s.gz", filename);
+            snprintf(str, len + 4, "%s.gz", filename);
         }
-        str[len] = 0;
 
         //RAF, TODO: to check the original file permissions, if any than STDIN
         ofd = open(str, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP);
@@ -2609,6 +2611,7 @@ fprintf(stderr, "      list: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
 
     ret = deflate_parallel(infd, ofd, _g_chunk_size,
         WBUF_MAX_SIZE, 0, 0, !max_out_size, ptbl);
+    if(_USE_FREE) free(ptbl);
 
 do_free:
     #if _USE_FREE // RAF: the Linux kernel does it for us at exit(), redundant
@@ -2620,7 +2623,6 @@ do_free:
         munmap(_g_out_mmap_base, max_out_size);
     }
     if(ofd) close(ofd);
-    free(ptbl);
     #endif
 
     return ret;

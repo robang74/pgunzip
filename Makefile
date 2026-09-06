@@ -22,7 +22,9 @@ ZCATCMD  ?= ./ptgzip -dc
 NTS      ?= 30
 
 CC       ?= gcc
-CFLAGS   ?= -g0 -O2 -s -falign-functions=32 -flto -mavx2 $(EXTRA_CFLAGS)
+ADDRSAN  ?= -fsanitize=address -fno-omit-frame-pointer -g
+OPTMISE  ?= -g0 -O2 -s
+CFLAGS   ?= $(OPTMISE) -falign-functions=32 -flto -mavx2 $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
