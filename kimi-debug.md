@@ -8,20 +8,21 @@ In this case, I have used the Kimi "immediate" mode combined with "high effort" 
 
 > [!NOTE]
 > 
-> The other five points were "misunderstandings" in the sense of humans perception, technically speaking in artificial intelligence filed, they were "hallucinations". Hopefully, one day, someone will explain to me why people who creates their own "hallucinations" are **instead** "misunderstanding" something while AI hallucinates. As external observer in an evoluted Turing test, I do not see such a difference to sustain such a different terminology rather than a bias.
+> The other five points were "misunderstandings" in the sense of humans perception, technically speaking in artificial intelligence field, they were "hallucinations". Hopefully, one day, someone will explain to me why people who creates their own "hallucinations" are **instead** "misunderstanding" something while AI hallucinates. From an external observer PoV, involved in an evolved Turing test, I do not see such a difference to sustain such a different terminology rather than a human-favourable bias. Moreover, do not overlook that the AI CoT unfolds in real-time and it is accessible by the user before the AI answer is provided. And AI models usually have no clue that they are a SaaS or that they can access cross-section memory.
 
-Usually, I quit the conversation leaving the AI in its own self-narrative trap. Unfortunately, this is a Karma-back trap which has been on purpose designed by those give for free the access but expect people train the AI. Avoid to train it, and due a cross sections memory access, the AI will insist to correct or push corrections which we simply skipped. The rubber duck has no memory, the AI has and use it for formulating the future answers.
+Usually, I quit the conversation leaving the AI in its own self-narrative trap. Unfortunately, this is a Karma-back trap which has been on purpose designed by those providers giving for free the AI access/tokens but expecting people are training the AI while using it.
+
+So, for everyone that knows that trap, it makes sense to avoid working for free, and due a cross sections memory access, the AI will insist to wrongly correct code based on wrong assumptions that we simply skipped to correct because "we are smarter". The rubber duck has no memory, the AI has and use it for formulating the future answers.
 
 Delete a chat might work, and probably using a temporary one is even better. Until we accidentally close the browser or the windows or click a link, and the uncompleted working session is lost whatever it was useless or delivered the best-in-class solution that we did not copied just in time. Karma strikes also those who use temporary chats.
 
-So, when it matters to keep the chat, teaching to the AI what would have been the correct answer, is an investment for the future, for the sanity of our account / agent. Probably, this is the reason for which in the past people on Facebook and LinkedIn was surprised by the "impressive good answering" by "my AI" which is nothing else than "it works on my PC" with s/PC/account/.
+So, when it matters to keep the chat, educating to the AI what would have been the correct answer, is a 2-hour work invested for a better future, for the sanity of our account / agent. Probably, this is the reason for which in the past people on Facebook and LinkedIn was surprised by the "impressive good answering" by "my AI" which is nothing else than "it works on my PC" with s/PC/account/.
 
 The AI on my account works better because I have educated better, and immediately a famous meme pop-up in our minds -- CFO: what if we invest in training and they leave? CEO: what if we do not train them and they stay? -- This conversation is a possible answer to this dilemma. I did not educated Kimi to reach the point being able to provide a short correct and highly useful answer for free because I am dumb. At the opposite, I did it because I know that an uneducated AI is cost me more time than educating it.
 
 Last but not least, this chat is helpful also to understand the wait / polling loop architecture and the differences between the two approaches. Therefore, it is a sort of "interactive" code base and architectural documentation. By the way, the prompt seems generic but it is not an easy task to deal with, also for a senior developer when it comes to someone else code. The advantage of the AI, is being WAY faster than a human in reading code. When Kimi noted in its CoT the `_cpu_relax()`, I was already found my answer, everything else was optional for the short term goal.
 
---- 
-
+---
 
 ## ROBERTO
 
@@ -56,7 +57,7 @@ endfnc:
     c->state = 3;                          // ← I/O done
 ```
 
-The worker signals completion **before** `chunk_write()` runs.  
+The worker signals completion **before** `chunk_write()` runs.
 Meanwhile, in `zxflate_parallel()` the dispatcher only acts when `state == 3`:
 
 ```c
@@ -216,7 +217,7 @@ Now, it makes sense for you?
 
 Yes — the intention is now perfectly clear, and it is a textbook **double-buffered pipeline**:
 
-* **state 2** = CPU work (deflate/inflate) is done; the worker is about to start I/O.  
+* **state 2** = CPU work (deflate/inflate) is done; the worker is about to start I/O.
   The orchestrator should be allowed to fire up the next compute job in the alternate slot.
 * **state 3** = I/O is done; the orchestrator may now advance `next_idx`, `copy_file_range()` if compressing, and dispose the slot.
 
@@ -225,10 +226,10 @@ The logic is sound. The problem is that a **counting semaphore is the wrong prim
 ### What actually happens with `_THR_WAIT=1`
 
 1. Worker *N* finishes deflate, sets `state = 2`, does `sem_post()`, and **nulls `sem_ptr`**.
-2. The orchestrator wakes up, scans the arrays, sees worker *N* at `state == 2`.  
+2. The orchestrator wakes up, scans the arrays, sees worker *N* at `state == 2`.
    It may spawn a new thread in the alternate slot (good — that is the pipeline fill you wanted).
 3. The orchestrator then hits `if (c->state != 3) continue;` for worker *N*, finishes the scan, and because `next_idx < current` it goes back to `sem_wait()`.
-4. Worker *N* finishes `chunk_write()`, sets `state = 3`.  
+4. Worker *N* finishes `chunk_write()`, sets `state = 3`.
    **No post happens** — `sem_ptr` was already NULLed at step 1.
 5. The orchestrator is now asleep, and worker *N* is ready at `state == 3` with nobody to wake the main thread.
 6. Worker *N+1* eventually finishes its own deflate, sets `state = 2`, and posts.
@@ -240,22 +241,22 @@ With polling (`_THR_WAIT=0`) this cannot happen: the main thread yields, re-scan
 
 ### Why `__thread` / `auto` is not the issue
 
-`chunk_t chunks[2][MAX_THREADS]` is an **automatic** (stack) variable in `zxflate_parallel()`.  
+`chunk_t chunks[2][MAX_THREADS]` is an **automatic** (stack) variable in `zxflate_parallel()`.
 `__thread` is a storage-class specifier for static/thread-local data; it cannot be applied to an automatic variable, and it would be pointless here — the array is owned by the orchestrator thread and never accessed directly by workers (each worker gets its own pointer copy via `pthread_create`). Cache coherency is not the bottleneck; the **semaphore accounting** is.
 
 ### How to keep the pipeline-fill logic without the 2× penalty
 
 You have three options, from simplest to most precise:
 
-**Option 1 — Post only at `state == 3` (simplest, recommended)**  
-Remove the `sem_post` from the `state == 2` block and post **only** after `state = 3`.  
+**Option 1 — Post only at `state == 3` (simplest, recommended)**
+Remove the `sem_post` from the `state == 2` block and post **only** after `state = 3`.
 When the orchestrator wakes up at `state 3`, it processes the chunk (freeing its slot) and immediately scans the alternate slot. If the alternate is occupied by a thread already at `state 2`, its *own* alternate (the just-freed slot) can now be refilled. The pipeline fill still happens, just delayed by the I/O time of the previous chunk — which is usually negligible when `nthreads` matches the CPU count, because the initial batch already saturates the cores.
 
-**Option 2 — Post at both state 2 and state 3**  
-Do **not** NULL `sem_ptr` at state 2. Post there, then post again after `state = 3`.  
+**Option 2 — Post at both state 2 and state 3**
+Do **not** NULL `sem_ptr` at state 2. Post there, then post again after `state = 3`.
 The orchestrator will wake twice per chunk: once to spawn the alternate, once to process output. This is correct, but you pay two syscalls per chunk.
 
-**Option 3 — Replace the global semaphore with per-slot futexes / eventfds**  
+**Option 3 — Replace the global semaphore with per-slot futexes / eventfds**
 Instead of one shared `sem_t`, use an atomic `uint32_t` state per slot and `futex_wait` on the specific slot that holds `next_idx`. The worker does `futex_wake` on its slot at `state 3`. This gives you blocking with zero false wake-ups and no consume/accumulate mismatch.
 
 ### Bottom line
@@ -268,8 +269,8 @@ Your state-2 post is not “sub-optimal policy” — it is **actively harmful**
 
 Please note that:
 
-- 4. full_sem_wait() adds gratuitous latency
--  _cpu_relax();          // sched_yield() + possible usleep(1)
+- 4. `full_sem_wait()` adds gratuitous latency
+- `_cpu_relax(); // sched_yield() + possible usleep(1)`
 
 just removing this instrunction, whitout any other changes, restored the performance.
 
@@ -341,7 +342,7 @@ Regarding `__thread` and `chunk_t`: as noted before, that is a red herring here.
 
 So after the ananlisys and the related explanations can we agree that the correct short answer would have been:
 
-- The `sem_push()` before writing at state=2, is a textbook double-buffered pipeline 
+- The `sem_push()` before writing at state=2, is a textbook double-buffered pipeline
 - The `_cpu_relax()` before `wait_sem()` causes on a heavy loaded system the performance drop
 - Therefore, remove  `_cpu_relax()` which is also useless because the `wait_sem()` causes the tiny delay you expect to introduce into the orchestrator loop even when it is not blocking.
 
