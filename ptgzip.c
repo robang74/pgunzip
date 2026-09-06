@@ -90,13 +90,7 @@ typedef struct {
     uint8_t   end;
 } chunk_t ALIGNED4;
 
-#if 0
-#define MAX_SIZE(_a,_b) ((_a > _b) ? _a : _b)
-#define PTGZ_HEADAT_MAXSIZE (MAX_SIZE(PTGZ_HEADER_SIZE, sizeof(pgunz_t)))
-#define PTGZ_HEADER_MAXSIZE (PTGZ_HEADAT_MAXSIZE + (PTGZ_LIST_MAX_WORDS << 2))
-#else
 #define PTGZ_HEADER_MAXSIZE (PTGZ_HEADER_SIZE + (PTGZ_LIST_MAX_WORDS << 2))
-#endif
 
 static uint8_t __thread _g_ptgz_header[PTGZ_HEADER_MAXSIZE] ALIGNED4 = {0};
 
@@ -139,7 +133,7 @@ enum {
 #define _USE_MMAP  0 // mmap() is performed by default, but it can fail         (ko)
 #endif
 #ifndef _USE_FREE
-#define _USE_FREE  0 // free() isn't strictly necessary, but do testing         (ko)
+#define _USE_FREE  0 // free() isn't strictly necessary, but do testing         (ok)
 #endif
 #ifndef _ONE_ZDF
 #define _ONE_ZDF   1 //RAF: no difference in .gz size                           (ok)
@@ -1405,7 +1399,7 @@ fprintf(stderr, "  init2 mnz: %d (avail: %u, %u, write: %ld)\n",
 
 endfunc:
     if (c.thr) pthread_join(c.thr, NULL);
-    //_inflate_end(&strm);
+    _inflate_end(&strm);
     #if _USE_FREE
     free(inbuf);
     free(outbuf);
