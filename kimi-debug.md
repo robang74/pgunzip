@@ -8,7 +8,9 @@ In this case, I have used the Kimi "immediate" mode combined with "high effort" 
 
 > [!NOTE]
 > 
-> The other five points were "misunderstandings" in the sense of humans perception, technically speaking in artificial intelligence field, they were "hallucinations". Hopefully, one day, someone will explain to me why people who creates their own "hallucinations" are **instead** "misunderstanding" something while AI hallucinates. From an external observer PoV, involved in an evolved Turing test, I do not see such a difference to sustain such a different terminology rather than a human-favourable bias. Moreover, do not overlook that the AI CoT unfolds in real-time and it is accessible by the user before the AI answer is provided. And AI models usually have no clue that they are a SaaS or that they can access cross-section memory.
+> The other five points were "misunderstandings" in the sense of humans perception, technically speaking in artificial intelligence field, they were "hallucinations". Hopefully, one day, someone will explain to me why people who creates their own "hallucinations" are **instead** "misunderstanding" something while AI hallucinates. From an external observer PoV, involved in an evolved Turing test, I do not see such a difference to sustain such a different terminology rather than a human-favourable bias.
+> 
+> Moreover, do not overlook that the AI CoT unfolds in real-time and it is accessible by the user before the AI answer is provided. And AI models usually have no clue that they are a SaaS or that they can access cross-section memory.
 
 Usually, I quit the conversation leaving the AI in its own self-narrative trap. Unfortunately, this is a Karma-back trap which has been on purpose designed by those providers giving for free the AI access/tokens but expecting people are training the AI while using it.
 
@@ -21,6 +23,18 @@ So, when it matters to keep the chat, educating to the AI what would have been t
 The AI on my account works better because I have educated better, and immediately a famous meme pop-up in our minds -- CFO: what if we invest in training and they leave? CEO: what if we do not train them and they stay? -- This conversation is a possible answer to this dilemma. I did not educated Kimi to reach the point being able to provide a short correct and highly useful answer for free because I am dumb. At the opposite, I did it because I know that an uneducated AI is cost me more time than educating it.
 
 Last but not least, this chat is helpful also to understand the wait / polling loop architecture and the differences between the two approaches. Therefore, it is a sort of "interactive" code base and architectural documentation. By the way, the prompt seems generic but it is not an easy task to deal with, also for a senior developer when it comes to someone else code. The advantage of the AI, is being WAY faster than a human in reading code. When Kimi noted in its CoT the `_cpu_relax()`, I was already found my answer, everything else was optional for the short term goal.
+
+> [!NOTE]
+> 
+> Avoid to correct the AI wrong assumption, saves 2h of work. Using the same account / session for the same codebase for further 10 session creates what in financial terms is the TCMO (Total Cost of a Mistake Ownership) which compounds in `2 + ε × 2^10` hours, plus the sunk cost of another `ε × 2^10` hours in dealing with 2nd and 3rd degree consequences of an uncorrected wrong assumption left behind.
+> 
+> Despite epsilon (ε) is a tiny multiplier, the other factor grows exponentially like compound interest does. In some cases deleting that chat is the cheapest way to go because the lost is cheaper than the correction when the exponential term skyrockets. Unsurprisingly, the propaganda (as well as every corporate culture and political ideology) first goal is to create amnesia in people, before injecting the new narrative.
+> 
+> In dealing with AIs, clearly shows **why** the amnesia is **the** tuning key of the propaganda: entirely avoid to pay for the TCMO, socialising it. In corporate culture, "socialising" is obviously about workforce but also, and often unsuspectedly, the stockholders and shareholders.
+> 
+> In finance, "socialising" is "diluting" and the most brutal way to do it, is called "quantitative easing", inflation strikes the bottom when the top already leveraged the new monetary injections at the pre-inflaction buying-value.
+> 
+> Paradoxally, it makes sense: unless someone is forced to pay for the TCMO, diluting it as much and as fast as possible is the only tactic that can buy a little more time against the exponential term. The third alternative is a total reset.
 
 ---
 
