@@ -1142,7 +1142,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     if (r < 4) return 0;
 
     const uint32_t maxn = r - 3;
-    register uint32_t n = 1;
+    uint32_t n = 1;
 
 #if 1
     const __m256i b0 = _mm256_set1_epi8(0x1F);
@@ -1168,10 +1168,14 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
                                          _mm256_and_si256(m2, m3));
         uint32_t m = (uint32_t)_mm256_movemask_epi8(match);
         if (m) {
-            m = __builtin_ctz(m); 
+#if 0
+            m  = __builtin_ctz(m);
             n += m;
             p += m;
-            break; 
+            break;
+#else
+            return n + __builtin_ctz(m);
+#endif
         }
     }
 #else
@@ -2151,12 +2155,12 @@ typedef struct {
 } seek_t;
 
 static ALWAYS_INLINE
-void do_stuff(uint8_t *buf, size_t pos, size_t len)
+void do_stuff(uint8_t *buf, size_t pos, size_t end)
 {
     static unsigned n = 0;
     buf += pos;
     fprintf(stderr, ">> do_stuff: %3u, %p, val: 0x%08x, pos: %8lu, len: %8lu\n",
-        n++, buf, *(uint32_t *)buf, pos, len);
+        n++, buf, *(uint32_t *)buf, pos, end - pos);
 }
 
 /* Thread worker performing magic search on incoming read data */
@@ -2169,18 +2173,18 @@ static void *thread_seeker(void *arg)
     {
         sem_wait(s->smp);
 //      fprintf(stderr, "2> n: %8lu, cur: %8lu\n", n, s->cur);
+
         if (s->end) break;
 
-        /* Search in range [n+1, s->cur-1]  */
-        if (s->cur > n + 3) {
-            len = s->cur - n;
+        size_t len = s->cur - n;
+        if (len > 23) {
             f = chunk_seeker(s->buf + n, len);
             if (f) {
-                do_stuff(s->buf, m, f);
                 n += f;
-                m += f;
+                do_stuff(s->buf, m, n);
+                m  = n;
             } else {
-                n = s->cur - 3; // Not found yet
+                n  = len - 3; // Not found yet
             }
         }
     }
@@ -2209,6 +2213,7 @@ void xread_and_split(int fd, size_t large_size)
         perror("malloc");
         exit(-1);
     }
+    //memset(s.buf, 0, large_size + READ_SIZE);
 
     /* Spawn background seeker thread */
     if (pthread_create(&tid, NULL, thread_seeker, &s) != 0) {
