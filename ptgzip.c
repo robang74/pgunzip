@@ -966,10 +966,10 @@ endfunc:
 #endif
 
 #if _DO_STRM
-#define _SEEKER_FUNC  8
+#define _SEEKER_FUNC  1
 #define _READ_AHEAD   1
 #else
-#define _SEEKER_FUNC  1
+#define _SEEKER_FUNC  0
 #define _READ_AHEAD   0
 #endif
 
@@ -984,13 +984,17 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
     return 0;
 }
 
-#elif _SEEKER_FUNC == 1  // 4-bytes unaligned version
+#elif _SEEKER_FUNC >= 1 && _SEEKER_FUNC <= 4 // 4-bytes unaligned version
 
 static ALWAYS_INLINE
 uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
 {
+    if (r < 4) return 0;
+
+    const uint32_t maxn = r - 3;
+
     p++; // the next GZIP chunk, not this one
-    for (register uint32_t n = 1; n < r; n++, p++) {
+    for (register uint32_t n = 1; n < maxn; n++, p++) {
 #if __BYTE_ORDER == __BIG_ENDIAN
         if (*(uint32_t *)p == 0x1F8B0800)
 #else
@@ -1138,21 +1142,22 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     if (r < 4) return 0;
 
     const uint32_t maxn = r - 3;
-    uint32_t n = 1;
+    register uint32_t n = 1;
 
+#if 1
     const __m256i b0 = _mm256_set1_epi8(0x1F);
     const __m256i b1 = _mm256_set1_epi8(0x8B);
     const __m256i b2 = _mm256_set1_epi8(0x08);
     const __m256i b3 = _mm256_set1_epi8(0x00);
 
-    for (; n + 31 < maxn; n += 32)
+    for (p++; n + 31 < maxn; n += 32, p += 32)
     {
-        _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
+//      _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
 
-        __m256i c0 = _mm256_loadu_si256((const __m256i *)(p + n    ));
-        __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + n + 1));
-        __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + n + 2));
-        __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + n + 3));
+        __m256i c0 = _mm256_loadu_si256((const __m256i *)(p    ));
+        __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + 1));
+        __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + 2));
+        __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + 3));
 
         __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
         __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
@@ -1161,15 +1166,27 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
                                          _mm256_and_si256(m2, m3));
-        uint32_t mask = (uint32_t)_mm256_movemask_epi8(match);
-        if (mask) return n + __builtin_ctz(mask);
+        uint32_t m = (uint32_t)_mm256_movemask_epi8(match);
+        if (m) {
+            m = __builtin_ctz(m); 
+            n += m;
+            p += m;
+            break; 
+        }
     }
+#else
+    p++;
+#endif
 
     /* 3. EPILOGUE: scalar tail */
-    for (; n < maxn; n++)
-        if (p[n]  == 0x1F && p[n+1] == 0x8B
-        && p[n+2] == 0x08 && p[n+3] == 0x00)
-            return n;
+    for ( ; n < maxn; n++, p++) {
+#if __BYTE_ORDER == __BIG_ENDIAN
+        if (*(uint32_t *)p == 0x1F8B0800)
+#else
+        if (*(uint32_t *)p == 0x00088b1f)
+#endif
+        return n;
+    }
 
     return 0;
 }
@@ -1237,7 +1254,7 @@ fprintf(stderr, "mgk: 0x%08x\n", *(uint32_t *)inbuf);
 #endif // ----------------------------------------------------------------------
             #if   _SEEKER_FUNC == 1 || _SEEKER_FUNC == 2
             strm.avail_in = r;
-            set = chunk_seeker(inbuf, r - 3);
+            set = chunk_seeker(inbuf, r);
             if (set) {
                 strm.avail_in = set;
                 rmn = r - set;
@@ -2134,18 +2151,19 @@ typedef struct {
 } seek_t;
 
 static ALWAYS_INLINE
-void do_stuff(uint8_t *buf, size_t len)
+void do_stuff(uint8_t *buf, size_t pos, size_t len)
 {
-    fprintf(stderr, ">> do_stuff: %p, val: 0x%08x, len: %8lu\n",
-        buf, *(uint32_t *)buf, len);
+    static unsigned n = 0;
+    buf += pos;
+    fprintf(stderr, ">> do_stuff: %3u, %p, val: 0x%08x, pos: %8lu, len: %8lu\n",
+        n++, buf, *(uint32_t *)buf, pos, len);
 }
 
 /* Thread worker performing magic search on incoming read data */
 static void *thread_seeker(void *arg)
 {
     seek_t *s = (seek_t *)arg;
-    size_t n = 0;
-    size_t f;
+    size_t f, len, m = 0, n = 0;
 
     while (!s->end)
     {
@@ -2154,13 +2172,15 @@ static void *thread_seeker(void *arg)
         if (s->end) break;
 
         /* Search in range [n+1, s->cur-1]  */
-        if (s->cur > n + 4) {
-            f = chunk_seeker(&s->buf[n], (s->cur - 3) - n);
+        if (s->cur > n + 3) {
+            len = s->cur - n;
+            f = chunk_seeker(s->buf + n, len);
             if (f) {
-                do_stuff(&s->buf[n], f);
+                do_stuff(s->buf, m, f);
                 n += f;
+                m += f;
             } else {
-                n = s->cur; // Not found yet
+                n = s->cur - 3; // Not found yet
             }
         }
     }
@@ -2168,7 +2188,7 @@ static void *thread_seeker(void *arg)
     return NULL;
 }
 
-#define READ_SIZE (1UL << 16)
+#define READ_SIZE (MIN_CHUNK_SIZE >> 2)
 
 void xread_and_split(int fd, size_t large_size)
 {
@@ -2405,6 +2425,11 @@ int main(int argc, char **argv)
             return 1;
         }
 
+#if _DO_STRM //RAF, TODO: testing completed, integration todo
+        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+        exit(0);
+#endif
+
         struct stat st;
         if (fstat(infd, &st) < 0) {
             perror("fstat");
@@ -2439,11 +2464,6 @@ int main(int argc, char **argv)
 
         break;
     }
-
-#if 0 //RAF, TODO: testing completed, integration todo
-    xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    exit(0);
-#endif
 
 // === input chunks split ======================================================
 
