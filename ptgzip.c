@@ -969,13 +969,22 @@ endfunc:
 #define _SEEKER_FUNC  8
 #define _READ_AHEAD   1
 #else
-#define _SEEKER_FUNC  0
+#define _SEEKER_FUNC  1
 #define _READ_AHEAD   0
 #endif
 
 #include <endian.h>
 
-#if  _SEEKER_FUNC == 1  // 4-bytes unaligned version
+#if !_SEEKER_FUNC
+
+static ALWAYS_INLINE
+uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
+{
+    fprintf(stderr, "o\n");
+    return 0;
+}
+
+#elif _SEEKER_FUNC == 1  // 4-bytes unaligned version
 
 static ALWAYS_INLINE
 uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
@@ -2114,6 +2123,97 @@ do_free_n_return:
     return err;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef struct {
+    uint8_t *buf;  /* Pointer to the shared buffer */
+    size_t sze;    /* Total size capacity of buf */
+    size_t cur;    /* Current valid readable/searched offset updated by master */
+    bool end;      /* Termination flag set by master on EOF or read complete */
+    sem_t *smp;    /* Pointer to semaphore signaling new data available */
+} seek_t;
+
+static ALWAYS_INLINE
+void do_stuff(uint8_t *buf, size_t len)
+{
+    fprintf(stderr, ">> do_stuff: %p, val: 0x%08x, len: %8lu\n",
+        buf, *(uint32_t *)buf, len);
+}
+
+/* Thread worker performing magic search on incoming read data */
+static void *thread_seeker(void *arg)
+{
+    seek_t *s = (seek_t *)arg;
+    size_t n = 0;
+    size_t f;
+
+    while (!s->end)
+    {
+        sem_wait(s->smp);
+//      fprintf(stderr, "2> n: %8lu, cur: %8lu\n", n, s->cur);
+        if (s->end) break;
+
+        /* Search in range [n+1, s->cur-1]  */
+        if (s->cur > n + 4) {
+            f = chunk_seeker(&s->buf[n], (s->cur - 3) - n);
+            if (f) {
+                do_stuff(&s->buf[n], f);
+                n += f;
+            } else {
+                n = s->cur; // Not found yet
+            }
+        }
+    }
+
+    return NULL;
+}
+
+#define READ_SIZE (1UL << 16)
+
+void xread_and_split(int fd, size_t large_size)
+{
+    seek_t s = {0};
+    pthread_t tid;
+    sem_t sem;
+    size_t len;
+
+    sem_init(&sem, 0, 0);
+
+    s.buf = malloc(large_size + READ_SIZE);
+    s.sze = large_size;
+    s.smp = &sem;
+    s.cur = 0;
+    s.end = false;
+
+    if (!s.buf) {
+        perror("malloc");
+        exit(-1);
+    }
+
+    /* Spawn background seeker thread */
+    if (pthread_create(&tid, NULL, thread_seeker, &s) != 0) {
+        perror("pthread_create");
+        exit(-1);
+    }
+
+    for (size_t n = 0; n < large_size; ) {
+        len = xfull_read(fd, &s.buf[n], READ_SIZE);
+//      fprintf(stderr, "1> n: %8lu, cur: %8lu\n", n, s.cur);
+        if (!len) break;
+
+        n += len;
+        s.cur = n;
+        sem_post(s.smp);
+    }
+
+    /* blocking bug fix compared with 1st draft */
+    s.end = true;
+    sem_post(s.smp);
+    pthread_join(tid, NULL);
+
+    sem_destroy(&sem);
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -2339,6 +2439,11 @@ int main(int argc, char **argv)
 
         break;
     }
+
+#if 0 //RAF, TODO: testing completed, integration todo
+    xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    exit(0);
+#endif
 
 // === input chunks split ======================================================
 
