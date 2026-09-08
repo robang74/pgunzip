@@ -2155,9 +2155,9 @@ typedef struct {
     uint8_t *buf;  /* Pointer to the shared buffer */
     size_t sze;    /* Total size capacity of buf */
     size_t cur;    /* Current valid readable/searched offset updated by master */
-    bool end;      /* Termination flag set by master on EOF or read complete */
     sem_t *smp;    /* Pointer to semaphore signaling new data available */
-} seek_t;
+    bool end;      /* Termination flag set by master on EOF or read complete */
+} seek_t ALIGNED4;
 
 static ALWAYS_INLINE
 void do_stuff(uint8_t *buf, size_t pos, size_t end)
