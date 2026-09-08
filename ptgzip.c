@@ -1138,27 +1138,30 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
 #if defined(__AVX2__)
 static ALWAYS_INLINE __attribute__((target("avx2")))
-uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
+uint32_t chunk_seeker(const uint8_t *buf, const uint32_t r)
 {
     if (r < 4) return 0;
 
     const uint32_t maxn = r - 3;
-    uint32_t n = 1;
+    const uint8_t *p = buf;
+    uint32_t mask, n = 1;
 
-#if 1
+#if 0 // use AWX2
     const __m256i b0 = _mm256_set1_epi8(0x1F);
     const __m256i b1 = _mm256_set1_epi8(0x8B);
     const __m256i b2 = _mm256_set1_epi8(0x08);
     const __m256i b3 = _mm256_set1_epi8(0x00);
 
-    for (p++; n + 27 < maxn; n += 28, p += 28)
+    for (p++; n + 31 < maxn; n += 32, p += 32)
     {
-//      _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
 
+    #if 0
         volatile uint8_t buf[64] ALIGNED4;
         for (uint32_t i = 0; i < 32; i++)
             buf[i] = p[i];
-
+    #else
+        _mm_prefetch(p + 32, _MM_HINT_T0); // prefetch the least
+    #endif
         __m256i c0 = _mm256_loadu_si256((const __m256i *)(buf    ));
         __m256i c1 = _mm256_loadu_si256((const __m256i *)(buf + 1));
         __m256i c2 = _mm256_loadu_si256((const __m256i *)(buf + 2));
@@ -1171,21 +1174,21 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
                                          _mm256_and_si256(m2, m3));
-        uint32_t m = (uint32_t)_mm256_movemask_epi8(match);
-        if (m) {
-#if 0
-            m  = __builtin_ctz(m);
+        mask = (uint32_t)_mm256_movemask_epi8(match);
+        if (mask) {
+        #if 0
+            m  = __builtin_ctz(mask);
             n += m;
             p += m;
             break;
-#else
-            return n + __builtin_ctz(m);
-#endif
+        #else
+            return n + __builtin_ctz(mask);
+        #endif
         }
     }
 #else
     p++;
-#endif
+#endif // use AWX2
 
     /* 3. EPILOGUE: scalar tail */
     for ( ; n < maxn; n++, p++) {
@@ -2151,16 +2154,17 @@ do_free_n_return:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// The field ordering should respect the min. alignement even when packed
 typedef struct {
     uint8_t *buf;  /* Pointer to the shared buffer */
-    size_t sze;    /* Total size capacity of buf */
-    size_t cur;    /* Current valid readable/searched offset updated by master */
-    sem_t *smp;    /* Pointer to semaphore signaling new data available */
-    bool end;      /* Termination flag set by master on EOF or read complete */
-} seek_t ALIGNED4;
+    uint32_t sze;  /* Total size capacity of buf */
+    uint32_t cur;  /* Current valid readable/searched offset updated by master */
+    sem_t  *smp;   /* Pointer to semaphore signaling new data available */
+    uint8_t end;   /* Termination flag set by master on EOF or read complete */
+} seek_t ALIGNED4; // Needed by volatile access instead using atomic or mutex
 
 static ALWAYS_INLINE
-void do_stuff(uint8_t *buf, size_t pos, size_t end)
+void do_stuff(const uint8_t *buf, size_t pos, size_t end)
 {
     static unsigned n = 0;
     buf += pos;
@@ -2168,34 +2172,61 @@ void do_stuff(uint8_t *buf, size_t pos, size_t end)
         n++, buf, *(uint32_t *)buf, pos, end - pos);
 }
 
+#ifndef _VOL_YUP
+#define _VOL_YUP  1 // =1: serependity, and the risk of chaos
+#endif
+#define QUOTA   20U // the size of a GZIP header with no data
+
 /* Thread worker performing magic search on incoming read data */
 static void *thread_seeker(void *arg)
 {
     seek_t *s = (seek_t *)arg;
-    size_t f, len, m = 0, n = 0;
-    const uint8_t *p = s->buf;
+    uint32_t len, fnd, pos = 0, srt = 0;
 
-    while (!s->end)
+    // s->buf never changes, it is set once and forever
+    const uint8_t *buf = s->buf;
+
+    while (true)
     {
-        sem_wait(s->smp);
-//      __sync_synchronize();  /* barrier: tutti i write sono visibili */
-//      fprintf(stderr, "2> n: %8lu, cur: %8lu\n", n, s->cur);
+        // the uint8_t is a basic type intrinsecally atomic
+        // however, it can be cached thus the use of volatile
+        uint8_t end = *(volatile uint8_t *)&s->end;
 
-        len = s->cur; // s->cur can change in parallel
-        if (!s->end && len > n + 32) {
-            len -= n;
-            len &= ~(size_t)31; // A bit faster seeker
+        sem_wait(s->smp);
+        // bugfix: s->end can be set, yet to find the last chunk
+        // bugfix: s->cur can change in parallel, volatile yup!
+
+#if _VOL_YUP
+        len = *(volatile uint32_t *)&s->cur;
+#else
+        // well, well, well... here we are finally, right?
+#endif
+        if (!end && len > pos + 63) {
+            len -= pos;
+            len &= ~(size_t)31; // Aligned for a SIMD seeker
         }
-        if (len > 20) {
-            f = chunk_seeker(p + n, len);
-            if (f) {
-                n += f;
-//              if (*(uint32_t *)(p + n) == 0x00088b1f) {
-                    do_stuff(s->buf, m, n);
-                    m  = n;
-//              }
+        if (len) {
+            len -= pos;
+util_the_end:
+            fnd = chunk_seeker(buf + pos, len);
+            if (fnd) {
+                pos += fnd;
+                do_stuff(buf, srt, pos);
+                srt  = pos;
             } else {
-                n  = len - 3; // Not found yet
+                pos += len - 3; // Not found yet
+                // yet to check the last 3 bytes
+            }
+        }
+
+        // the end as completion is acknoledged after granting
+        // the last read chunck has been completely elaborated.
+        if (end) {
+            if (fnd) {
+                len -= fnd;
+                goto util_the_end;
+            } else {
+                break;
             }
         }
     }
