@@ -962,11 +962,11 @@ endfunc:
 #else //////////////////////////////////////////////////////////////////////////
 
 #ifndef _DO_STRM
-#define _DO_STRM 0
+#define _DO_STRM 1
 #endif
 
 #if _DO_STRM
-#define _SEEKER_FUNC  1
+#define _SEEKER_FUNC  8
 #define _READ_AHEAD   1
 #else
 #define _SEEKER_FUNC  0
@@ -978,7 +978,7 @@ endfunc:
 #if !_SEEKER_FUNC
 
 static ALWAYS_INLINE
-uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
+uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 {
     fprintf(stderr, "o\n");
     return 0;
@@ -987,7 +987,7 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
 #elif _SEEKER_FUNC >= 1 && _SEEKER_FUNC <= 4 // 4-bytes unaligned version
 
 static ALWAYS_INLINE
-uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
+uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 {
     if (r < 4) return 0;
 
@@ -1002,6 +1002,7 @@ uint32_t chunk_seeker(register uint8_t *p, const uint32_t r)
 #endif
         return n;
     }
+
     return 0;
 }
 
@@ -1150,14 +1151,18 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
     const __m256i b2 = _mm256_set1_epi8(0x08);
     const __m256i b3 = _mm256_set1_epi8(0x00);
 
-    for (p++; n + 31 < maxn; n += 32, p += 32)
+    for (p++; n + 27 < maxn; n += 28, p += 28)
     {
 //      _mm_prefetch((const char *)(p + n + 64), _MM_HINT_T0);
 
-        __m256i c0 = _mm256_loadu_si256((const __m256i *)(p    ));
-        __m256i c1 = _mm256_loadu_si256((const __m256i *)(p + 1));
-        __m256i c2 = _mm256_loadu_si256((const __m256i *)(p + 2));
-        __m256i c3 = _mm256_loadu_si256((const __m256i *)(p + 3));
+        volatile uint8_t buf[64] ALIGNED4;
+        for (uint32_t i = 0; i < 32; i++)
+            buf[i] = p[i];
+
+        __m256i c0 = _mm256_loadu_si256((const __m256i *)(buf    ));
+        __m256i c1 = _mm256_loadu_si256((const __m256i *)(buf + 1));
+        __m256i c2 = _mm256_loadu_si256((const __m256i *)(buf + 2));
+        __m256i c3 = _mm256_loadu_si256((const __m256i *)(buf + 3));
 
         __m256i m0 = _mm256_cmpeq_epi8(c0, b0);
         __m256i m1 = _mm256_cmpeq_epi8(c1, b1);
@@ -2168,21 +2173,27 @@ static void *thread_seeker(void *arg)
 {
     seek_t *s = (seek_t *)arg;
     size_t f, len, m = 0, n = 0;
+    const uint8_t *p = s->buf;
 
     while (!s->end)
     {
         sem_wait(s->smp);
+//      __sync_synchronize();  /* barrier: tutti i write sono visibili */
 //      fprintf(stderr, "2> n: %8lu, cur: %8lu\n", n, s->cur);
 
-        if (s->end) break;
-
-        size_t len = s->cur - n;
-        if (len > 23) {
-            f = chunk_seeker(s->buf + n, len);
+        len = s->cur; // s->cur can change in parallel
+        if (!s->end && len > n + 32) {
+            len -= n;
+            len &= ~(size_t)31; // A bit faster seeker
+        }
+        if (len > 20) {
+            f = chunk_seeker(p + n, len);
             if (f) {
                 n += f;
-                do_stuff(s->buf, m, n);
-                m  = n;
+//              if (*(uint32_t *)(p + n) == 0x00088b1f) {
+                    do_stuff(s->buf, m, n);
+                    m  = n;
+//              }
             } else {
                 n  = len - 3; // Not found yet
             }
@@ -2228,11 +2239,13 @@ void xread_and_split(int fd, size_t large_size)
 
         n += len;
         s.cur = n;
+//      __sync_synchronize();  /* barrier: tutti i write sono visibili */
         sem_post(s.smp);
     }
 
     /* blocking bug fix compared with 1st draft */
     s.end = true;
+//  __sync_synchronize();  /* barrier: tutti i write sono visibili */
     sem_post(s.smp);
     pthread_join(tid, NULL);
 
