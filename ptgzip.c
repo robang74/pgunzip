@@ -276,9 +276,11 @@ int full_sem_wait(sem_t *sem_ptr)
 // -----------------------------------------------------------------------------
 
 static ALWAYS_INLINE
-void setcpu(unsigned idx)
+void setcpu(uint8_t idx)
 {
     cpu_set_t cpuset;
+    if (idx == -1)
+        return;
     CPU_ZERO(&cpuset);
     CPU_SET(idx % _g_cpu_procs, &cpuset);
     sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
@@ -986,6 +988,8 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
 #elif _SEEKER_FUNC >= 1 && _SEEKER_FUNC <= 4 // 4-bytes unaligned version
 
+#define _DTA_PRFT 0 // =1: major source of slowliness, nor needed nor useful
+
 static ALWAYS_INLINE
 uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 {
@@ -1136,17 +1140,21 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 
 #elif _SEEKER_FUNC == 8 // 4-bytes AVX2 unaligned version
 
+#ifndef _DTA_PRFT
+#define _DTA_PRFT 1 // =1: data prefetch, as slow as data consolidation
+#endif
+
 #if defined(__AVX2__)
 static ALWAYS_INLINE __attribute__((target("avx2")))
-uint32_t chunk_seeker(const uint8_t *buf, const uint32_t r)
+uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 {
     if (r < 4) return 0;
 
     const uint32_t maxn = r - 3;
-    const uint8_t *p = buf;
-    uint32_t mask, n = 1;
+    uint32_t i, n = 1;
 
-#if 0 // use AWX2
+#if 1 // using AWX2 on data yet to consalidate (const) isn't WAY faster
+      // however, data consolidation is unneeded on the same CPU/cache
     const __m256i b0 = _mm256_set1_epi8(0x1F);
     const __m256i b1 = _mm256_set1_epi8(0x8B);
     const __m256i b2 = _mm256_set1_epi8(0x08);
@@ -1154,13 +1162,19 @@ uint32_t chunk_seeker(const uint8_t *buf, const uint32_t r)
 
     for (p++; n + 31 < maxn; n += 32, p += 32)
     {
-
-    #if 0
+    #if _DTA_PRFT // data prefetching
+        _mm_prefetch(p + 32, _MM_HINT_T0);
+        const uint8_t *buf = p;
+    #else // data consolidation
+        #if 0
         volatile uint8_t buf[64] ALIGNED4;
         for (uint32_t i = 0; i < 32; i++)
             buf[i] = p[i];
-    #else
-        _mm_prefetch(p + 32, _MM_HINT_T0); // prefetch the least
+        #else
+        uint8_t buf[64] ALIGNED4;
+        for (i = 0; i < 32; i++)
+            buf[i] = *(volatile uint8_t *)(p + i);
+        #endif
     #endif
         __m256i c0 = _mm256_loadu_si256((const __m256i *)(buf    ));
         __m256i c1 = _mm256_loadu_si256((const __m256i *)(buf + 1));
@@ -1174,19 +1188,19 @@ uint32_t chunk_seeker(const uint8_t *buf, const uint32_t r)
 
         __m256i match = _mm256_and_si256(_mm256_and_si256(m0, m1),
                                          _mm256_and_si256(m2, m3));
-        mask = (uint32_t)_mm256_movemask_epi8(match);
-        if (mask) {
+        uint32_t m = (uint32_t)_mm256_movemask_epi8(match);
+        if (m) {
         #if 0
-            m  = __builtin_ctz(mask);
+            m  = __builtin_ctz(m);
             n += m;
             p += m;
             break;
         #else
-            return n + __builtin_ctz(mask);
+            return n + __builtin_ctz(m);
         #endif
         }
     }
-#else
+#else  // use AWX2
     p++;
 #endif // use AWX2
 
@@ -2161,6 +2175,7 @@ typedef struct {
     uint32_t cur;  /* Current valid readable/searched offset updated by master */
     sem_t  *smp;   /* Pointer to semaphore signaling new data available */
     uint8_t end;   /* Termination flag set by master on EOF or read complete */
+    uint8_t cpu;
 } seek_t ALIGNED4; // Needed by volatile access instead using atomic or mutex
 
 static ALWAYS_INLINE
@@ -2184,7 +2199,12 @@ static void *thread_seeker(void *arg)
     uint32_t len, fnd, pos = 0, srt = 0;
 
     // s->buf never changes, it is set once and forever
-    const uint8_t *buf = s->buf;
+    uint8_t * const buf = s->buf;
+
+#ifndef _GNU_SOURCE
+    // s->cpu the same CPU/cache of the reading process
+    setcpu(s->cpu);
+#endif
 
     while (true)
     {
@@ -2234,6 +2254,9 @@ util_the_end:
     return NULL;
 }
 
+#ifndef _CPU_I58XXX
+#define _CPU_I58XXX 0 // =1: it works w/o data consolidation but 2x slower
+#endif
 #define READ_SIZE (MIN_CHUNK_SIZE >> 2)
 
 void xread_and_split(int fd, size_t large_size)
@@ -2242,13 +2265,16 @@ void xread_and_split(int fd, size_t large_size)
     pthread_t tid;
     sem_t sem;
     size_t len;
+    pthread_attr_t attr;
 
     sem_init(&sem, 0, 0);
+    pthread_attr_init(&attr);
 
     s.buf = malloc(large_size + READ_SIZE);
     s.sze = large_size;
     s.smp = &sem;
     s.cur = 0;
+    s.cpu = -1;
     s.end = false;
 
     if (!s.buf) {
@@ -2257,8 +2283,31 @@ void xread_and_split(int fd, size_t large_size)
     }
     //memset(s.buf, 0, large_size + READ_SIZE);
 
+#if _DTA_PRFT
+    s.cpu = sched_getcpu();
+    if (s.cpu != -1) {
+    #ifndef _GNU_SOURCE
+        setcpu(s.cpu);
+        #if _CPU_I58XXX // same core, alternative pipeline
+        s.cpu += _g_cpu_procs >> 1;
+        #endif
+    #else
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(s.cpu, &cpuset);
+        sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+        #if _CPU_I58XXX // same core, alternative pipeline
+        s.cpu += _g_cpu_procs >> 1;
+        CPU_SET(s.cpu, &cpuset);
+        #endif
+        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset);
+        s.cpu = -1;
+    }
+    #endif
+#endif //_DTA_PRFT
+
     /* Spawn background seeker thread */
-    if (pthread_create(&tid, NULL, thread_seeker, &s) != 0) {
+    if (pthread_create(&tid, &attr, thread_seeker, &s) != 0) {
         perror("pthread_create");
         exit(-1);
     }
@@ -2270,13 +2319,13 @@ void xread_and_split(int fd, size_t large_size)
 
         n += len;
         s.cur = n;
-//      __sync_synchronize();  /* barrier: tutti i write sono visibili */
+//      __sync_synchronize();
         sem_post(s.smp);
     }
 
     /* blocking bug fix compared with 1st draft */
     s.end = true;
-//  __sync_synchronize();  /* barrier: tutti i write sono visibili */
+//  __sync_synchronize();
     sem_post(s.smp);
     pthread_join(tid, NULL);
 
