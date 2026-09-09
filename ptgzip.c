@@ -2183,6 +2183,7 @@ void do_stuff(const uint8_t *buf, size_t pos, size_t end)
 {
     static unsigned n = 0;
     buf += pos;
+    // This output when filter has no impact on performance
     fprintf(stderr, ">> do_stuff: %3u, %p, val: 0x%08x, pos: %8lu, len: %8lu\n",
         n++, buf, *(uint32_t *)buf, pos, end - pos);
 }
@@ -2273,9 +2274,7 @@ void xread_and_split(int fd, size_t large_size)
     s.buf = malloc(large_size + READ_SIZE);
     s.sze = large_size;
     s.smp = &sem;
-    s.cur = 0;
     s.cpu = -1;
-    s.end = false;
 
     if (!s.buf) {
         perror("malloc");
@@ -2330,6 +2329,51 @@ void xread_and_split(int fd, size_t large_size)
     pthread_join(tid, NULL);
 
     sem_destroy(&sem);
+}
+
+/*
+ * This function leverages the kernel read-ahead instead of parallelism
+ * It is WAY slower when using _SEEKER_FUNC = 1 (32-bit scalar) but a bit
+ * faster when using AVX2 / SSE2 which are available on every CPU that has
+ * multi-core / threading. Since its is intrinsecally sequential, it doesn't
+ * creates any trouble about the pipeline caching synchronisation. Last but
+ * not least, it is WAY simpler than the counter part with parallelism.
+ */
+void xread_then_split(int fd, size_t size)
+{
+    uint8_t *buf;
+    uint32_t len = 0, off = 0, pos = 0, fnd = 0;
+
+    buf = malloc(size + READ_SIZE + QUOTA + 1);
+
+    while (off < size)
+    {
+        if (_g_read_mmap_base) {
+            if (_USE_MMAP) {
+                buf = _g_read_mmap_base;
+            } else {
+                __builtin_memcpy(buf + off,
+                   _g_read_mmap_base + off, READ_SIZE);
+                len = READ_SIZE;
+            }
+        } else {
+            len = xfull_read(fd, buf + off, READ_SIZE);
+        }
+        if (!len) break;
+        off += len;
+
+        len = off - pos;
+        fnd = chunk_seeker(buf + pos, len);
+        if (fnd) { // This output when filter has no impact on performance
+            fprintf(stderr,
+                "split> fnd: %8u, pos: %8u, len: %8u / %8u, mgc: 0x%08x\n",
+                    fnd, pos, len, off, *(uint32_t *)(buf + pos + fnd));
+        }
+        fnd += pos;
+        pos = fnd ?: off;
+    }
+
+    return;
 }
 
 // =============================================================================
@@ -2524,7 +2568,11 @@ int main(int argc, char **argv)
         }
 
 #if _DO_STRM //RAF, TODO: testing completed, integration todo
+    #if 0
         xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #else
+        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #endif
         exit(0);
 #endif
 
