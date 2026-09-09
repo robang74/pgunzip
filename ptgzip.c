@@ -1144,6 +1144,10 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 #define _DTA_PRFT 1 // =1: data prefetch, as slow as data consolidation
 #endif
 
+#ifndef _CPU_PRFT
+#define _CPU_PRFT 0 // =1: data prefetch works well on the same CPU core
+#endif
+
 #if defined(__AVX2__)
 static ALWAYS_INLINE __attribute__((target("avx2")))
 uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
@@ -2191,7 +2195,13 @@ void do_stuff(const uint8_t *buf, size_t pos, size_t end)
 #ifndef _VOL_YUP
 #define _VOL_YUP  1 // =1: serependity, and the risk of chaos
 #endif
-#define QUOTA   20U // the size of a GZIP header with no data
+
+#if _VOL_YUP
+#else
+#include <stdatomic.h>
+#endif
+
+#define QUOTA 63
 
 /* Thread worker performing magic search on incoming read data */
 static void *thread_seeker(void *arg)
@@ -2213,7 +2223,7 @@ static void *thread_seeker(void *arg)
         // however, it can be cached thus the use of volatile
         uint8_t end = *(volatile uint8_t *)&s->end;
 
-        sem_wait(s->smp);
+        if (!end) sem_wait(s->smp);
         // bugfix: s->end can be set, yet to find the last chunk
         // bugfix: s->cur can change in parallel, volatile yup!
 
@@ -2221,13 +2231,22 @@ static void *thread_seeker(void *arg)
         len = *(volatile uint32_t *)&s->cur;
 #else
         // well, well, well... here we are finally, right?
+        atomic_load_explicit(&s->cur, memory_order_acquire);
+        len = s->cur;
 #endif
-        if (!end && len > pos + 63) {
+        if (len > pos) {
             len -= pos;
-            len &= ~(size_t)31; // Aligned for a SIMD seeker
+        } else
+        if (end) {
+            break;
+        } else {
+            continue;
         }
-        if (len) {
-            len -= pos;
+
+        if (!end) {
+            len &= ~(size_t)31; // Aligned for a SIMD seeker           
+        }
+        if (len > (end ? 0 : QUOTA)) {
 util_the_end:
             fnd = chunk_seeker(buf + pos, len);
             if (fnd) {
@@ -2243,7 +2262,7 @@ util_the_end:
         // the end as completion is acknoledged after granting
         // the last read chunck has been completely elaborated.
         if (end) {
-            if (fnd) {
+            if (fnd && len > fnd) {
                 len -= fnd;
                 goto util_the_end;
             } else {
@@ -2271,7 +2290,7 @@ void xread_and_split(int fd, size_t large_size)
     sem_init(&sem, 0, 0);
     pthread_attr_init(&attr);
 
-    s.buf = malloc(large_size + READ_SIZE);
+    s.buf = malloc(large_size + READ_SIZE + QUOTA + 1);
     s.sze = large_size;
     s.smp = &sem;
     s.cpu = -1;
@@ -2282,7 +2301,7 @@ void xread_and_split(int fd, size_t large_size)
     }
     //memset(s.buf, 0, large_size + READ_SIZE);
 
-#if _DTA_PRFT
+#if _CPU_PRFT
     s.cpu = sched_getcpu();
     if (s.cpu != -1) {
     #ifndef _GNU_SOURCE
@@ -2317,7 +2336,11 @@ void xread_and_split(int fd, size_t large_size)
         if (!len) break;
 
         n += len;
-        s.cur = n;
+#if _VOL_YUP
+        *(volatile uint32_t *)&s.cur = n;
+#else
+        atomic_store_explicit(&s.cur, n, memory_order_release);
+#endif
 //      __sync_synchronize();
         sem_post(s.smp);
     }
@@ -2327,8 +2350,10 @@ void xread_and_split(int fd, size_t large_size)
 //  __sync_synchronize();
     sem_post(s.smp);
     pthread_join(tid, NULL);
-
+#if _USE_FREE
     sem_destroy(&sem);
+    free(s.buf);
+#endif
 }
 
 /*
@@ -2568,7 +2593,7 @@ int main(int argc, char **argv)
         }
 
 #if _DO_STRM //RAF, TODO: testing completed, integration todo
-    #if 0
+    #if 1
         xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
     #else
         xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);

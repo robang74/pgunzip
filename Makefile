@@ -23,6 +23,7 @@ NTS      ?= 30
 
 CC       ?= gcc
 ADDRSAN  ?= -fsanitize=address -fno-omit-frame-pointer -g
+THRDSAN  ?= -fsanitize=thread  -fno-omit-frame-pointer -g
 OPTMISE  ?= -g0 -O2 -s
 CFLAGS   ?= $(OPTMISE) -falign-functions=32 -flto -mavx2 $(EXTRA_CFLAGS)
 THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
