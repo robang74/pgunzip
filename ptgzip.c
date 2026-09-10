@@ -385,7 +385,7 @@ static void *thread_zxflate(void *arg)
         if (posix_memalign((void **)&c->out, 64, c->out_cap))
             c->out = NULL;
         if (!c->out) {
-            perror("malloc");
+            perror("posix_memalign");
             c->error = -2;
             return NULL;
         }
@@ -872,7 +872,7 @@ static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
 
     if (posix_memalign((void **)&inbuf,  64, UNZIN_CHUNK_SIZE) ||
         posix_memalign((void **)&outbuf, 64, UNOUT_CHUNK_SIZE)) {
-        perror("malloc");
+        perror("posix_memalign");
         return -1;
     }
 
@@ -964,7 +964,7 @@ endfunc:
 #else //////////////////////////////////////////////////////////////////////////
 
 #ifndef _DO_STRM
-#define _DO_STRM 1
+#define _DO_STRM 0
 #endif
 
 #if _DO_STRM
@@ -1238,7 +1238,7 @@ static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     if (posix_memalign((void **)&inbuf,  64, r)
     ||  posix_memalign((void **)&outbuf, 64, r)
     ){
-        perror("malloc");
+        perror("posix_memalign");
         return -1;
     }
     if(buf_size) {
@@ -2279,7 +2279,7 @@ util_the_end:
 #endif
 #define READ_SIZE (MIN_CHUNK_SIZE >> 2)
 
-void xread_and_split(int fd, size_t large_size)
+void xread_and_split(int fd, size_t size)
 {
     seek_t s = {0};
     pthread_t tid;
@@ -2290,16 +2290,15 @@ void xread_and_split(int fd, size_t large_size)
     sem_init(&sem, 0, 0);
     pthread_attr_init(&attr);
 
-    s.buf = malloc(large_size + READ_SIZE + QUOTA + 1);
-    s.sze = large_size;
+    if (posix_memalign((void **)&s.buf, 64, size + READ_SIZE + QUOTA + 1)) {
+        perror("posix_memalign");
+        exit(-1);
+    }
+    s.sze = size;
     s.smp = &sem;
     s.cpu = -1;
 
-    if (!s.buf) {
-        perror("malloc");
-        exit(-1);
-    }
-    //memset(s.buf, 0, large_size + READ_SIZE);
+    //memset(s.buf, 0, size + READ_SIZE);
 
 #if _CPU_PRFT
     s.cpu = sched_getcpu();
@@ -2330,7 +2329,7 @@ void xread_and_split(int fd, size_t large_size)
         exit(-1);
     }
 
-    for (size_t n = 0; n < large_size; ) {
+    for (size_t n = 0; n < size; ) {
         len = xfull_read(fd, &s.buf[n], READ_SIZE);
 //      fprintf(stderr, "1> n: %8lu, cur: %8lu\n", n, s.cur);
         if (!len) break;
@@ -2369,7 +2368,10 @@ void xread_then_split(int fd, size_t size)
     uint8_t *buf;
     uint32_t len = 0, off = 0, pos = 0, fnd = 0;
 
-    buf = malloc(size + READ_SIZE + QUOTA + 1);
+    if (posix_memalign((void **)&buf, 64, size + READ_SIZE + QUOTA + 1)) {
+        perror("posix_memalign");
+        exit(-1);
+    }
 
     while (off < size)
     {
@@ -2592,15 +2594,6 @@ int main(int argc, char **argv)
             return 1;
         }
 
-#if _DO_STRM //RAF, TODO: testing completed, integration todo
-    #if 1
-        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    #else
-        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    #endif
-        exit(0);
-#endif
-
         struct stat st;
         if (fstat(infd, &st) < 0) {
             perror("fstat");
@@ -2617,11 +2610,6 @@ int main(int argc, char **argv)
         }
         _g_read_file_size = st.st_size;
 
-        #if (_DO_OPTL & 2) //RAF: optional code
-        posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
-        posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
-        #endif
-
         if(!_SZE_MMAP || _g_read_file_size < (1UL << _SZE_MMAP))
             break;
 
@@ -2635,6 +2623,37 @@ int main(int argc, char **argv)
 
         break;
     }
+
+#if _DO_STRM || (_DO_OPTL & 2) //RAF: optional code
+    posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
+    posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
+#endif
+
+    if (infd == STDIN_FILENO)
+    {
+       size_t buf_size = (1 << 20);
+    #if _DO_STRM || (_DO_OPTL & 4) //RAF: optional code
+        int pipesz = fcntl(STDIN_FILENO, F_GETPIPE_SZ);
+        if (pipesz > 0 && pipesz < buf_size) {
+            for (int target = buf_size; target >= pipesz; target >>= 1)
+                if (fcntl(STDIN_FILENO, F_SETPIPE_SZ, target) == target)
+                    break;
+        }
+    #elif (_DO_OPTL & 8) //RAF: optional code
+        static char stdin_buf[buf_size];  // 1MB buffer
+        setvbuf(stdin, stdin_buf, _IOFBF, buf_size);
+    #endif
+    }
+
+#if _DO_STRM //RAF, TODO: testing completed, integration todo
+    #if 0
+        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #else
+        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #endif
+        exit(0);
+#endif
+
 
 // === input chunks split ======================================================
 
@@ -2744,16 +2763,17 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
 
     if (ofd == STDOUT_FILENO)
     {
+       size_t buf_size = (1 << 20);
     #if (_DO_OPTL & 4) //RAF: optional code
         int pipesz = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
-        if (pipesz > 0 && pipesz < (1 << 20)) {
-            for (int target = 1 << 20; target >= pipesz; target >>= 1)
+        if (pipesz > 0 && pipesz < buf_size) {
+            for (int target = buf_size; target >= pipesz; target >>= 1)
                 if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, target) == target)
                     break;
         }
     #elif (_DO_OPTL & 8) //RAF: optional code
-        static char stdout_buf[1 << 20];  // 1MB buffer
-        setvbuf(stdout, stdout_buf, _IOFBF, sizeof(stdout_buf));
+        static char stdout_buf[buf_size];  // 1MB buffer
+        setvbuf(stdout, stdout_buf, _IOFBF, buf_size));
     #endif
     }
 
