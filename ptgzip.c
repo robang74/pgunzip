@@ -67,7 +67,6 @@ static int opt_verbose    = 0;    /* -v, --verbose */
 static int opt_decompress = 0;    /* -d, --decompress */
 
 typedef struct {
-    pthread_t thr;
     const char *action;
     sem_t    *sem_ptr;
     uint8_t  *in;      /* pointer into mmap */
@@ -75,12 +74,13 @@ typedef struct {
     size_t    out_cap;
     int       infd;
     int       ofd;
-    uint8_t   flags;
     size_t    read_len;
     uint8_t  *read;
 //RAF: part that requires to be completely reset //
     int       idx;                               //
+    pthread_t thr;                               //
     uint8_t   state;                             //
+    uint8_t   flags;                             //
     uint8_t   error;                             //
     size_t    in_len;                            //
     size_t    out_len;                           //
@@ -305,6 +305,7 @@ void chunk_dispose(chunk_t *c, uint8_t err)
     } else {
         c->thr = 0;
         c->state = 0;
+        c->flags = 0;
     }
     c->error = err;
 }
@@ -694,7 +695,7 @@ int zxflate_chunk_init(chunk_t *c)
             perror("posix_memalign");
             exit(-1);
         }
-        if (c->infd == STDIN_FILENO)
+        if (c->infd == STDIN_FILENO && !(c->flags & b_flag_read))
         {
             if (chunk_read(c))
                 c->error |= 8;
@@ -1387,7 +1388,6 @@ fprintf(stderr, "inflate mnz: %d (avail: %u, %u, write: %ld), zse: %d\n",
                 break;
             }
         }
-
 
         w = out_size - strm.avail_out;
         if(1 || ofd == STDOUT_FILENO) {
@@ -2365,8 +2365,8 @@ void xread_and_split(int fd, size_t size)
  */
 void xread_then_split(int fd, size_t size)
 {
-    uint8_t *buf, *alt;
-    uint32_t len = 0, off = 0, pos = 0, fnd = 0;
+    uint8_t *buf = NULL, *alt = NULL;
+    uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0;
 
     if (posix_memalign((void **)&buf, 64, size + READ_SIZE + QUOTA + 1)) {
         perror("posix_memalign");
@@ -2375,14 +2375,21 @@ void xread_then_split(int fd, size_t size)
 
     while (off < size)
     {
+       if (buf == NULL) {
+            if (posix_memalign((void **)&buf, 64,
+                size + READ_SIZE + QUOTA + 1)) {
+                perror("posix_memalign");
+                exit(-1);
+            }
+        }
         if (_g_read_mmap_base) {
             if (_USE_MMAP) {
-                buf = _g_read_mmap_base;
+                buf = _g_read_mmap_base + (fnd ?: pos);
             } else {
                 __builtin_memcpy(buf + off,
                    _g_read_mmap_base + off, READ_SIZE);
-                len = READ_SIZE;
             }
+            len = READ_SIZE;
         } else {
             len = xfull_read(fd, buf + off, READ_SIZE);
         }
@@ -2392,22 +2399,27 @@ void xread_then_split(int fd, size_t size)
         len = off - pos;
         fnd = chunk_seeker(buf + pos, len);
         if (fnd) { // This output when filter has no impact on performance
+            pos += fnd;
+            fnd = pos;
             fprintf(stderr,
                 "split> fnd: %8u, pos: %8u, len: %8u / %8u, mgc: 0x%08x\n",
-                    fnd, pos, len, off, *(uint32_t *)(buf + pos + fnd));
-            if (posix_memalign((void **)&alt, 64,
-                size + READ_SIZE + QUOTA + 1)) {
-                perror("posix_memalign");
-                exit(-1);
-            }
-            __builtin_memcpy(alt, buf + fnd, len - fnd);
+                    fnd - prv, pos, len, off, *(uint32_t *)(buf + pos));
             //RAF, TODO: processing the read buffer
-            free(buf);
-            buf = alt;
-            off = 0;
+#if 0
+            chunk_list_init(c);
+            ilst[current] = fnd - prv;
+            _chunk_list_init(c, ofd, infd, sem_ptr, out_size, ilst[current])
+            c->flags |= b_flag_read;
+            c->in_len = (prv - fnd);
+            c->in     = buf;
+            chunk_zxflate_start(c);
+            
+#endif
+            alt = buf + fnd;
+            buf = NULL;
+            prv = fnd;
         } else {
-            fnd += pos;
-            pos = fnd ?: off;
+            pos = off;
         }
     }
 
@@ -2656,16 +2668,6 @@ int main(int argc, char **argv)
     #endif
     }
 
-#if _DO_STRM //RAF, TODO: testing completed, integration todo
-    #if 0
-        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    #else
-        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    #endif
-        exit(0);
-#endif
-
-
 // === input chunks split ======================================================
 
     // decide chunk size and total number of chunks
@@ -2787,6 +2789,15 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         setvbuf(stdout, stdout_buf, _IOFBF, buf_size));
     #endif
     }
+
+#if _DO_STRM //RAF, TODO: testing completed, integration todo
+    #if 0
+        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #else
+        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    #endif
+        exit(0);
+#endif
 
 // =============================================================================
 
