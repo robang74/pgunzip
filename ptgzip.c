@@ -964,7 +964,7 @@ endfunc:
 #else //////////////////////////////////////////////////////////////////////////
 
 #ifndef _DO_STRM
-#define _DO_STRM 0
+#define _DO_STRM 1
 #endif
 
 #if _DO_STRM
@@ -2365,7 +2365,7 @@ void xread_and_split(int fd, size_t size)
  */
 void xread_then_split(int fd, size_t size)
 {
-    uint8_t *buf;
+    uint8_t *buf, *alt;
     uint32_t len = 0, off = 0, pos = 0, fnd = 0;
 
     if (posix_memalign((void **)&buf, 64, size + READ_SIZE + QUOTA + 1)) {
@@ -2395,9 +2395,20 @@ void xread_then_split(int fd, size_t size)
             fprintf(stderr,
                 "split> fnd: %8u, pos: %8u, len: %8u / %8u, mgc: 0x%08x\n",
                     fnd, pos, len, off, *(uint32_t *)(buf + pos + fnd));
+            if (posix_memalign((void **)&alt, 64,
+                size + READ_SIZE + QUOTA + 1)) {
+                perror("posix_memalign");
+                exit(-1);
+            }
+            __builtin_memcpy(alt, buf + fnd, len - fnd);
+            //RAF, TODO: processing the read buffer
+            free(buf);
+            buf = alt;
+            off = 0;
+        } else {
+            fnd += pos;
+            pos = fnd ?: off;
         }
-        fnd += pos;
-        pos = fnd ?: off;
     }
 
     return;
