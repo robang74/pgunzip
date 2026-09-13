@@ -2363,10 +2363,10 @@ void xread_and_split(int fd, size_t size)
  * creates any trouble about the pipeline caching synchronisation. Last but
  * not least, it is WAY simpler than the counter part with parallelism.
  */
-void xread_then_split(int fd, size_t size)
+uint32_t xread_then_split(int fd, size_t size, uint8_t **pbuf, uint32_t *plen)
 {
-    uint8_t *buf = NULL, *alt = NULL;
-    uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0;
+    static uint8_t *buf = NULL;
+    static uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0;
 
     if (posix_memalign((void **)&buf, 64, size + READ_SIZE + QUOTA + 1)) {
         perror("posix_memalign");
@@ -2393,19 +2393,22 @@ void xread_then_split(int fd, size_t size)
         } else {
             len = xfull_read(fd, buf + off, READ_SIZE);
         }
-        if (!len) break;
+        if (!len) return 0;
         off += len;
 
         len = off - pos;
-        fnd = chunk_seeker(buf + pos, len);
+        uint32_t dlt = 0; //(pos > 2) ? 3 : 0;
+        fnd = chunk_seeker(buf + pos - dlt, len + dlt);
         if (fnd) { // This output when filter has no impact on performance
+            fnd -= dlt;
             pos += fnd;
-            fnd = pos;
+            fnd  = pos;
+#if 0
             fprintf(stderr,
                 "split> fnd: %8u, pos: %8u, len: %8u / %8u, mgc: 0x%08x\n",
                     fnd - prv, pos, len, off, *(uint32_t *)(buf + pos));
             //RAF, TODO: processing the read buffer
-#if 0
+
             chunk_list_init(c);
             ilst[current] = fnd - prv;
             _chunk_list_init(c, ofd, infd, sem_ptr, out_size, ilst[current])
@@ -2415,15 +2418,16 @@ void xread_then_split(int fd, size_t size)
             chunk_zxflate_start(c);
             
 #endif
-            alt = buf + fnd;
-            buf = NULL;
-            prv = fnd;
+            *pbuf = buf + fnd;
+            *plen = fnd - prv;
+             prv  = fnd;
+            break;
         } else {
             pos = off;
         }
     }
 
-    return;
+    return off;
 }
 
 // =============================================================================
@@ -2794,7 +2798,16 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     #if 0
         xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
     #else
-        xread_then_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
+    {
+        uint8_t *buf;
+        uint32_t off, len, size = MAX_CHUNK_SIZE  * _g_cpu_procs;
+        while (true) {
+            off = xread_then_split(infd, size, &buf, &len);
+            if (off && off < size) {} else break;
+            fprintf(stderr, "buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
+                buf, *(uint32_t *)buf, len, off);
+        }
+    }
     #endif
         exit(0);
 #endif
