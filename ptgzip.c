@@ -2363,61 +2363,57 @@ void xread_and_split(int fd, size_t size)
  * creates any trouble about the pipeline caching synchronisation. Last but
  * not least, it is WAY simpler than the counter part with parallelism.
  */
-uint32_t xread_then_split(int fd, size_t size, uint8_t **pbuf, uint32_t *plen)
+uint32_t xread_then_split(int fd, size_t size,
+    uint8_t **pbuf, uint32_t *plen, uint32_t rlen)
 {
     static uint8_t *buf = NULL;
-    static uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0;
+    static uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0, r_off = 0;
 
-    if (posix_memalign((void **)&buf, 64, size + READ_SIZE + QUOTA + 1)) {
-        perror("posix_memalign");
-        exit(-1);
+    if(rlen) {
+        prv = 0;
+        buf = NULL;
     }
 
     while (off < size)
     {
+       if (_g_read_mmap_base && _USE_MMAP) {} 
+       else 
        if (buf == NULL) {
             if (posix_memalign((void **)&buf, 64,
                 size + READ_SIZE + QUOTA + 1)) {
                 perror("posix_memalign");
                 exit(-1);
             }
+            if (rlen) {
+                __builtin_memcpy(buf, *pbuf, rlen);
+                pos  = rlen;
+                off  = rlen;
+                rlen = 0;
+            }
         }
+
         if (_g_read_mmap_base) {
             if (_USE_MMAP) {
-                buf = _g_read_mmap_base + (fnd ?: pos);
+                buf = _g_read_mmap_base + r_off;
             } else {
-                __builtin_memcpy(buf + off,
-                   _g_read_mmap_base + off, READ_SIZE);
+                __builtin_memcpy(   buf + r_off,
+                      _g_read_mmap_base + r_off, READ_SIZE);
             }
             len = READ_SIZE;
         } else {
-            len = xfull_read(fd, buf + off, READ_SIZE);
+            len = xfull_read(fd,    buf + r_off, READ_SIZE);
         }
         if (!len) return 0;
+        r_off += len;
         off += len;
 
         len = off - pos;
         uint32_t dlt = 0; //(pos > 2) ? 3 : 0;
         fnd = chunk_seeker(buf + pos - dlt, len + dlt);
-        if (fnd) { // This output when filter has no impact on performance
+        if (fnd) {
             fnd -= dlt;
             pos += fnd;
             fnd  = pos;
-#if 0
-            fprintf(stderr,
-                "split> fnd: %8u, pos: %8u, len: %8u / %8u, mgc: 0x%08x\n",
-                    fnd - prv, pos, len, off, *(uint32_t *)(buf + pos));
-            //RAF, TODO: processing the read buffer
-
-            chunk_list_init(c);
-            ilst[current] = fnd - prv;
-            _chunk_list_init(c, ofd, infd, sem_ptr, out_size, ilst[current])
-            c->flags |= b_flag_read;
-            c->in_len = (prv - fnd);
-            c->in     = buf;
-            chunk_zxflate_start(c);
-            
-#endif
             *pbuf = buf + fnd;
             *plen = fnd - prv;
              prv  = fnd;
@@ -2798,18 +2794,28 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     #if 0
         xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
     #else
-    {
-        uint8_t *buf;
-        uint32_t off, len, size = MAX_CHUNK_SIZE  * _g_cpu_procs;
+     // The STDERR output when filter has no impact on performance
+    uint32_t off, prv = 0, rlen = 0;
+    do {
+        uint8_t *buf = NULL;
+        uint32_t size, len = 0;
+        size = _g_chunk_size ?: MAX_CHUNK_SIZE;
         while (true) {
-            off = xread_then_split(infd, size, &buf, &len);
+            off = xread_then_split(infd, size, &buf, &len, rlen);
             if (off && off < size) {} else break;
+            if (off == 0) break;
+            prv += len;
             fprintf(stderr, "buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
                 buf, *(uint32_t *)buf, len, off);
         }
-    }
+        fprintf(stderr,
+            "tot: %lu, sze: %u (%.0f%%) %.0f KiB, rln: %u - %u = %u\n",
+                _g_read_file_size, size, (float)100 * _g_chunk_size / size,
+                    (float)(off - size) / 4096, off, prv, off - prv);
+        
+    } while (!off);
     #endif
-        exit(0);
+    exit(0);
 #endif
 
 // =============================================================================
