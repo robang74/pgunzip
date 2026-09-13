@@ -2364,21 +2364,27 @@ void xread_and_split(int fd, size_t size)
  * not least, it is WAY simpler than the counter part with parallelism.
  */
 uint32_t xread_then_split(int fd, size_t size,
-    uint8_t **pbuf, uint32_t *plen, uint32_t rlen)
+    uint8_t **pbuf, uint32_t *plen, uint32_t *roff, uint32_t rlen)
 {
-    static uint8_t *buf = NULL;
+    static uint8_t *alt, *buf = NULL;
     static uint32_t len = 0, off = 0, pos = 0, fnd = 0, prv = 0, r_off = 0;
+
+    *plen = 0;
 
     if(rlen) {
         prv = 0;
         buf = NULL;
+        pos  = rlen - 4;
+        off  = rlen;
+        prv += 4;
     }
 
-    while (off < size)
+    do
     {
        if (_g_read_mmap_base && _USE_MMAP) {} 
        else 
        if (buf == NULL) {
+            //fprintf(stderr, "rlen: %u, pbuf: %p\n", rlen, *pbuf);
             if (posix_memalign((void **)&buf, 64,
                 size + READ_SIZE + QUOTA + 1)) {
                 perror("posix_memalign");
@@ -2386,8 +2392,7 @@ uint32_t xread_then_split(int fd, size_t size,
             }
             if (rlen) {
                 __builtin_memcpy(buf, *pbuf, rlen);
-                pos  = rlen;
-                off  = rlen;
+                //fprintf(stderr, "rlen: %u, pbuf: %p\n", rlen, *pbuf);
                 rlen = 0;
             }
         }
@@ -2396,22 +2401,25 @@ uint32_t xread_then_split(int fd, size_t size,
             if (_USE_MMAP) {
                 buf = _g_read_mmap_base + r_off;
             } else {
-                __builtin_memcpy(   buf + r_off,
+                __builtin_memcpy(   buf +   off,
                       _g_read_mmap_base + r_off, READ_SIZE);
             }
             len = READ_SIZE;
         } else {
-            len = xfull_read(fd,    buf + r_off, READ_SIZE);
+            len = xfull_read(fd,    buf +   off, READ_SIZE);
         }
-        if (!len) return 0;
+        if (!len) {
+            *pbuf = buf + off;
+            *plen = off - prv;
+            off = 0;
+            break;
+        }
         r_off += len;
         off += len;
 
         len = off - pos;
-        uint32_t dlt = 0; //(pos > 2) ? 3 : 0;
-        fnd = chunk_seeker(buf + pos - dlt, len + dlt);
+        fnd = chunk_seeker(buf + pos, len);
         if (fnd) {
-            fnd -= dlt;
             pos += fnd;
             fnd  = pos;
             *pbuf = buf + fnd;
@@ -2421,8 +2429,9 @@ uint32_t xread_then_split(int fd, size_t size,
         } else {
             pos = off;
         }
-    }
+    } while (off < size);
 
+    *roff = r_off;
     return off;
 }
 
@@ -2795,25 +2804,31 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
     #else
      // The STDERR output when filter has no impact on performance
-    uint32_t off, prv = 0, rlen = 0;
+    uint8_t *buf = NULL;
+    uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0;
+    size = _g_chunk_size ?: MAX_CHUNK_SIZE;
     do {
-        uint8_t *buf = NULL;
-        uint32_t size, len = 0;
-        size = _g_chunk_size ?: MAX_CHUNK_SIZE;
         while (true) {
-            off = xread_then_split(infd, size, &buf, &len, rlen);
-            if (off && off < size) {} else break;
-            if (off == 0) break;
+            off = xread_then_split(infd, size, &buf, &len, &roff, rlen);
             prv += len;
-            fprintf(stderr, "buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
-                buf, *(uint32_t *)buf, len, off);
+            rlen = 0;
+            if (len || !off)
+                fprintf(stderr, "buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
+                    buf - len, *(uint32_t *)(buf - len), len, off);
+            if (off == 0) exit(0); // EOF
+            if (off > size)
+                break;
         }
+        rlen = roff - prv;
+        #if 0
         fprintf(stderr,
-            "tot: %lu, sze: %u (%.0f%%) %.0f KiB, rln: %u - %u = %u\n",
-                _g_read_file_size, size, (float)100 * _g_chunk_size / size,
-                    (float)(off - size) / 4096, off, prv, off - prv);
-        
-    } while (!off);
+            "tot: %u / %lu, sze: %u (%.0f%%) %.0f KiB, rln: %u - %u = %u, len: %u\n",
+                roff, _g_read_file_size, size, (float)100 * _g_chunk_size / size,
+                    (float)(off - size) / 4096, off, prv, rlen, len);
+        #endif
+        rlen += 4;
+        buf -= 4;
+    } while (1);
     #endif
     exit(0);
 #endif
