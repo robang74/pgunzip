@@ -430,7 +430,7 @@ if(strm.total_out)
     if (ret != Z_STREAM_END /*&& ret != Z_BUF_ERROR
     &&  ret != Z_DATA_ERROR*/ && ret != Z_OK
     ){
-        fprintf(stderr, "%s failed: %d\n", c->action, ret);
+        fprintf(stderr, "%s chunk %u failed: %d\n", c->action, c->idx, ret);
         c->error = ret;
     }
 
@@ -683,7 +683,8 @@ int zxflate_chunk_init(chunk_t *c)
 
 #if _USE_MMAP
     if (_g_read_mmap_base) {
-        c->in = _g_read_mmap_base + c->in_off;
+        if (!(c->flags & b_flag_read))
+            c->in = _g_read_mmap_base + c->in_off;
         c->flags |= b_flag_in;
     } else
 #endif
@@ -2004,7 +2005,6 @@ fprintf(stderr, "\nzpd> is: %lu, os: %lu, bs: %lu, tot: %u\n",
     for (uint32_t i = 0; i < nthreads; i++, current++)
     {
         chunk_t *c = &chunks[0][i];
-
         if (cmpr) {
             chunk_init_fast(c);
         } else {
@@ -2763,7 +2763,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         }
         if (opt_decompress) {
             if (len < 4 || !strcmp(filename + len - 4, ".gz")) {
-                fprintf(stderr, "Fatal: not a '.gz' terminated file name\n%s", filename);
+                fprintf(stderr,
+                    "Fatal: not a '.gz' terminated file name\n%s",
+                        filename);
                 return 1;
             }
 
@@ -2798,40 +2800,6 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
         setvbuf(stdout, stdout_buf, _IOFBF, buf_size));
     #endif
     }
-
-#if _DO_STRM //RAF, TODO: testing completed, integration todo
-    #if 0
-        xread_and_split(infd, MAX_CHUNK_SIZE * _g_cpu_procs);
-    #else
-     // The STDERR output when filter has no impact on performance
-    uint8_t *buf = NULL;
-    uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0;
-    size = _g_chunk_size ?: MAX_CHUNK_SIZE;
-    do {
-        while (true) {
-            off = xread_then_split(infd, size, &buf, &len, &roff, rlen);
-            prv += len;
-            rlen = 0;
-            if (len || !off)
-                fprintf(stderr, "buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
-                    buf - len, *(uint32_t *)(buf - len), len, off);
-            if (off == 0) exit(0); // EOF
-            if (off > size)
-                break;
-        }
-        rlen = roff - prv;
-        #if 0
-        fprintf(stderr,
-            "tot: %u / %lu, sze: %u (%.0f%%) %.0f KiB, rln: %u - %u = %u, len: %u\n",
-                roff, _g_read_file_size, size, (float)100 * _g_chunk_size / size,
-                    (float)(off - size) / 4096, off, prv, rlen, len);
-        #endif
-        rlen += 4;
-        buf -= 4;
-    } while (1);
-    #endif
-    exit(0);
-#endif
 
 // =============================================================================
 
@@ -2869,6 +2837,63 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
       //RAF: what has been read should from STDIN be passed to the 1st chunk
       //goto do_inflate_stream;
       //goto set_default_values;
+#if 1 //////////////////////////////////////////////////////////////////////////
+      // The STDERR output when filter has no impact on performance
+      uint8_t *buf = NULL;
+      uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0, a = 0;
+      size = _g_chunk_size ?: MAX_CHUNK_SIZE;
+      chunk_t chunks[2][MAX_THREADS];
+      memset(chunks, 0, sizeof(chunks));
+      out_size = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
+      while (1)
+      {
+          while (1)
+          {
+              off = xread_then_split(infd, size, &buf, &len, &roff, rlen);
+              prv += len;
+              rlen = 0;
+              if (len || !off) {
+                  if(1) fprintf(stderr, "%02u> buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
+                      current, buf - len, *(uint32_t *)(buf - len), len, off);
+              #if 1
+                  chunk_t *c = &chunks[current / nthreads][current % nthreads];
+                  _chunk_list_init(c, ofd, infd, NULL, out_size, len);
+                  c->in_len = len;
+                  c->in     = buf - len;
+                  c->flags  = b_flag_read;
+                  zxflate_chunk_init(c);
+                  chunk_zxflate_start(&c->thr, c);
+                  if (++current == nthreads * 2)
+                      goto end_to_join;
+                //c->flags |= b_flag_read;
+                //c->flags &= ~(uint8_t)b_flag_free;
+              #endif
+              }
+              if (off == 0) 
+                  goto end_to_join; // EOF
+              if (off > size)
+                  break;
+          }
+          rlen = roff - prv;
+          #if 0
+          fprintf(stderr,
+              "tot: %u / %lu, sze: %u (%.0f%%) %.0f KiB, rln: %u - %u = %u, len: %u\n",
+                  roff, _g_read_file_size, size, (float)100 * _g_chunk_size / size,
+                      (float)(off - size) / 4096, off, prv, rlen, len);
+          #endif
+          rlen += 4;
+          buf -= 4;
+      }
+end_to_join:
+      for (int i = 0; i < current; i++) {
+          chunk_t *c = &chunks[i / nthreads][i % nthreads];
+          pthread_join(c->thr, NULL);
+          xfull_write(ofd, c->out, c->out_len);
+          if(1) fprintf(stderr, "%02u/%02u> out: %p, len: %lu, ofd: %d\n",
+                    i, current, c->out, c->out_len, ofd);
+      }
+      exit(0);
+#endif /////////////////////////////////////////////////////////////////////////
     } else
 #endif
     {
