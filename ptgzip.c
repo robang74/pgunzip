@@ -863,7 +863,7 @@ static const char* ungz_file_reader(void *opaque, uint64_t *len)
 }
 
 static int ungz_inflate_stream(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek, void *ptbl)
+    size_t out_size, uint8_t *buf, size_t buf_size, bool seek, void *ptbl)
 {
     int ret = 0;
     uint8_t *inbuf = NULL;
@@ -1227,7 +1227,7 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 #endif //_SEEKER_FUNC
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
-    size_t out_size, int8_t *buf, size_t buf_size, bool seek, void *ptbl)
+    size_t out_size, uint8_t *buf, size_t buf_size, bool seek, void *ptbl)
 {
     size_t r, n, f, w = 0, set = 0, rmn = 0;
     uint8_t * inbuf = NULL;
@@ -2245,7 +2245,7 @@ static void *thread_seeker(void *arg)
         }
 
         if (!end) {
-            len &= ~(size_t)31; // Aligned for a SIMD seeker           
+            len &= ~(size_t)31; // Aligned for a SIMD seeker
         }
         if (len > (end ? 0 : QUOTA)) {
 util_the_end:
@@ -2382,8 +2382,8 @@ uint32_t xread_then_split(int fd, size_t size,
 
     do
     {
-       if (_g_read_mmap_base && _USE_MMAP) {} 
-       else 
+       if (_g_read_mmap_base && _USE_MMAP) {}
+       else
        if (buf == NULL) {
             //fprintf(stderr, "rlen: %u, pbuf: %p\n", rlen, *pbuf);
             if (posix_memalign((void **)&buf, 64,
@@ -2434,6 +2434,90 @@ uint32_t xread_then_split(int fd, size_t size,
 
     *roff = r_off;
     return off;
+}
+
+static int _inflate_concat(int infd, int ofd,
+    size_t in_size, size_t out_size, size_t nthreads)
+{
+    uint8_t *buf = NULL;
+    size_t next_idx = 0, current = 0;
+    uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0, a = 0;
+
+    chunk_t *c, chunks[2][MAX_THREADS];
+    memset(chunks, 0, sizeof(chunks));
+
+    while (1)
+    {
+        while (1)
+        {
+            off = xread_then_split(infd, in_size, &buf, &len, &roff, rlen);
+            prv += len;
+            rlen = 0;
+            if (len || !off) {
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, "%02u> buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
+    current, buf - len, *(uint32_t *)(buf - len), len, off);
+#endif // ----------------------------------------------------------------------
+                chunk_t *c;
+                for (int i = 0; i < nthreads; i++) {
+                    c = &chunks[0][i];
+                    if (c->state) c = NULL;
+                    else break;
+                }
+                while (!c) {
+                    for (int i = 0; i < nthreads; i++) {
+                        c = &chunks[0][i];
+                        if (c->state && c->error) return c->error;
+                        if (c->state >= 2 && c->idx == next_idx) {
+                            xfull_write(ofd, c->out, c->out_len);
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, "%02u/%02u+> out: %p, len: %lu, ofd: %d\n",
+    next_idx, current, c->out, c->out_len, ofd);
+#endif // ----------------------------------------------------------------------
+                            chunk_dispose(c, c->error);
+                            next_idx++;
+                            goto spawn_new_thr;
+                        } else c = NULL;
+                    }
+                    _cpu_relax();
+                }
+spawn_new_thr:
+                _chunk_list_init(c, ofd, infd, NULL, out_size, len);
+                c->in_len = len;
+                c->in     = buf - len;
+                c->flags  = b_flag_read;
+                zxflate_chunk_init(c);
+                chunk_zxflate_start(&c->thr, c);
+                current++;
+            }
+            if (off == 0)
+                goto end_to_join; // EOF
+            if (off > size)
+                break;
+        }
+        rlen = roff - prv;
+        rlen += 4;
+        buf -= 4;
+    }
+end_to_join:
+    while (next_idx < current) {
+        for (int i = 0; i < nthreads; i++) {
+            c = &chunks[0][i];
+            if (c->state && c->error) return c->error;
+            if (c->state >= 2 && c->idx == next_idx) {
+                xfull_write(ofd, c->out, c->out_len);
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, "%02u/%02u|> out: %p, len: %lu, ofd: %d\n",
+    next_idx, current, c->out, c->out_len, ofd);
+#endif // ----------------------------------------------------------------------
+                chunk_dispose(c, c->error);
+                next_idx++;
+            }
+        }
+        _cpu_relax();
+    }
+
+    return 0;
 }
 
 // =============================================================================
@@ -2657,6 +2741,11 @@ int main(int argc, char **argv)
         break;
     }
 
+    if (infd == STDIN_FILENO && !opt_stdout) {
+        fprintf(stderr, "WARNING: implicit '-c' for STDIN\n");
+        opt_stdout = 1;
+    }
+
 #if _DO_STRM || (_DO_OPTL & 2) //RAF: optional code
     posix_fadvise(infd, 0, 0, POSIX_FADV_SEQUENTIAL);  // sequential access
     posix_fadvise(infd, 0, 0, POSIX_FADV_WILLNEED);    // will need all of it
@@ -2835,9 +2924,9 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     next_idx = tbl.nwords;
     in_size = tbl.bufsze;
     ilst = tbl.cur.list;
-    buf_size = 0;
+    //buf_size = 0;
 
-#if _DO_STRM // RAF: doing 'make test-inout', parallel is:
+#if 0//_DO_STRM // RAF: doing 'make test-inout', parallel is:
              //    - 2x faster than the fastest streaming
              //    - 3x faster than the slowest streaming
     if (infd == STDIN_FILENO) {
@@ -2861,101 +2950,16 @@ set_default_values:
         ret = _inflate_stream(infd, ofd, in_size,
             out_size, ptr, buf_size, !max_out_size, &tbl);
     } else
-    if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst[0]) {
+    if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst || !ilst[0]) {
 do_inflate_stream:
 //      next_idx = _g_tot_chunks;
-
         out_size    = size_by_blocks(zread_max_size(in_size));
          in_size    = size_by_blocks(in_size >> 1);
         if(in_size  < UNZIN_CHUNK_SIZE)
            in_size  = UNZIN_CHUNK_SIZE;
         if(out_size < UNOUT_CHUNK_SIZE)
            out_size = UNOUT_CHUNK_SIZE;
-
-#if 0
-        ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, &tbl);
-#else //////////////////////////////////////////////////////////////////////////
-        uint8_t *buf = NULL;
-        uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0, a = 0;
-        //in_size = _g_chunk_size ?: MAX_CHUNK_SIZE;
-        chunk_t *c, chunks[2][MAX_THREADS];
-        memset(chunks, 0, sizeof(chunks));
-        //out_size = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
-        next_idx = 0;
-
-        while (1)
-        {
-            while (1)
-            {
-                off = xread_then_split(infd, in_size, &buf, &len, &roff, rlen);
-                prv += len;
-                rlen = 0;
-                if (len || !off) {
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "%02u> buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
-    current, buf - len, *(uint32_t *)(buf - len), len, off);
-#endif // ----------------------------------------------------------------------
-                    chunk_t *c;
-                    for (int i = 0; i < nthreads; i++) {
-                        c = &chunks[0][i];
-                        if (c->state) c = NULL;
-                        else break;
-                    }
-                    while (!c) {
-                        for (int i = 0; i < nthreads; i++) {
-                            c = &chunks[0][i];
-                            if (c->error) exit(-1); //RAF,TODO
-                            if (c->state >= 2 && c->idx == next_idx) {
-                                xfull_write(ofd, c->out, c->out_len);
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "%02u/%02u+> out: %p, len: %lu, ofd: %d\n",
-    next_idx, current, c->out, c->out_len, ofd);
-#endif // ----------------------------------------------------------------------
-                                chunk_dispose(c, c->error);
-                                next_idx++;
-                                goto spawn_new_thr;
-                            } else c = NULL;
-                        }
-                        _cpu_relax();
-                    }
-spawn_new_thr:
-                    //ilst[current] = len;
-                    _chunk_list_init(c, ofd, infd, NULL, out_size, len);
-                    c->in_len = len;
-                    c->in     = buf - len;
-                    c->flags  = b_flag_read;
-                    zxflate_chunk_init(c);
-                    chunk_zxflate_start(&c->thr, c);
-                    current++;
-                }
-                if (off == 0) 
-                    goto end_to_join; // EOF
-                if (off > size)
-                    break;
-            }
-            rlen = roff - prv;
-            rlen += 4;
-            buf -= 4;
-        }
-  end_to_join:
-        while (next_idx < current) {
-            for (int i = 0; i < nthreads; i++) {
-                c = &chunks[0][i];
-                if (c->error) exit(-1); //RAF,TODO
-                if (c->state >= 2 && c->idx == next_idx) {
-                    xfull_write(ofd, c->out, c->out_len);
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "%02u/%02u|> out: %p, len: %lu, ofd: %d\n",
-    next_idx, current, c->out, c->out_len, ofd);
-#endif // ----------------------------------------------------------------------
-                    chunk_dispose(c, c->error);
-                    next_idx++;
-                }
-            }
-            _cpu_relax();
-        }
-#endif /////////////////////////////////////////////////////////////////////////
+        ret = _inflate_concat(infd, ofd, in_size, out_size, nthreads);
     } else {
 do_inflate_parall:
 //      next_idx = _g_tot_chunks;
