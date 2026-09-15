@@ -20,6 +20,7 @@ Simplicity is the ultimate sophistication (cit.)
 - [Rationale](#rationale) about un/gzip parallel format benefits
     - [Updates v0.3](#updates-v03) &dash; [Technical](#technical) &dash; [Updates v0.4](#updates-v04)
     - [Updates v0.5](#updates-v05) &dash; [Updates v0.6](#updates-v06) &dash; [Updates v0.7](#updates-v07)
+    - [Updates v0.8](#updates-v08) minimal PTGZ format definition
 - [Deflating](#deflating) about gzip parallel compress performance
 - [Inflating](#inflating) about gunzip parallel decompress testing
 - [Brc:devel](https://github.com/robang74/pgunzip/tree/devel) visit `devel` branch for more updates
@@ -32,7 +33,7 @@ Simplicity is the ultimate sophistication (cit.)
 > 
 > A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible. Everything else is "just" coding.
 
-- simplicity is the **strongest** point of new `.gz` format and `ptgzip` design
+- simplicity is the **strongest** point of new [PTGZ format](#updates-v08) and `ptgzip` design
 - embedding the chunk sizes in a RFC 1952 header, creates the `PTGZ` novel format
 - `ptgzip` is `zlib` agnostic, despite being compiled against `zlib-ng` by default
 - `ptgzip` creates a 100% back-compatible RFC 1952 `gzip` parallel-ready format
@@ -462,6 +463,64 @@ The release v0.7 achieved relevant goals but it was a little immature in terms o
 #### Refine releases v0.7.2 & .3
 
 The releases v0.7.x continue on the path of code unification and LoC reduction: despite the performance increase of newly added `copy_range()` pre-emption is minimal, code is simpler. Meanwhile the benchmark test suite evolved to provide more precise comparison in terms of equality in confrontation (same output size, same zlib kind, latest versions, maturity, etc.) to properly highlight the competitiveness of the PTGZ format.
+
+---
+
+### Updates v0.8
+
+This release is a milestone because it highlights the validity of the fundamental idea of using RFC 1952 concatenation of GZIP files for speeding-up inflate by parallelisation.
+
+The weakest point of PTGZ format is about stdin/out compression/decompression because pipe streams aren't seekable, therefore they enforce a strict sequentiality. This prevents `ptgzip` from writing the offsets list in the header `FEXTRA` field. It can just store the buffer size used for reading data from the standard input.
+
+Knowing in advance, it is a GZIP concatenation and the max buffer size within a new GZIP chunk should be found, it is sufficient to properly parallelising I/O and inflate tasks to reach the 1.3GB/s throughput, the same achieved from reading a PTGZ file with the full offset list.
+
+The commands and the output below shows it clearly:
+
+```sh
+$ make ptgzip libz.tar &&
+  cat libz.tar    | ./ptgzip -vvkfc > libz.tar.gz &&
+  cat libz.tar.gz | ./ptgzip -dc | dd of=/dev/null bs=1M
+```
+```text
+cc -o ptgzip ptgzip.c libzall.a -Ilibz/build -Ilibz \
+  -D_USE_ZNG=0 -lpthread -g0 -O2 -s -falign-functions=32 -flto -mavx2 
+make: 'libz.tar' is up to date.
+zlib-ng, nth:8/8, file: 0x[262144 +  768] -> 0, gz: 2881272 (inf%,-6)
+ptbl> magicw: 0x7a677470, chksum: 0x00000000, nwords: 36, bufsze: 262144
+ptbl> pages output: 704 (2881068), chunk: 4 <20> 63 (17007 <80030> 256540)
+0+35 records in
+0+35 records out
+9297920 bytes (9.3 MB, 8.9 MiB) copied, 0.00690736 s, 1.3 GB/s
+
+$ head -c32 libz.tar.gz | hexdump -C
+00000000 [1f 8b] 08 04 54 56 a9 6a  00 03 08 00 70 7a  04 00  |....TV.j....pz..|
+00000010  00 00  04 00 03 00 00 00  00 00 00 00 00 00 [1f 8b] |................|
+00000020
+```
+
+Despite being optional when a PTGZ file is created, if it is not possible to write the offsets list in the header, a final zero-data extra GZIP chunk is appended with that list created during compression:
+
+```sh
+$ tail -c176 libz.tar.gz | hexdump -C
+```
+```text
+00000000  01 00 [1f 8b] 08 04 95 5e  a9 6a 00 03 98 00 70 7a  |.......^.j....pz|
+00000010  94 00  00 00  04 00 71 31  01 00 d3 52 01 00 36 b9  |......q1...R..6.|
+00000020  00 00  fb b5  00 00 24 2c  01 00 56 2c 01 00 cc bb  |......$,..V,....|
+00000030  00 00  a3 9e  00 00 10 f8  00 00 84 c6 00 00 f9 e4  |................|
+00000040  00 00  ac 59  03 00 de 9a  03 00 1c ea 03 00 80 13  |...Y............|
+00000050  03 00  d1 2e  03 00 35 cd  00 00 18 45 00 00 56 4e  |......5....E..VN|
+00000060  00 00  82 4a  00 00 2a 4d  00 00 db 51 00 00 81 4e  |...J..*M...Q...N|
+00000070  00 00  08 4f  00 00 d6 4f  00 00 86 4c 00 00 3e 56  |...O...O...L..>V|
+00000080  00 00  9a 4e  00 00 61 07  02 00 ee 27 02 00 29 97  |...N..a....'..).|
+00000090  01 00  d8 47  02 00 cc 46  01 00 08 74 01 00 d0 56  |...G...F...t...V|
+000000a0  01 00  6f 42  00 00 03 00  00 00 00 00 00 00 00 00  |..oB............|
+000000b0
+```
+
+At this point the PTGZ format can also avoid adding a special GZIP header (and a footer) and just define by standard the maximum size of the reading data buffer. This is the minimal sufficient information needed. Encoding it into a header is useful but optional. Adding the offsets list is useful but optional.
+
+Therefore the PTGZ format has three levels of information: 1. a fixed maximum, 2. an `FEXTRA` header carrying the actual reading window, 3. the list of the offsets, also. All these three levels are potentially equivalent in terms of performance, at least within the current testing system.
 
 <br>
 
