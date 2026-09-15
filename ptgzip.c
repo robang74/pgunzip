@@ -2831,21 +2831,64 @@ fprintf(stderr, "reading rst: %3.0f%%, from fd=%d: '%s'\n",
     if(buf_size)
         goto set_default_values;
 
+    //RAF: at this point, tbl and the 1st chunk offset are initialisated
+    next_idx = tbl.nwords;
+    in_size = tbl.bufsze;
+    ilst = tbl.cur.list;
+    buf_size = 0;
+
 #if _DO_STRM // RAF: doing 'make test-inout', parallel is:
              //    - 2x faster than the fastest streaming
              //    - 3x faster than the slowest streaming
     if (infd == STDIN_FILENO) {
+        goto do_inflate_stream;
+    }
+#endif
+
+#if _DEBUG // ------------------------------------------------------------------
+fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d/%d, mxos: %lu\n",
+    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, next_idx, max_out_size);
+fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
+    ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
+#endif // ----------------------------------------------------------------------
+
+    if (!in_size) {
+set_default_values:
+//      next_idx = 1;
+        ptr      = _g_ptgz_header;
+        out_size = UNOUT_CHUNK_SIZE;
+        in_size  = UNZIN_CHUNK_SIZE;
+        ret = _inflate_stream(infd, ofd, in_size,
+            out_size, ptr, buf_size, !max_out_size, &tbl);
+    } else
+    if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst[0]) {
+do_inflate_stream:
+//      next_idx = _g_tot_chunks;
+
+        out_size    = size_by_blocks(zread_max_size(in_size));
+         in_size    = size_by_blocks(in_size >> 1);
+        if(in_size  < UNZIN_CHUNK_SIZE)
+           in_size  = UNZIN_CHUNK_SIZE;
+        if(out_size < UNOUT_CHUNK_SIZE)
+           out_size = UNOUT_CHUNK_SIZE;
+
+#if 0
+        ret = _inflate_stream(infd, ofd, in_size,
+            out_size, ptr, buf_size, !max_out_size, &tbl);
+#else //////////////////////////////////////////////////////////////////////////
         uint8_t *buf = NULL;
         uint32_t off, size, prv = 0, len = 0, rlen = 0, roff = 0, a = 0;
-        size = _g_chunk_size ?: MAX_CHUNK_SIZE;
+        //in_size = _g_chunk_size ?: MAX_CHUNK_SIZE;
         chunk_t *c, chunks[2][MAX_THREADS];
         memset(chunks, 0, sizeof(chunks));
-        out_size = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
+        //out_size = size_by_blocks(zread_max_size(MAX_CHUNK_SIZE));
+        next_idx = 0;
+
         while (1)
         {
             while (1)
             {
-                off = xread_then_split(infd, size, &buf, &len, &roff, rlen);
+                off = xread_then_split(infd, in_size, &buf, &len, &roff, rlen);
                 prv += len;
                 rlen = 0;
                 if (len || !off) {
@@ -2862,14 +2905,15 @@ fprintf(stderr, "%02u> buf: %p, val: 0x%08x, len: %8u, off: %8u\n",
                     while (!c) {
                         for (int i = 0; i < nthreads; i++) {
                             c = &chunks[0][i];
+                            if (c->error) exit(-1); //RAF,TODO
                             if (c->state >= 2 && c->idx == next_idx) {
                                 xfull_write(ofd, c->out, c->out_len);
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "%02u/%02u+> out: %p, len: %lu, ofd: %d\n",
     next_idx, current, c->out, c->out_len, ofd);
 #endif // ----------------------------------------------------------------------
-                                next_idx++;
                                 chunk_dispose(c, c->error);
+                                next_idx++;
                                 goto spawn_new_thr;
                             } else c = NULL;
                         }
@@ -2898,54 +2942,20 @@ spawn_new_thr:
         while (next_idx < current) {
             for (int i = 0; i < nthreads; i++) {
                 c = &chunks[0][i];
+                if (c->error) exit(-1); //RAF,TODO
                 if (c->state >= 2 && c->idx == next_idx) {
                     xfull_write(ofd, c->out, c->out_len);
 #if _DEBUG // ------------------------------------------------------------------
 fprintf(stderr, "%02u/%02u|> out: %p, len: %lu, ofd: %d\n",
     next_idx, current, c->out, c->out_len, ofd);
 #endif // ----------------------------------------------------------------------
-                    next_idx++;
                     chunk_dispose(c, c->error);
+                    next_idx++;
                 }
             }
             _cpu_relax();
         }
-        goto do_verbose;
-    } else
-#endif
-    {
-        //RAF: at this point, tbl and the 1st chunk offset are initialisated
-        next_idx = tbl.nwords;
-        in_size = tbl.bufsze;
-        ilst = tbl.cur.list;
-        buf_size = 0;
-    }
-
-#if _DEBUG // ------------------------------------------------------------------
-fprintf(stderr, "PTGZ> ptr: %p, size: %u, lsze: %lu, 1off: %lu, nchk: %d/%d, mxos: %lu\n",
-    ptr, in_size, _g_ptgz_list_size, _g_first_offeset, _g_tot_chunks, next_idx, max_out_size);
-fprintf(stderr, "      ilst: 0x%08x 0x%08x | 0x%08x 0x%08x 0x%08x 0x%08x\n",
-    ilst[-2], ilst[-1], ilst[0], ilst[1], ilst[2], ilst[3]);
-#endif // ----------------------------------------------------------------------
-
-    if (!in_size) {
-set_default_values:
-//      next_idx = 1;
-        ptr      = _g_ptgz_header;
-        out_size = UNOUT_CHUNK_SIZE;
-        in_size  = UNZIN_CHUNK_SIZE;
-        ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, &tbl);
-    } else
-    if (_g_ptgz_list_size < sizeof(uint32_t) || !ilst[0]) {
-do_inflate_stream:
-//      next_idx = _g_tot_chunks;
-        in_size  = size_by_blocks(zread_max_size(in_size));
-        out_size = size_by_blocks(in_size >> 1);
-        if(out_size < UNOUT_CHUNK_SIZE)
-           out_size = UNOUT_CHUNK_SIZE;
-        ret = _inflate_stream(infd, ofd, in_size,
-            out_size, ptr, buf_size, !max_out_size, &tbl);
+#endif /////////////////////////////////////////////////////////////////////////
     } else {
 do_inflate_parall:
 //      next_idx = _g_tot_chunks;
