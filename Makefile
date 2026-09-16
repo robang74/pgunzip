@@ -86,11 +86,16 @@ $(LIBZ_A): $(LIBZ_DIR)
 # cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
 # cmake --build build
 
+busybox.zip:
+	wget $(BURL) -O $@
+
 bbox: busybox.zip
 	unzip -q $^ && mv -f busybox-uchaosys/ $@/
-	cp -f $@/ubuntu/config.gzip $@/.config
 
-bbox/gzip: bbox/.config | bbox
+bbox/.config: bbox
+	cp -f $</ubuntu/config.gzip $</.config
+
+bbox/gzip: bbox/.config
 	cd bbox && make -j && mv busybox gzip
 
 # -----------------------------------------------------------------------------
