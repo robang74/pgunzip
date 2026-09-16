@@ -107,7 +107,7 @@ plgzip: ptgzip.c
 	$(CC) $(CFLAGS) -o $@ $< -lz -lpthread -D_USE_ZLIB
 
 minz/.sync:
-	git submodule update --init --recursive
+	git submodule update --init --recursive --jobs $(shell nproc)
 	touch $@
 
 updateminz: | minz/.sync
@@ -119,8 +119,14 @@ updateminz: | minz/.sync
 	rm -rf libzall.a minz/amalgamation/
 
 ungz/.sync:
-	git submodule update --init --recursive
+	git submodule update --init --recursive --jobs $(shell nproc)
 	touch $@
+
+updateungz: | ungz/.sync
+	@echo "Updating ungz at the master branch HEAD"
+	cd ungz && git fetch origin master \
+	  && git checkout --force FETCH_HEAD
+	cd ungz/ && git status | grep modified ||:
 
 $(MINZ_DIR)/miniz.c: | minz/.sync
 	cd minz && SKIPTESTS=1 sh amalgamate.sh
