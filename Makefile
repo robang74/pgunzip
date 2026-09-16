@@ -498,7 +498,10 @@ clean:
 
 veryclean: clean
 	rm -rf libz minz/.sync minz/amalgamation libzall.a
+	make -C ungz/LuaJIT/src clean
+	make -C ungz/LuaJIT clean
+	make -C ungz clean
 
 distclean: veryclean
-	rm -f $(TARBALL)
-
+	rm -f $(TARBALL) 
+	make -C ungz distclean
