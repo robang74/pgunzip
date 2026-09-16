@@ -963,7 +963,7 @@ endfunc:
 
 #define _inflate_stream ungz_inflate_stream
 
-#else //////////////////////////////////////////////////////////////////////////
+#endif /////////////////////////////////////////////////////////////////////////
 
 #include <endian.h>
 
@@ -1214,6 +1214,9 @@ uint32_t chunk_seeker(const uint8_t *p, const uint32_t r)
 #endif //__AVX2__
 
 #endif //_SEEKER_FUNC
+
+#if _USE_UNGZ
+#else /////////////////////////////////////////////////////////////////////////
 
 static int zlib_inflate_stream(int infd, int ofd, size_t in_size,
     size_t out_size, uint8_t *buf, size_t buf_size, bool seek, void *ptbl)
