@@ -472,7 +472,7 @@ This release is a milestone because it highlights the validity of the fundamenta
 
 The weakest point of PTGZ format is about stdin/out compression/decompression because pipe streams aren't seekable, therefore they enforce a strict sequentiality. This prevents `ptgzip` from writing the offsets list in the header `FEXTRA` field. It can just store the buffer size used for reading data from the standard input.
 
-```txt
+```sh
 $ make ptgzip libz.tar &&
   cat libz.tar    | ./ptgzip -vvkfc > libz.tar.gz &&
   cat libz.tar.gz | ./ptgzip -dc | dd of=/dev/null bs=1M
@@ -490,18 +490,20 @@ ptbl> pages output: 704 (2881068), chunk: 4 <20> 63 (17007 <80030> 256540)
 
 Knowing in advance, it is a GZIP concatenation and the max buffer size within a new GZIP chunk should be found, it is sufficient to properly parallelising I/O and inflate tasks to reach the 1.3GB/s throughput, the same achieved from reading a PTGZ file with the full offset list.
 
-```txt
-$ head -c 32 libz.tar.gz | hexdump -C | head -n2
-
+```sh
+$ head -c32 libz.tar.gz | hexdump -C | head -n2
+```
+```text
 00000000 [1f 8b] 08 04 54 56 a9 6a  00 03 08 00 70 7a  04 00  |....TV.j....pz..|
 00000010  00 00  04 00 03 00 00 00  00 00 00 00 00 00 [1f 8b] |................|
 ```
 
 Despite being optional when a PTGZ file is created, if it is not possible to write the offsets list in the header, a final zero-data extra GZIP chunk is appended with that list created during compression:
 
-```txt
+```sh
 $ tail -c174 libz.tar.gz | hexdump -C | head -n2
-
+```
+```text
 00000000 [1f 8b] 08 04 7e 8a a9 6a  00 03 98 00 70 7a 94 00   |....~..j....pz..|
 00000010  00 00  04 00 71 31 01 00  d3 52 01 00 36 b9 00 00   |....q1...R..6...|
 ```
