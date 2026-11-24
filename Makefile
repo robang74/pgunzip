@@ -131,9 +131,10 @@ minz/.sync:
 	touch $@
 
 updateminz: | minz/.sync
-	@echo "Updating miniz at the $(MINZ_BRCH) branch @HEAD"
+	@echo "Updating miniz at the HEAD of '$(MINZ_BRCH)' branch"
 	cd minz && git fetch origin $(MINZ_BRCH) \
-	  && git checkout --force FETCH_HEAD
+	  && git checkout --force FETCH_HEAD \
+	  && git switch $(MINZ_BRCH)
 	cd minz/ && cat 00*.patch 2>&- | patch -p1
 	cd minz/ && git status | grep modified ||:
 	rm -rf libzall.a minz/amalgamation/
@@ -143,9 +144,10 @@ ungz/.sync:
 	touch $@
 
 updateungz: | ungz/.sync
-	@echo "Updating ungz at the master branch HEAD"
+	@echo "Updating ungz at the HEAD of 'master' branch"
 	cd ungz && git fetch origin master \
-	  && git checkout --force FETCH_HEAD
+	  && git checkout --force FETCH_HEAD \
+	  && git switch master
 	cd ungz/ && git status | grep modified ||:
 
 $(MINZ_DIR)/miniz.c: | minz/.sync
