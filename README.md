@@ -31,7 +31,16 @@ Simplicity is the ultimate sophistication (cit.)
 
 > [!NOTE]
 > 
-> A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible. Everything else is "just" coding.
+> A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible.
+
+> [!WARNING]
+>
+> While the `PTGZ` format is 100% backward-compatible with RFC-1952-compliant decompressors, some `gzip` implementations (especially those are strongly oriented towards the embedded systems) do not fully support it or only partially support it, e.g.: 
+>
+>  - applications using `miniz`, unless [this](https://github.com/robang74/miniz/blob/rfc1952.pr2) extended version is adopted at compilation time;
+>  - BusyBox v1.38 and previous versions, unless patched with [this](https://github.com/robang74/busybox/commit/232702b849adb28eb3d7158f4a06fa8d21fc13b4) bugfix and recompiled
+> 
+> In short, `gzip` implementations should also fully support the standard. The sad truth is that the `FEXTRA` field, despite being part of RFC-1952 since 1996, has been unfairly overlooked for practical use. Consequently, its support hasn't been challenged largely and in its whole extent.
 
 - simplicity is the **strongest** point of new [PTGZ format](#updates-v08) and `ptgzip` design
 - embedding the chunk sizes in a RFC 1952 header, creates the `PTGZ` novel format
