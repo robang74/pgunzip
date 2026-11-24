@@ -33,15 +33,6 @@ Simplicity is the ultimate sophistication (cit.)
 > 
 > A very simple extension to the gzip format makes an ordinary RFC-1952 stream parallel-ready while remaining 100% gunzip compatible.
 
-> [!WARNING]
->
-> While the `PTGZ` format is 100% backward-compatible with RFC-1952-compliant decompressors, some `gzip` implementations (especially those are strongly oriented towards the embedded systems) do not fully support it or only partially support it, e.g.: 
->
->  - applications using `miniz`, unless [this](https://github.com/robang74/miniz/blob/rfc1952.pr2) extended version is adopted at compilation time;
->  - BusyBox v1.38 and previous versions, unless patched with [this](https://github.com/robang74/busybox/commit/232702b849adb28eb3d7158f4a06fa8d21fc13b4) bugfix and recompiled
-> 
-> In short, `gzip` implementations should also fully support the standard. The sad truth is that the `FEXTRA` field, despite being part of RFC-1952 since 1996, has been unfairly overlooked for practical use. Consequently, its support hasn't been challenged largely and in its whole extent.
-
 - simplicity is the **strongest** point of new [PTGZ format](#updates-v08) and `ptgzip` design
 - embedding the chunk sizes in a RFC 1952 header, creates the `PTGZ` novel format
 - `ptgzip` is `zlib` agnostic, despite being compiled against `zlib-ng` by default
@@ -57,6 +48,15 @@ Its relative performances tend to improve in the real-world scenarios:
 The aim of this project is to provide 3rd-party verifiable evidence that the new `PTGZ` format is effective, performant, reliable and competitive. Or alternatively, to provide evidence that the current `GZIP` standard can be upgraded with relatively few, simple but surgical changes.
 
 The field `FEXTRA` was defined by RFC-1952 (1996), and the `PTGZ` format leverages it for supporting the parallelism of `.gz` inflate. This is the **novelty**: how that field is used and why. Because of that novelty the claim of a new format and the `PTGZ` naming.
+
+> [!WARNING]
+>
+> While the `PTGZ` format is 100% backward-compatible with RFC-1952-compliant decompressors, some `gzip` implementations (especially those are strongly oriented towards the embedded systems) do not fully support it or only partially support it, e.g.: 
+>
+>  - applications using `miniz`, unless [this](https://github.com/robang74/miniz/blob/rfc1952.pr2) extended version is adopted at compilation time;
+>  - BusyBox v1.38 and previous versions, unless patched with [this](https://github.com/robang74/busybox/commit/232702b849adb28eb3d7158f4a06fa8d21fc13b4) bugfix and recompiled
+> 
+> In short, `gzip` implementations should also fully support the standard. The sad truth is that the `FEXTRA` field, despite being part of RFC-1952 since 1996, has been unfairly overlooked for practical use. Consequently, its support hasn't been challenged largely and in its whole extent.
 
 In being a novel format, PTGZ has its own crystal clear advantages, but also shortcomings tight in being 100% back-compatible. A tiny overhead in size is conversely a throughput penality: both on `zlib-ng`, the `ptgzip -6c` matches `pigz -6c` in speed, but the faster `pigz -5c` in output size.
 
