@@ -11,14 +11,18 @@ TARBALL   = zlib-ng-$(VERSION).tar.gz
 REPOURL   = https://github.com/robang74
 ZURL      = $(REPOURL)/zlib-ng/archive/refs/tags/$(ZARCHIVE)
 BARCHIVE  = uchaosys.zip
+BAR_DZIP  = busybox.zip
+BAR_SDIR  = busybox-uchaosys/
+BAR_DDIR  = bbox
 BURL      = $(REPOURL)/busybox/archive/refs/heads/$(BARCHIVE)
 LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 MINZ_BRCH = rfc1952.pr2
-TARGETS   = pxgzip plgzip bbgzip pmgzip ptgzip pugzip
+TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
 GZCMD    ?= $(shell command -v pigz gzip | head -n1)
+TZCMD    ?=
 UZCMD    ?= ./ptgzip
 ZCATCMD  ?= $(UZCMD) -dc
 OUTP     ?= /dev/null
@@ -52,14 +56,14 @@ source: $(LIBZ_A)
 # ------------------------------------------------------------------------------
 # Source targets: download tarball, extract, rename to libz/, build static lib
 # ------------------------------------------------------------------------------
-.PHONY: updatebbox bbox
+.PHONY: updatebbox
 
 $(TARBALL):
 	@echo ">>> Downloading $@ ..."
 	wget -O $@ $(ZURL) || curl -Lo $@ $(ZURL) || \
 		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
 
-busybox.zip:
+$(BAR_DZIP):
 	@echo ">>> Downloading $@ ..."
 	wget -O $@ $(BURL) || curl -Lo $@ $(BURL) || \
 		{ echo "Error: install wget or curl"; rm -f $@; exit 1; }
@@ -92,18 +96,20 @@ $(LIBZ_A): $(LIBZ_DIR)
 	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
-bbox: busybox.zip
-	unzip -q $^ && mv -f busybox-uchaosys/ $@/
+$(BAR_DDIR): $(BAR_DZIP)
+	for d in $(BAR_DDIR) $(BAR_SDIR); do \
+     test -d $$d && rm -rf $$d ||:; done
+	unzip -q $< && mv -f $(BAR_SDIR) $@/
 
-bbox/.config: bbox
+$(BAR_DDIR)/.config: $(BAR_DDIR)
 	cp -f $</ubuntu/config.gzip $</.config
 
-bbgzip: | bbox/.config
-	cd bbox && make -j$(nproc) && mv busybox ../$@
+bbox/gzip: | $(BAR_DDIR)/.config
+	cd $(BAR_DDIR) && make -j$$(nproc) && mv busybox ../$@
 
 updatebbox:
-	rm -rf busybox.zip bbox/
-	make bbox/.config
+	rm -rf $(BAR_DZIP) $(BAR_DDIR)
+	make $(BAR_DDIR)/.config
 
 # ------------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
@@ -152,7 +158,7 @@ minz/libminz.a: $(MINZ_DIR)/miniz.c.o
 	$(AR) rcs $@ $<
 
 ungz/libungz.a: | ungz/.sync
-	make -C ungz libungz.a
+	make -C ungz libungz.a -j$$(nproc)
 
 libmerge.mri: $(LIBZ_A) minz/libminz.a ungz/libungz.a
 	@echo "CREATE libzall.a" > $@
@@ -215,6 +221,10 @@ tests3: tests2 _speef-gunzp _speed-gunzp _speed-inout
 
 tests4: tests3 _test-stress _speed-stress _stress-iocat
 	@echo
+
+testcmd:
+	test -n "$(TZCMD)" || { echo "Error: make tests5 TZCMD=[command]"; exit 1; }
+	make tests4 UZCMD=$(TZCMD) GZCMD=$(TZCMD) CMD2T=$(TZCMD)
 
 devel: $(LIBZ_A)
 	@printf "\n=========================="
@@ -372,7 +382,7 @@ test-basic: _test-basic blkline
 
 _test-ptgz: rm_lib_tgz
 	@printf "\n=== ./ptgzip PTGZ sanity check ===\n\n"
-	make -j libz.tar ptgzip >/dev/null
+	make -j$$(nproc) libz.tar ptgzip >/dev/null
 	@echo
 	./ptgzip libz.tar -kv
 	head -c64 libz.tar.gz | hexdump -C
@@ -514,9 +524,10 @@ test-zsize: _test-zsize blkline
 
 clean: rm_lib_tgz
 	rm -f $(TARGETS) pigz-?.gz gzip-?.gz ptgz-?.gz
+	rm -rf $(BAR_SDIR)
 
 veryclean: clean
-	rm -rf libz minz/.sync minz/amalgamation libzall.a
+	rm -rf $(BAR_DDIR) libz/ minz/.sync minz/amalgamation libzall.a
 	make -C ungz/LuaJIT/src clean
 	make -C ungz/LuaJIT clean
 	make -C ungz clean
