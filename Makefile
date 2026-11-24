@@ -16,7 +16,8 @@ LIBZ_DIR  = libz
 LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
-TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
+MINZ_BRCH = rfc1952.pr2
+TARGETS   = pxgzip plgzip bbgzip pmgzip ptgzip pugzip
 GZCMD    ?= $(shell command -v pigz gzip | head -n1)
 UZCMD    ?= ./ptgzip
 ZCATCMD  ?= $(UZCMD) -dc
@@ -35,17 +36,23 @@ MINZ_ARGS+= -Wl,--defsym=deflateBound=mz_deflateBound
 MINZ_ARGS+= -Wl,--defsym=deflateEnd=mz_deflateEnd
 MINZ_ARGS+= -Wl,--defsym=deflate=mz_deflate
 
-.PHONY: all clean distclean source
+# ------------------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------------------
+
+.PHONY: all source
 
 all: libzall.a $(TARGETS)
 	@echo
 	@for i in $(TARGETS); do du -k $$i; ldd $$i; echo; done
 	@du -k libzall.a && printf "\t%s\n\n" "$$(file libzall.a)"
 
-# -----------------------------------------------------------------------------
-# source target: download tarball, extract, rename to libz/, build static lib
-# -----------------------------------------------------------------------------
 source: $(LIBZ_A)
+
+# ------------------------------------------------------------------------------
+# Source targets: download tarball, extract, rename to libz/, build static lib
+# ------------------------------------------------------------------------------
+.PHONY: updatebbox bbox
 
 $(TARBALL):
 	@echo ">>> Downloading $@ ..."
@@ -85,24 +92,24 @@ $(LIBZ_A): $(LIBZ_DIR)
 	@cp $(BUILD_DIR)/libz*.a $@
 	@echo ">>> Built: $@"
 
-# cmake -S . -B build -D MZ_BUILD_TESTS=OFF -D MZ_LIBCOMP=OFF -D MZ_FETCH_LIBS=OFF -D MZ_PKCRYPT=OFF -D MZ_WZAES=OFF -D MZ_OPENSSL=OFF -D MZ_LIBBSD=OFF -D MZ_ICONV=OFF -D MZ_BZIP2=OFF -D MZ_LZMA=OFF -D MZ_PPMD=OFF -D MZ_ZSTD=OFF
-# cmake --build build
-
-busybox.zip:
-	wget $(BURL) -O $@
-
 bbox: busybox.zip
 	unzip -q $^ && mv -f busybox-uchaosys/ $@/
 
 bbox/.config: bbox
 	cp -f $</ubuntu/config.gzip $</.config
 
-bbox/gzip: bbox/.config
-	cd bbox && make -j && mv busybox gzip
+bbgzip: | bbox/.config
+	cd bbox && make -j$(nproc) && mv busybox ../$@
 
-# -----------------------------------------------------------------------------
+updatebbox:
+	rm -rf busybox.zip bbox/
+	make bbox/.config
+
+# ------------------------------------------------------------------------------
 # ptgzip: compile against native zlib-ng headers and static archive
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+.PHONY: updateminz updateungz
+
 ptgzip: ptgzip.c libzall.a
 	$(CC) -o $@ $^ -I$(BUILD_DIR) -I$(LIBZ_DIR) \
 	  -D_USE_ZNG=0 -lpthread $(CFLAGS)
@@ -118,8 +125,8 @@ minz/.sync:
 	touch $@
 
 updateminz: | minz/.sync
-	@echo "Updating miniz at the pgunzip branch HEAD"
-	cd minz && git fetch origin pgunzip \
+	@echo "Updating miniz at the $(MINZ_BRCH) branch @HEAD"
+	cd minz && git fetch origin $(MINZ_BRCH) \
 	  && git checkout --force FETCH_HEAD
 	cd minz/ && cat 00*.patch 2>&- | patch -p1
 	cd minz/ && git status | grep modified ||:
@@ -161,9 +168,9 @@ pmgzip: ptgzip.c libzall.a
 pugzip: ptgzip.c libzall.a
 	$(CC) $(CFLAGS) -o $@ $^ -lpthread -D_USE_UNGZ=1
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Tests
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 .PHONY: tests1 tests2 tests3 blkline speed stress iocat crash devel
 .PHONY:  test-clean    test-basic   test-speed   test-pigzc
@@ -261,7 +268,7 @@ _test-stress:
 
 _full-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) full stress test on /bin/ ===\n\n"
-	@for i in $$(seq 1 9); do make test-stress ZLVL=-$$i; echo; done 
+	@for i in $$(seq 1 9); do make test-stress ZLVL=-$$i; echo; done
 
 stress-test: test-stress
 
@@ -500,9 +507,11 @@ _test-zsize: rm_lib_tgz libz.tar ptgzip
 
 test-zsize: _test-zsize blkline
 
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Cleanup
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+.PHONY: clean veryclean distclean
+
 clean: rm_lib_tgz
 	rm -f $(TARGETS) pigz-?.gz gzip-?.gz ptgz-?.gz
 
@@ -513,6 +522,6 @@ veryclean: clean
 	make -C ungz clean
 
 distclean: veryclean
-	rm -f $(TARBALL) 
+	rm -f $(TARBALL)
 	make -C ungz distclean
 
