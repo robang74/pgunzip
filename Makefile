@@ -17,8 +17,10 @@ LIBZ_A    = $(LIBZ_DIR)/libz.a
 MINZ_DIR  = minz/amalgamation
 BUILD_DIR = $(LIBZ_DIR)/build
 TARGETS   = pxgzip plgzip bbox/gzip pmgzip ptgzip pugzip
-GZCMD     = $(shell command -v pigz gzip | head -n1)
-ZCATCMD  ?= ./ptgzip -dc
+GZCMD    ?= $(shell command -v pigz gzip | head -n1)
+UZCMD    ?= ./ptgzip
+ZCATCMD  ?= $(UZCMD) -dc
+OUTP     ?= /dev/null
 NTS      ?= 30
 
 CC       ?= gcc
@@ -26,7 +28,7 @@ ADDRSAN  ?= -fsanitize=address -fno-omit-frame-pointer -g
 THRDSAN  ?= -fsanitize=thread  -fno-omit-frame-pointer -g
 OPTMISE  ?= -g0 -O2 -s
 CFLAGS   ?= $(OPTMISE) -falign-functions=32 -flto -mavx2 $(EXTRA_CFLAGS)
-THREADS  ?= $(shell nproc 2>/dev/null || echo 4)
+THREADS  ?= $(shell nproc 2>&- || echo 4)
 
 MINZ_ARGS = -Wl,--defsym=deflateInit2_=mz_deflateInit2
 MINZ_ARGS+= -Wl,--defsym=deflateBound=mz_deflateBound
@@ -234,9 +236,9 @@ speed: $(CMD2T) _test-speed _test-speef _test-speet blkline
 _speed-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(CMD2T) $$i $(CMDVC) $(ZLVL); done' \
-    && sync && echo "$$cmd" && nl=/dev/null \
+    && sync && echo "$$cmd" \
     && list="$(shell find /bin/ -type f | sort)" \
-    && time eval "$$cmd" | dd bs=1M of=$$nl
+    && time eval "$$cmd" | dd bs=1M of=$(OUTP)
 
 _stress-speed: _speed-stress
 
@@ -249,9 +251,9 @@ STRCMD := $(CMD2T) $$i $(CMDVC) $(ZLVL) | $(ZCATCMD) || echo $$i >&2
 __test-stress: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' stress test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(STRCMD); done' \
-    && sync && echo "$$cmd" && nl=/dev/null \
+    && sync && echo "$$cmd" \
     && list="$(shell find /bin/ -type f | sort)" \
-    && time eval "$$cmd" >$$nl
+    && time eval "$$cmd" >$(OUTP)
 
 _test-stress:
 	@echo
@@ -275,16 +277,16 @@ stress: $(CMD2T) _speed-stress _test-stress
 
 _speed-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-dc' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(CMDVC)" && sync && \
-    eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd 2>&-"; done | dd bs=1M of=$$nl
+	cmd="$(CMD2T) libz.tar.gz -dkf $(CMDVC)" && sync && \
+    eval "$$cmd ||:" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd 2>&-"; done | dd bs=1M of=$(OUTP)
 
 speed-gunzp: _speed-gunzp blkline
 
 _speef-gunzp: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) '-dk' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) libz.tar.gz -dkf $(NP)" && sync && \
-    eval "$$cmd ||:" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+	cmd="$(CMD2T) libz.tar.gz -dkf $(NP)" && sync && \
+    eval "$$cmd ||:" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done; sync
 
 speef-gunzp: _speef-gunzp blkline
@@ -302,9 +304,9 @@ SIOCMD := $(CMD2T) $(CMDVC) $(ZLVL) <$$i | $(ZCATCMD)
 __stress-iocat:
 	@printf "\n=== iocat stress test on /bin/ ===\n\n"
 	@cmd='for i in $$list; do $(SIOCMD) || echo $$i >&2; done' \
-    && sync && echo "$$cmd" && nl=/dev/null \
+    && sync && echo "$$cmd" \
     && list="$(shell find /bin/ -type f | sort)" \
-    && time eval "$$cmd" >$$nl
+    && time eval "$$cmd" >$(OUTP)
 
 _stress-iocat:
 	@echo
@@ -384,15 +386,15 @@ test-gunzp: _test-gunzp blkline
 
 _speed-inout_c: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) I/O speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) $(CMDVC) <$<" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	cmd="$(CMD2T) $(CMDVC) <$<" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$(OUTP)
 
 _speed-inout_d: libz.tar.gz $(CMD2T)
 	@printf "\n=== $(CMD2T) -d I/O speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) -d $(CMDVC) <$<" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	cmd="$(CMD2T) -d $(CMDVC) <$<" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$(OUTP)
 
 speed-inout: _speed-inout_d _speed-inout_c blkline
 
@@ -415,23 +417,23 @@ test-inout: _test-inout blkline
 
 _test-speet: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '<>' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) $(CMDVC) $(NP) $(ZLVL) <$< >test.gz" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+	cmd="$(CMD2T) $(CMDVC) $(NP) $(ZLVL) <$< >test.gz" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 
 test-speet: _test-speet blkline
 
 _test-speed: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) '-c' speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) -k -f $(CMDVC) $(NP) $(ZLVL) libz.tar" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	cmd="$(CMD2T) -k -f $(CMDVC) $(NP) $(ZLVL) libz.tar" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$(OUTP)
 
 test-speed: _test-speed blkline
 
 _test-speef: libz.tar $(CMD2T)
 	@printf "\n=== $(CMD2T) file speed test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="$(CMD2T) -k -f $(CMDVF) $(NP) $(ZLVL) libz.tar" && sync && \
+	cmd="$(CMD2T) -k -f $(CMDVF) $(NP) $(ZLVL) libz.tar" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done; sync
 
@@ -439,16 +441,16 @@ test-speef: _test-speef blkline
 
 _test-gzipc: libz.tar /bin/gzip
 	@printf "\n=== gzip '-c' compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/gzip -knf -c libz.tar" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	cmd="/bin/gzip -knf -c libz.tar" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$(OUTP)
 
 test-gzipc: _test-gzipc blkline
 
 _test-gzipf: libz.tar /bin/gzip
 	@printf "\n=== gzip file compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/gzip -knf libz.tar" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
+	cmd="/bin/gzip -knf libz.tar" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 	@sync
 
@@ -456,7 +458,7 @@ test-gzipf: _test-gzipf blkline
 
 _test-pigzf: libz.tar /bin/pigz
 	@printf "\n=== pigz file compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/pigz -knmf libz.tar" && sync && \
+	cmd="/bin/pigz -knmf libz.tar" && sync && \
     eval "$$cmd" && time for i in $$(seq 1 $(NTS)); do \
     eval "$$cmd"; done
 	@sync
@@ -465,9 +467,9 @@ test-pigzf: _test-pigzf blkline
 
 _test-pigzc: libz.tar /bin/pigz
 	@printf "\n=== pigz '-c' compare test x$(NTS) ===\n\n"
-	nl=/dev/null && cmd="/bin/pigz -knmf -c libz.tar" && sync && \
-    eval "$$cmd" >$$nl && time for i in $$(seq 1 $(NTS)); do \
-    eval "$$cmd"; done | dd bs=1M of=$$nl
+	cmd="/bin/pigz -knmf -c libz.tar" && sync && \
+    eval "$$cmd" >$(OUTP) && time for i in $$(seq 1 $(NTS)); do \
+    eval "$$cmd"; done | dd bs=1M of=$(OUTP)
 
 test-pigzc: _test-pigzc blkline
 
@@ -514,3 +516,4 @@ veryclean: clean
 distclean: veryclean
 	rm -f $(TARBALL) 
 	make -C ungz distclean
+
