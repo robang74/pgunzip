@@ -333,9 +333,8 @@ rm_lib_tgz:
 
 _test-clean: rm_lib_tgz
 	@printf "\n=== $(CMD2T) compilation test ===\n\n"
-	@rm -f $$(basename $(CMD2T)) ||:
-	@echo make $(CMD2T) | grep -q "/bin/" ||\
-    make $$(basename $(CMD2T))
+	@echo make $(CMD2T) | grep -q "bin/" ||\
+     { rm -f ./$(CMD2T); make $(CMD2T) ||:; }
 
 test-clean: _test-clean blkline
 
